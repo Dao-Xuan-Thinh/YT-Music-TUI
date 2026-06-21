@@ -13,6 +13,7 @@ _DEFAULTS = {
     'search_source': 'ytm',   # 'ytm', 'yt', 'both'
     'max_results':   15,
     'local_folder':  '',
+    'theme':         'tokyo-night',
 }
 
 
@@ -81,6 +82,24 @@ class Config:
     def local_folder(self, path):
         self._data['local_folder'] = path or ''
         self.save()
+
+    @property
+    def theme(self):
+        """Theme name, validated against Textual's built-in themes."""
+        name = self._data.get('theme') or _DEFAULTS['theme']
+        try:
+            from textual.theme import BUILTIN_THEMES
+            if name not in BUILTIN_THEMES:
+                return _DEFAULTS['theme']
+        except Exception:
+            pass
+        return name
+
+    @theme.setter
+    def theme(self, name):
+        if name:
+            self._data['theme'] = name
+            self.save()
 
     def valid_cookies(self):
         """Return cookies_file path if the file exists, else empty string."""
