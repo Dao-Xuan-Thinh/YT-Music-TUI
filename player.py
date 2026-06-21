@@ -32,8 +32,12 @@ def detect_backend():
 
 # ── mpv IPC ───────────────────────────────────────────────────────────────────
 
-_PIPE_ARG  = 'ytm-tui'
-_PIPE_PATH = r'\\.\pipe\ytm-tui'
+# Unique pipe name per process so each app run talks to the mpv IT started,
+# never a stale --idle daemon left over from a prior run/crash. On Windows two
+# mpv processes can't own the same named pipe; reusing a fixed name made the IPC
+# connect to a leftover (paused) mpv → no audio.
+_PIPE_ARG  = f'ytm-tui-{os.getpid()}'
+_PIPE_PATH = r'\\.\pipe' + '\\' + _PIPE_ARG
 _kernel32  = ctypes.windll.kernel32
 
 
