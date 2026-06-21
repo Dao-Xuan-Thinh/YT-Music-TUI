@@ -70,16 +70,24 @@ Install with: `pip install -r requirements.txt`
 
 ## Critical Gotchas
 
-### Windows Named Pipe IPC (mpv Communication)
+### mpv IPC Transport (cross-platform)
 
-**Problem:** Python's `FileIO` on a Windows named pipe serializes all read/write access via an internal lock. A blocking `read()` in a reader thread holds the lock, preventing the main thread from writing commands → deadlock.
+`_MpvIPC` runs a **single event-loop thread** that owns all I/O, talking to mpv
+over a platform-specific transport (`player.py`):
+- **Windows** (`_WinPipeTransport`): named pipe `\\.\pipe\<name>`. Python's `FileIO`
+  on a pipe serializes read/write on an internal lock, so a blocking reader thread
+  would deadlock writes. Avoided via `PeekNamedPipe` (ctypes) — non-blocking check
+  for available bytes before each read.
+- **macOS/Linux** (`_UnixSocketTransport`): `AF_UNIX` socket `/tmp/<name>.sock`,
+  using `select()` + `recv()` with line buffering.
 
-**Solution:** Single event-loop thread in `_MpvIPC`:
-- Uses `PeekNamedPipe` (via ctypes) to non-blocking check bytes available before reading
-- Drains outbound command queue before each poll cycle
-- Main thread enqueues commands and waits on `threading.Event` for responses
+Both expose `connect / write / poll_line / close`; the loop drains the outbound
+command queue, then calls `transport.poll_line()` (non-blocking) and dispatches
+JSON. Main thread enqueues commands and waits on `threading.Event` for responses.
 
-**File:** `player.py:_MpvIPC._loop()` — Do not refactor to async/await or concurrent reader/writer threads without solving the FileIO lock contention.
+**File:** `player.py:_MpvIPC._loop()` — Do not refactor to async/await or concurrent
+reader/writer threads; the single-thread + non-blocking-poll model is what avoids
+the Windows FileIO lock contention.
 
 ### mpv IPC: end-file Event Filtering
 
@@ -89,10 +97,21 @@ Install with: `pip install -r requirements.txt`
 
 **File:** `player.py:_MpvIPC._dispatch()` — This filter is critical to prevent audio from skipping through entire playlist instantly.
 
-### mpv Pipe Argument
+### mpv IPC endpoint argument
 
-- Pass short name `ytm-tui` to `--input-ipc-server` (mpv creates the full `\\.\pipe\ytm-tui` path automatically)
-- Python connects using full path `open(r'\\.\pipe\ytm-tui', ...)`
+`--input-ipc-server={_IPC_ARG}` where `_IPC_ARG` is per-process and per-OS (`player.py`):
+- **Windows:** short name `ytm-tui-<pid>` → mpv creates `\\.\pipe\ytm-tui-<pid>`; Python connects via that full pipe path.
+- **Unix:** a filesystem path `/tmp/ytm-tui-<pid>.sock` → mpv creates the AF_UNIX socket; Python `connect()`s to that path.
+
+The `<pid>` suffix makes the endpoint unique per run so a new launch never connects to a stale `--idle` daemon (that bug caused silent no-audio).
+
+### mpv must find yt-dlp (venv gotcha)
+
+mpv runs as a separate process and resolves `yt-dlp` from its own PATH. In a virtualenv, yt-dlp is next to the venv Python and NOT on the system PATH, so YouTube won't stream. `_find_ytdlp()` locates it (next to `sys.executable`, else PATH) and passes `--script-opts=ytdl_hook-ytdl_path=<path>` to mpv.
+
+### Track URLs use www.youtube.com
+
+`_ytm_track_to_dict()` builds `https://www.youtube.com/watch?v=<id>` (not `music.youtube.com`). Same videoId/audio, but mpv's ytdl_hook fails to load `music.youtube.com/watch` URLs on Linux; the www form works on every OS.
 
 ### Textual Tab Key
 
@@ -104,15 +123,21 @@ Textual reserves the Tab key for focus cycling. Source-cycle binding uses `t` in
 
 ## Cross-Platform Notes
 
-**Current:** Windows-only IPC (named pipes + `ctypes.windll` + `msvcrt`).
+**Status:** runs on Windows, macOS, and Linux. The IPC layer auto-selects a
+transport in `player.py` (`_WinPipeTransport` named pipe / `_UnixSocketTransport`
+AF_UNIX socket) behind `_IS_WINDOWS`. Verified end-to-end on Windows and on Linux
+(via WSL2 + WSLg audio). macOS uses the identical AF_UNIX path (the `/tmp` socket
+location avoids the macOS AF_UNIX path-length limit).
 
-**Mac/Linux:** Would require refactoring `player.py` to use Unix domain sockets instead of named pipes:
-- Replace `\\.\pipe\ytm-tui` with `/tmp/ytm-tui.sock`
-- Replace `PeekNamedPipe` with `select()` or `socket.recv(..., MSG_PEEK)`
-- Pass `--input-ipc-server=/tmp/ytm-tui.sock` to mpv (mpv supports this on Unix)
-- Textual, yt-dlp, mpv all cross-platform; only IPC layer is Windows-specific
+**Install mpv per OS:**
+- macOS: `brew install mpv`
+- Debian/Ubuntu: `sudo apt install mpv ffmpeg`
+- Arch: `sudo pacman -S mpv`
+- Windows: `scoop install mpv` (or from mpv.io)
 
-**Effort to Mac-compatible:** ~2–3 hours for IPC refactoring. Textual and yt-dlp need no changes.
+Then `pip install -r requirements.txt`. If running in a virtualenv, ensure mpv
+can stream YouTube — `_find_ytdlp()` handles this by pointing mpv at the venv's
+yt-dlp automatically.
 
 ## File Guide
 

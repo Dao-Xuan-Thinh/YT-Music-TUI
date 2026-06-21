@@ -20,6 +20,7 @@ Keybindings:
   q         Quit
 """
 
+import os
 import threading
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -47,6 +48,14 @@ THEME_CYCLE = [
     'tokyo-night', 'dracula', 'catppuccin-mocha', 'gruvbox', 'nord',
     'rose-pine', 'monokai', 'flexoki', 'solarized-dark', 'catppuccin-macchiato',
 ]
+
+# OS-aware example paths for settings placeholders
+if os.name == 'nt':
+    _EG_COOKIES = 'e.g. C:\\Users\\you\\cookies.txt'
+    _EG_FOLDER  = 'e.g. C:\\Users\\you\\Music'
+else:
+    _EG_COOKIES = 'e.g. ~/cookies.txt'
+    _EG_FOLDER  = 'e.g. ~/Music'
 
 def _fmt(seconds):
     if not seconds:
@@ -97,10 +106,10 @@ class SettingsScreen(ModalScreen):
         with Vertical(id='settings-box'):
             yield Label('Cookies file path (Netscape format .txt):')
             yield Input(value=self._current_cookies, id='cookies-input',
-                        placeholder='e.g. C:\\Users\\you\\cookies.txt')
+                        placeholder=_EG_COOKIES)
             yield Label('Local audio folder (for offline mode — press o):')
             yield Input(value=self._current_folder, id='folder-input',
-                        placeholder='e.g. C:\\Users\\you\\Music')
+                        placeholder=_EG_FOLDER)
             with Horizontal(id='btn-row'):
                 yield Button('Save', id='btn-save', variant='primary')
                 yield Button('Cancel', id='btn-cancel')

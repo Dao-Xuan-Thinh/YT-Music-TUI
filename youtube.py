@@ -63,7 +63,9 @@ def _ytm_track_to_dict(t):
         'title': t.get('title') or 'Unknown',
         'uploader': artists,
         'duration': _parse_ytm_duration(t),
-        'url': f'https://music.youtube.com/watch?v={vid}',
+        # Canonical www URL (same videoId): mpv's ytdl_hook handles it on every
+        # OS, whereas music.youtube.com/watch URLs fail to load via mpv on Linux.
+        'url': f'https://www.youtube.com/watch?v={vid}',
         'thumbnail': thumbs[-1]['url'] if thumbs else '',
     }
 

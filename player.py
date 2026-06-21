@@ -1,22 +1,42 @@
-"""
+r"""
 player.py — Audio playback backend (mpv with IPC, fallback to ffplay).
 
-mpv runs in --idle mode; URLs loaded via IPC 'loadfile'.
-A single event-loop thread owns all pipe I/O to avoid FileIO lock contention:
-  PeekNamedPipe  → non-blocking check for data
-  readline loop  → read one JSON line when data is available
-  send queue     → main thread enqueues commands; loop drains queue
+mpv runs in --idle mode; URLs loaded via IPC 'loadfile'. A single event-loop
+thread owns all I/O to avoid lock contention. The byte channel to mpv is
+platform-specific (a transport):
+  - Windows : named pipe  \\.\pipe\<name>   (PeekNamedPipe + readline)
+  - Unix    : AF_UNIX socket  /tmp/<name>.sock  (select + recv)
+The mpv daemon / loadfile / observe-property model is identical on every OS.
 """
 
-import ctypes
 import json
-import msvcrt
 import os
-import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
+import queue
+
+# ── Platform branch ───────────────────────────────────────────────────────────
+# Unique per-process endpoint so each run talks to the mpv IT started, never a
+# stale --idle daemon from a prior run/crash.
+_IS_WINDOWS = os.name == 'nt'
+_PID = os.getpid()
+
+if _IS_WINDOWS:
+    import ctypes
+    import msvcrt
+    _kernel32 = ctypes.windll.kernel32
+    _IPC_ARG = f'ytm-tui-{_PID}'                  # mpv creates \\.\pipe\<name>
+    _CONNECT_TARGET = r'\\.\pipe' + '\\' + _IPC_ARG
+else:
+    import socket
+    import select
+    # Short path under /tmp avoids the AF_UNIX ~104-char path limit (macOS $TMPDIR
+    # can be long). mpv creates this socket file on launch.
+    _IPC_ARG = f'/tmp/ytm-tui-{_PID}.sock'
+    _CONNECT_TARGET = _IPC_ARG
 
 
 def detect_backend():
@@ -30,19 +50,27 @@ def detect_backend():
     )
 
 
-# ── mpv IPC ───────────────────────────────────────────────────────────────────
+def _find_ytdlp():
+    """
+    Locate a yt-dlp executable for mpv's ytdl_hook.
 
-# Unique pipe name per process so each app run talks to the mpv IT started,
-# never a stale --idle daemon left over from a prior run/crash. On Windows two
-# mpv processes can't own the same named pipe; reusing a fixed name made the IPC
-# connect to a leftover (paused) mpv → no audio.
-_PIPE_ARG  = f'ytm-tui-{os.getpid()}'
-_PIPE_PATH = r'\\.\pipe' + '\\' + _PIPE_ARG
-_kernel32  = ctypes.windll.kernel32
+    mpv runs as a separate process and resolves yt-dlp from its own PATH. When
+    this app runs inside a virtualenv, yt-dlp lives next to the venv's Python and
+    is NOT on the system PATH, so mpv can't stream YouTube. Prefer the binary
+    beside our interpreter, then fall back to PATH.
+    """
+    exe = 'yt-dlp.exe' if _IS_WINDOWS else 'yt-dlp'
+    cand = os.path.join(os.path.dirname(sys.executable), exe)
+    if os.path.isfile(cand):
+        return cand
+    # venvs on Unix sometimes keep scripts in a Scripts/bin sibling
+    return shutil.which('yt-dlp')
 
+
+# ── IPC transports (platform-specific byte channel to mpv) ────────────────────
 
 def _peek_pipe(fd):
-    """Return number of bytes available to read from Windows named pipe fd."""
+    """Return number of bytes available to read from a Windows named pipe fd."""
     try:
         handle = msvcrt.get_osfhandle(fd)
         avail = ctypes.c_ulong(0)
@@ -52,19 +80,122 @@ def _peek_pipe(fd):
         return 0
 
 
+class _WinPipeTransport:
+    """Windows named-pipe transport (PeekNamedPipe + blocking readline)."""
+
+    def __init__(self):
+        self._conn = None
+        self._fd   = None
+
+    def connect(self, retries=30, delay=0.15):
+        for _ in range(retries):
+            try:
+                self._conn = open(_CONNECT_TARGET, 'r+b', buffering=0)
+                self._fd   = self._conn.fileno()
+                return True
+            except OSError:
+                time.sleep(delay)
+        return False
+
+    def write(self, data):
+        self._conn.write(data)
+
+    def poll_line(self):
+        """Return one complete line (without newline) if data is ready, else None."""
+        if _peek_pipe(self._fd) <= 0:
+            return None
+        raw = b''
+        while True:
+            ch = self._conn.read(1)
+            if not ch or ch == b'\n':
+                break
+            raw += ch
+        return raw or None
+
+    def close(self):
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+            self._fd   = None
+
+
+class _UnixSocketTransport:
+    """macOS/Linux AF_UNIX socket transport (select + recv with line buffering)."""
+
+    def __init__(self):
+        self._sock = None
+        self._buf  = b''
+
+    def connect(self, retries=30, delay=0.15):
+        for _ in range(retries):
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.connect(_CONNECT_TARGET)
+                self._sock = s
+                return True
+            except OSError:
+                time.sleep(delay)
+        return False
+
+    def write(self, data):
+        self._sock.sendall(data)
+
+    def _pop_line(self):
+        nl = self._buf.find(b'\n')
+        if nl >= 0:
+            line, self._buf = self._buf[:nl], self._buf[nl + 1:]
+            return line
+        return None
+
+    def poll_line(self):
+        """Return one complete line (without newline) if available, else None."""
+        line = self._pop_line()
+        if line is not None:
+            return line
+        try:
+            readable, _, _ = select.select([self._sock], [], [], 0)
+            if readable:
+                chunk = self._sock.recv(4096)
+                if chunk:
+                    self._buf += chunk
+                    return self._pop_line()
+        except OSError:
+            pass
+        return None
+
+    def close(self):
+        if self._sock:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+        # mpv usually removes its socket on exit; clean up best-effort just in case.
+        try:
+            if os.path.exists(_CONNECT_TARGET):
+                os.unlink(_CONNECT_TARGET)
+        except Exception:
+            pass
+
+
+def _make_transport():
+    return _WinPipeTransport() if _IS_WINDOWS else _UnixSocketTransport()
+
+
 class _MpvIPC:
     """
-    Single-thread event loop for mpv's named pipe IPC.
+    Single-thread event loop over a platform transport to mpv's JSON IPC.
 
     One thread owns ALL reads and writes:
-      - polls PeekNamedPipe (non-blocking) before each read
-      - drains an outbound command queue before each poll
+      - drains an outbound command queue, then polls the transport for a line
     Main thread enqueues commands and waits on threading.Event for responses.
     """
 
     def __init__(self):
-        self._conn      = None
-        self._fd        = None
+        self._transport = None
         self._running   = False
         self._loop_th   = None
 
@@ -80,31 +211,24 @@ class _MpvIPC:
     # ── Connection ─────────────────────────────────────────────────────────
 
     def connect(self, retries=30, delay=0.15):
-        for _ in range(retries):
-            try:
-                self._conn = open(_PIPE_PATH, 'r+b', buffering=0)
-                self._fd   = self._conn.fileno()
-                self._running = True
-                self._loop_th = threading.Thread(
-                    target=self._loop, daemon=True, name='mpv-ipc'
-                )
-                self._loop_th.start()
-                self._fire(['observe_property', 1, 'time-pos'])
-                self._fire(['observe_property', 2, 'duration'])
-                return True
-            except OSError:
-                time.sleep(delay)
-        return False
+        transport = _make_transport()
+        if not transport.connect(retries=retries, delay=delay):
+            return False
+        self._transport = transport
+        self._running = True
+        self._loop_th = threading.Thread(
+            target=self._loop, daemon=True, name='mpv-ipc'
+        )
+        self._loop_th.start()
+        self._fire(['observe_property', 1, 'time-pos'])
+        self._fire(['observe_property', 2, 'duration'])
+        return True
 
     def disconnect(self):
         self._running = False
-        if self._conn:
-            try:
-                self._conn.close()
-            except Exception:
-                pass
-            self._conn = None
-            self._fd   = None
+        if self._transport:
+            self._transport.close()
+            self._transport = None
         for entry in list(self._pending.values()):
             entry['evt'].set()
         self._pending.clear()
@@ -117,32 +241,25 @@ class _MpvIPC:
             while True:
                 try:
                     data = self._cmd_q.get_nowait()
-                    self._conn.write(data)
+                    self._transport.write(data)
                 except queue.Empty:
                     break
                 except Exception:
                     if not self._running:
                         return
 
-            # 2. Non-blocking check: data available?
-            if _peek_pipe(self._fd) > 0:
+            # 2. Non-blocking: read a line if one is ready
+            try:
+                raw = self._transport.poll_line()
+            except Exception:
+                raw = None
+            if raw:
                 try:
-                    raw = self._readline()
-                    if raw:
-                        self._dispatch(json.loads(raw.decode()))
+                    self._dispatch(json.loads(raw.decode()))
                 except Exception:
                     pass
             else:
                 time.sleep(0.01)
-
-    def _readline(self):
-        raw = b''
-        while True:
-            ch = self._conn.read(1)
-            if not ch or ch == b'\n':
-                break
-            raw += ch
-        return raw
 
     def _dispatch(self, obj):
         evt = obj.get('event')
@@ -239,9 +356,12 @@ class Player:
                 return
             cmd = [
                 'mpv', '--no-video', '--ytdl=yes',
-                f'--input-ipc-server={_PIPE_ARG}',
+                f'--input-ipc-server={_IPC_ARG}',
                 '--idle=yes', '--really-quiet',
             ]
+            ytdlp = _find_ytdlp()
+            if ytdlp:
+                cmd.append(f'--script-opts=ytdl_hook-ytdl_path={ytdlp}')
             if self.cookies_file and os.path.isfile(self.cookies_file):
                 cmd.append(f'--ytdl-raw-options=cookiefile={self.cookies_file}')
             self._proc = subprocess.Popen(
@@ -285,6 +405,9 @@ class Player:
             # IPC unavailable — launch mpv directly with URL
             self._shutdown_mpv()
             cmd = ['mpv', '--no-video', '--ytdl=yes', '--really-quiet', url]
+            ytdlp = _find_ytdlp()
+            if ytdlp:
+                cmd.append(f'--script-opts=ytdl_hook-ytdl_path={ytdlp}')
             if self.cookies_file and os.path.isfile(self.cookies_file):
                 cmd.append(f'--ytdl-raw-options=cookiefile={self.cookies_file}')
             self._proc = subprocess.Popen(
