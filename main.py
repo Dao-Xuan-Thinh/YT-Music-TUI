@@ -249,6 +249,12 @@ class YTMApp(App):
             self._do_search(query)
 
     def _do_search(self, query: str) -> None:
+        # YouTube Music playlist URLs load progressively (first page, then all)
+        playlist_id = youtube.ytm_playlist_id(query)
+        if playlist_id:
+            self._do_load_playlist(playlist_id)
+            return
+
         self._set_status(f'Searching "{query}"…')
         self._results = []
 
@@ -262,6 +268,27 @@ class YTMApp(App):
                 self.call_from_thread(self._populate_results, results)
             except Exception as exc:
                 self.call_from_thread(self._set_status, f'Search error: {exc}')
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _do_load_playlist(self, playlist_id: str) -> None:
+        """Load a large YouTube Music playlist: show first page fast, then all."""
+        self._set_status('Loading playlist… first tracks')
+        self._results = []
+
+        def _run():
+            try:
+                first = youtube.ytm_playlist(playlist_id, limit=100)
+                if first:
+                    self.call_from_thread(self._populate_results, first)
+                    self.call_from_thread(
+                        self._set_status,
+                        f'{len(first)} tracks loaded — fetching the rest…'
+                    )
+                full = youtube.ytm_playlist(playlist_id, limit=None)
+                self.call_from_thread(self._populate_results, full)
+            except Exception as exc:
+                self.call_from_thread(self._set_status, f'Playlist error: {exc}')
 
         threading.Thread(target=_run, daemon=True).start()
 
