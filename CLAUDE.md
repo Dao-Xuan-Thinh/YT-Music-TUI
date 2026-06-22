@@ -139,6 +139,13 @@ Then `pip install -r requirements.txt`. If running in a virtualenv, ensure mpv
 can stream YouTube — `_find_ytdlp()` handles this by pointing mpv at the venv's
 yt-dlp automatically.
 
+**macOS Python gotcha:** the system `python3` is 3.9, and current yt-dlp (the one
+that actually works with today's YouTube) requires **Python 3.10+**. On 3.9, pip
+caps yt-dlp at an old release that fails with HTTP 403 / "format not available"
+(plays nothing). Use a newer Python: `brew install python@3.12` and build the
+venv with it. `run.sh` does this automatically — it prefers `python3.13/3.12/3.11/3.10`
+over the bare `python3`, and rebuilds an existing venv that's on an old Python.
+
 ## File Guide
 
 | File | Purpose |

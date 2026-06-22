@@ -333,7 +333,15 @@ class Player:
     """
 
     def __init__(self, backend=None, cookies_file=None):
-        self.backend      = backend or detect_backend()
+        if backend:
+            self.backend = backend
+        else:
+            try:
+                self.backend = detect_backend()
+            except RuntimeError:
+                # No mpv/ffplay — the app still runs (search/browse work);
+                # playback stays disabled with a clear message instead of crashing.
+                self.backend = None
         self.cookies_file = cookies_file
         self._proc        = None
         self._ipc         = None
@@ -351,6 +359,8 @@ class Player:
     # ── mpv daemon management ─────────────────────────────────────────────
 
     def _ensure_mpv_running(self):
+        if self.backend != 'mpv':
+            return
         with self._start_lock:
             if self._proc and self._proc.poll() is None:
                 return
@@ -387,6 +397,10 @@ class Player:
     # ── Playback ──────────────────────────────────────────────────────────
 
     def play(self, url):
+        if not self.backend:
+            raise RuntimeError(
+                'No audio backend. Install mpv (macOS: brew install mpv) or ffmpeg.'
+            )
         if self.backend == 'mpv':
             self._play_mpv(url)
         else:

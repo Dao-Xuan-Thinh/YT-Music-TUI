@@ -341,6 +341,12 @@ class YTMApp(App):
         threading.Thread(target=self._init_player, daemon=True).start()
 
     def _init_player(self) -> None:
+        if self._player.backend is None:
+            self.call_from_thread(
+                self._set_status,
+                'No audio backend found — install mpv (macOS: brew install mpv) to enable playback.'
+            )
+            return
         self._player._ensure_mpv_running()
         self._apply_volume()
 
