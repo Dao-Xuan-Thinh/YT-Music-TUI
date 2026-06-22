@@ -71,11 +71,16 @@ def _ytm_track_to_dict(t):
 
 
 def ytm_playlist_id(inp):
-    """Return the playlist id if inp is a YouTube Music playlist URL, else None."""
+    """
+    Return the playlist id if inp is a YouTube/YT-Music *playlist* URL, else None.
+    Accepts any youtube.com host (www / music / m / plain) so a copied
+    www.youtube.com/playlist URL still routes through ytmusicapi (full list),
+    not the yt-dlp path that caps at ~108. Watch URLs (?v=…&list=…) are excluded.
+    """
     if not _is_url(inp):
         return None
     parsed = urllib.parse.urlparse(inp)
-    if 'music.youtube.com' not in parsed.netloc:
+    if 'youtube.com' not in parsed.netloc:
         return None
     params = urllib.parse.parse_qs(parsed.query)
     if 'list' in params and 'watch' not in parsed.path:
@@ -199,9 +204,9 @@ def resolve(inp, source='ytm', cookies_file=None):
     params = urllib.parse.parse_qs(parsed.query)
     is_playlist = 'list' in params and 'watch' not in parsed.path
 
-    # YouTube Music playlist → ytmusicapi (full pagination + native artists).
-    # Falls back to the yt-dlp path on any failure.
-    if is_playlist and 'music.youtube.com' in parsed.netloc:
+    # Any YouTube playlist URL → ytmusicapi (full pagination + native artists).
+    # Falls back to the yt-dlp path on any failure (e.g. non-music playlists).
+    if is_playlist and 'youtube.com' in parsed.netloc:
         playlist_id = params['list'][0]
         try:
             results = ytm_playlist(playlist_id, limit=None)

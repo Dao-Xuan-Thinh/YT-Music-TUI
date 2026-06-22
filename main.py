@@ -403,7 +403,8 @@ class YTMApp(App):
         threading.Thread(target=_run, daemon=True).start()
 
     def _do_load_playlist(self, playlist_id: str) -> None:
-        """Load a large YouTube Music playlist: show first page fast, then all."""
+        """Load a large playlist: show first page fast (ytmusicapi), then all.
+        Falls back to yt-dlp for playlists ytmusicapi can't serve (non-music)."""
         self._set_status('Loading playlist… first tracks')
         self._results = []
 
@@ -417,9 +418,28 @@ class YTMApp(App):
                         f'{len(first)} tracks loaded — fetching the rest…'
                     )
                 full = youtube.ytm_playlist(playlist_id, limit=None)
-                self.call_from_thread(self._populate_results, full)
-            except Exception as exc:
-                self.call_from_thread(self._set_status, f'Playlist error: {exc}')
+                if full:
+                    self.call_from_thread(self._populate_results, full)
+                    return
+                raise RuntimeError('ytmusicapi returned no tracks')
+            except Exception:
+                # Fallback: yt-dlp (non-music playlists; may cap very large ones)
+                try:
+                    url = f'https://www.youtube.com/playlist?list={playlist_id}'
+                    opts = youtube._ydl_opts(
+                        self._config.valid_cookies(),
+                        {'extract_flat': 'in_playlist', 'lazy_playlist': False},
+                    )
+                    import yt_dlp
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                    results = [
+                        youtube._entry_to_dict(e)
+                        for e in (info.get('entries') or []) if e
+                    ]
+                    self.call_from_thread(self._populate_results, results)
+                except Exception as exc:
+                    self.call_from_thread(self._set_status, f'Playlist error: {exc}')
 
         threading.Thread(target=_run, daemon=True).start()
 
