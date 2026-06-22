@@ -415,6 +415,10 @@ class Player:
             self._ipc.position = 0.0
             self._ipc.duration = 0.0
             self._ipc.command('loadfile', url, 'replace')
+            # mpv's 'pause' property persists across loadfile. Without this, a
+            # track loaded after a pause (e.g. 'next' while paused) stays paused
+            # while the UI shows it playing. Force-resume on every explicit play.
+            self._ipc.set_property('pause', False)
         else:
             # IPC unavailable — launch mpv directly with URL
             self._shutdown_mpv()
