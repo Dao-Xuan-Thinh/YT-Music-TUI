@@ -81,6 +81,30 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
   local folder without re-typing the path, plus optional caching of scanned tags
   (mutagen scan of a big library is slow on every load). (`offline.py`)
 
+- [ ] **Library management UI.** `library.py` already has `delete_playlist`,
+  `unpin_folder`, `delete_session`, and `toggle_like` — but no UI invokes them.
+  Add delete/rename on the home screen (e.g. `d` on a Folders/Liked/session entry)
+  so the library doesn't only grow. (`main.HomeScreen`)
+
+- [ ] **Append to / overwrite-confirm playlists.** `save_playlist(name, …)`
+  silently overwrites a same-named playlist. Add "append to existing playlist"
+  and confirm before clobbering. (`library.save_playlist`, `main.action_save_playlist`)
+
+- [ ] **Queue editing: reorder + remove.** In queue view, `J`/`K` to move the
+  highlighted track up/down and `d` to remove it. Complements `p` (play-next),
+  which is the only queue edit today. (`main` queue actions)
+
+- [ ] **Radio / autoplay continuation.** When the queue ends with repeat off,
+  fetch related tracks (`ytmusicapi.get_watch_playlist`) and keep playing instead
+  of stopping. Toggleable. (`main._on_track_end`)
+
+- [ ] **Play a playlist shuffled from home.** Selecting a Folders entry could
+  offer "play shuffled" directly, not just load into the library view.
+
+- [ ] **Export / import library.** `library.json` is already portable JSON — a
+  small export/import (or just documenting that copying the file moves your
+  playlists between machines) makes it shareable across your Windows/Mac/Linux boxes.
+
 ---
 
 ## 3. Quality-of-life
@@ -117,10 +141,12 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
 
 - [ ] **Remember last query** across launches (last mode is now remembered).
 
-- [ ] **Jump to now-playing / mouse seek on the progress bar** (still open).
-
 - [ ] **Loading spinner / indeterminate progress** during search and big
   playlist fetches, instead of a static "Loading…" string.
+
+- [ ] **Liked indicator in rows.** Show a `♥` marker next to tracks already in
+  the liked set (library has `is_liked()`), so `l` toggling is visible at a glance.
+  (`main._render_table`)
 
 ---
 
@@ -141,9 +167,27 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
   the AF_UNIX path-length limit, but on locked-down systems consider
   `$XDG_RUNTIME_DIR` when it's short enough. (`player.py:38`)
 
+- [ ] **Atomic JSON writes.** `config.py` / `library.py` write JSON in place; a
+  crash mid-write (or two writers) can truncate the file. Write to a temp file and
+  `os.replace()` it into position. (`config._save`, `library._save`)
+
+- [ ] **Library writes happen from threads.** `add_recent()` (main thread) and
+  `pin_folder()` (scan thread) both write `library.json`; harmless today but a
+  shared lock (or routing all writes through the event loop) would be safer.
+
+- [ ] **Periodic session autosave.** Sessions are saved only on a clean quit, so
+  a crash/`kill` loses resume state. Snapshot every ~30s via `set_interval` too.
+  (`main._save_session`)
+
 ---
 
 ## 5. Code health / tests
+
+- [ ] **Commit the headless smoke tests as `tests/`.** The Textual `run_test`
+  scripts written during the home-screen/feature pass (home flow, populate/render,
+  footer, `?`, shuffle/repeat, resume-with-seek, repeat-all wrap, save-playlist,
+  confirm-quit, session save) were throwaway — port them to `pytest` with a stub
+  player so they run in CI without mpv.
 
 - [ ] **Unit tests for queue logic.** `add_queue`, `play_next`, auto-advance,
   and filter→master-index mapping (`_visible_results`/`_highlighted_track`) are
@@ -168,8 +212,12 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
 
 ## Suggested next-up (highest value / lowest risk)
 
-1. Wire up `max_results` or remove it (§1).
-2. Debounce config writes (§1).
-3. Shuffle + repeat (§2) — small, high daily value, works in both modes.
-4. Help overlay `?` + auto-clearing status line (§3).
-5. `~` expansion & path validation in Settings (§3).
+The original top items (max_results, debounce, shuffle/repeat, help overlay, `~`
+expansion) all shipped. Remaining high-value / low-risk picks:
+
+1. **Library management UI** (§2) — delete/rename playlists, unlike, delete
+   sessions; otherwise the library only ever grows.
+2. **Liked indicator in rows** + **status line auto-clear** (§3) — small, daily.
+3. **Atomic JSON writes** (§4) — cheap insurance against corrupting config/library.
+4. **Queue editing: reorder + remove** (§2) — rounds out queue control.
+5. **Commit the headless tests as `tests/`** (§5) — locks in this session's behavior.
