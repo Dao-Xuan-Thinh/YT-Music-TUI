@@ -55,4 +55,4 @@ if [ ! -d .venv ]; then
     .venv/bin/pip install -r requirements.txt
 fi
 
-exec .venv/bin/python main.py
+exec .venv/bin/python main.py "$@"
