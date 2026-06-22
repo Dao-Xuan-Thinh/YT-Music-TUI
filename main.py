@@ -25,6 +25,7 @@ from textual.screen import ModalScreen, Screen
 
 import youtube
 import player as player_module
+import updater
 from config import Config, _expand
 from library import Library
 
@@ -73,6 +74,7 @@ KEYS_HELP = [
     ('+ / -',    'Volume up / down'),
     ('← / →',    'Seek -10s / +10s'),
     ('s',        'Settings (cookies + local folder)'),
+    ('u',        'Check for updates / update the app'),
     ('?',        'This help'),
     ('q',        'Quit'),
 ]
@@ -515,6 +517,7 @@ class YTMApp(App):
         Binding('left', 'seek_back', 'Seek-', show=False),
         Binding('right', 'seek_fwd', 'Seek+', show=False),
         Binding('s', 'settings', 'Settings', show=False),
+        Binding('u', 'update', 'Update', show=False),
         Binding('escape', 'clear_filter', 'Clear filter', show=False),
         Binding('question_mark', 'show_keys', 'Keys', show=True),
         Binding('q', 'quit', 'Quit', show=False),
@@ -546,6 +549,8 @@ class YTMApp(App):
         self._queue_idx = -1
         self._filter_text = ''
         self._cfg_timer = None
+        self._update_available = False   # set by the boot-time update check
+        self._restart_requested = False  # set when an update asks for a relaunch
         self.search_source = self._config.search_source
         self.volume        = self._config.volume
         self.app_mode      = self._config.app_mode
@@ -585,6 +590,7 @@ class YTMApp(App):
         self._update_mode_ui()
         self._update_footer()
         threading.Thread(target=self._init_player, daemon=True).start()
+        threading.Thread(target=self._check_for_update, daemon=True).start()
         # Boot straight into the home screen.
         self.push_screen(HomeScreen(self._lib), self._on_home_result)
 
@@ -602,6 +608,23 @@ class YTMApp(App):
             )
         self._player._ensure_mpv_running()
         self._apply_volume(save=False)
+
+    # ── Self-update ────────────────────────────────────────────────────────
+
+    def _check_for_update(self) -> None:
+        """Boot-time, non-blocking: fetch and flag if newer code is available."""
+        if not updater.available_backend():
+            return
+        info = updater.check_for_update()
+        if info.get('available'):
+            self.call_from_thread(self._on_update_available, info['behind'])
+
+    def _on_update_available(self, behind: int) -> None:
+        self._update_available = True
+        self._set_status(
+            f'Update available — {behind} new commit(s). Press u to update.'
+        )
+        self._update_footer()
 
     # ── Home screen result ─────────────────────────────────────────────────
 
@@ -953,8 +976,9 @@ class YTMApp(App):
         rep = REPEAT_LABEL[self.repeat]
         qpos = (f'{self._queue_idx + 1}/{len(self._queue)}'
                 if self._queue and self._queue_idx >= 0 else '0/0')
+        upd = '    ⬆ update (u)' if self._update_available else ''
         left = (f'{mode} · {src}    {shuf} · {rep}    '
-                f'♪ {qpos}    🔊 {self.volume}%    🎨 {self.theme}')
+                f'♪ {qpos}    🔊 {self.volume}%    🎨 {self.theme}{upd}')
         try:
             self.query_one('#footer-left', Static).update(left)
         except NoMatches:
@@ -1216,6 +1240,105 @@ class YTMApp(App):
             _after,
         )
 
+    # ── Self-update action ─────────────────────────────────────────────────
+
+    def action_update(self) -> None:
+        if not updater.available_backend():
+            self._set_status(
+                'Self-update unavailable (not a git checkout) — update with git pull.'
+            )
+            return
+        self._set_status('Checking for updates…')
+
+        def _run():
+            info = updater.check_for_update()
+            self.call_from_thread(self._after_update_check, info)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _after_update_check(self, info) -> None:
+        if info.get('error'):
+            self._set_status(f'Update check failed: {info["error"]}')
+            return
+        if not info.get('available'):
+            self._update_available = False
+            self._set_status('Already up to date.')
+            self._update_footer()
+            return
+
+        behind = info['behind']
+
+        def _confirmed(yes):
+            if yes:
+                self._do_apply_update()
+            else:
+                self._set_status('Update postponed — press u when ready.')
+
+        self.push_screen(
+            ConfirmScreen(
+                f'Update available: {behind} new commit(s).\n'
+                'Download and install now? (restarts the app)'
+            ),
+            _confirmed,
+        )
+
+    def _do_apply_update(self) -> None:
+        self._set_status('Updating… pulling latest code')
+
+        def _run():
+            result = updater.apply_update()
+            self.call_from_thread(self._after_update_applied, result)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _after_update_applied(self, result) -> None:
+        if result.get('error') and not result.get('ok'):
+            self._set_status(f'Update failed: {result["error"]}')
+            return
+        if not result.get('updated'):
+            self._update_available = False
+            self._set_status('Already up to date.')
+            self._update_footer()
+            return
+
+        # Updated. If pip failed it's non-fatal but worth surfacing.
+        if result.get('error'):
+            self._set_status(result['error'])
+
+        def _confirmed(yes):
+            if yes:
+                self._restart_app()
+            else:
+                self._set_status(
+                    f'{result["message"]} — restart the app to use the new version.'
+                )
+
+        self.push_screen(
+            ConfirmScreen(
+                f'{result["message"]}.\nRestart now to apply the update?'
+            ),
+            _confirmed,
+        )
+
+    def _restart_app(self) -> None:
+        """Save state, tear down the player, and ask __main__ to re-exec.
+
+        The actual os.execv happens after app.run() returns so Textual can first
+        restore the terminal (exit raw mode / alt screen) — re-exec'ing mid-loop
+        would leave the terminal corrupted.
+        """
+        self._save_session()
+        try:
+            self._config.flush()
+        except Exception:
+            pass
+        try:
+            self._player.quit()
+        except Exception:
+            pass
+        self._restart_requested = True
+        self.exit()
+
     # ── Filter ────────────────────────────────────────────────────────────
 
     def action_filter(self) -> None:
@@ -1282,3 +1405,7 @@ class YTMApp(App):
 if __name__ == '__main__':
     app = YTMApp()
     app.run()
+    # If an in-app update asked for a relaunch, re-exec now that Textual has
+    # restored the terminal so the freshly-pulled code takes effect.
+    if getattr(app, '_restart_requested', False):
+        updater.restart()

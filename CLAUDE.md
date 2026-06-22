@@ -21,6 +21,7 @@ player.py       ← mpv IPC + ffplay fallback; single-thread event loop for non-
 config.py       ← JSON persistence: cookies_file, volume, search_source, theme, app_mode
 library.py      ← JSON persistence: liked songs, saved playlists, pinned folders, recent, sessions
 offline.py      ← Local audio folder scanner (mutagen tags) for offline mode
+updater.py      ← Self-update via git (check/pull/deps refresh) + re-exec on restart
 ```
 
 ### Core Flow
@@ -73,7 +74,7 @@ Install with: `pip install -r requirements.txt`
 - Prints current settings
 
 **main.py (full TUI):** `python main.py`
-- Keybindings: `/` search · `f` filter · `space` pause · `n` next · `p` play-next · `a` +queue · `x` stop · `Q` queue/library · `z` shuffle · `r` repeat · `l` like · `w` save playlist · `h` home · `t` source · `o` online/offline · `c`/`C` theme · `+/-` volume · `←→` seek · `s` settings · `?` key list · `q` quit
+- Keybindings: `/` search · `f` filter · `space` pause · `n` next · `p` play-next · `a` +queue · `x` stop · `Q` queue/library · `z` shuffle · `r` repeat · `l` like · `w` save playlist · `h` home · `t` source · `o` online/offline · `c`/`C` theme · `+/-` volume · `←→` seek · `s` settings · `u` update · `?` key list · `q` quit
 - The footer is a custom info bar (mode/source/shuffle/repeat/queue/volume/theme); `?` is the only key hint and opens the full `KeybindingsScreen`.
 
 ## Critical Gotchas
@@ -164,6 +165,7 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 | `config.py` | JSON settings persistence (cookies, volume, source, theme, app_mode) |
 | `library.py` | JSON persistence: liked, playlists, pinned folders, recent, sessions |
 | `offline.py` | Local audio folder scanner (mutagen tags) |
+| `updater.py` | Self-update: git fetch/compare, ff-only pull, deps refresh, re-exec |
 | `requirements.txt` | Python dependencies |
 | `config.json` | Auto-created runtime config (gitignored) |
 | `library.json` / `sessions.json` | Auto-created library + resume sessions (gitignored) |
@@ -192,4 +194,9 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 
 **See all keys:** `?`
 
-**Quit:** `q` (confirms + saves a session when something is playing)
+**Update the app:** `u` — fetches from the git remote; if newer commits exist it
+confirms, fast-forward-pulls, reinstalls deps when `requirements.txt` changed, then
+offers to restart (re-execs the interpreter). A background check at boot flags an
+available update in the footer (`⬆ update (u)`). Requires the install to be a git
+checkout with an upstream remote; otherwise `u` reports "update with git pull".
+Refuses to run if the working tree has local changes (stash/commit first).
