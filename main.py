@@ -530,11 +530,12 @@ class YTMApp(App):
     shuffle: reactive[bool]      = reactive(False)
     repeat: reactive[str]        = reactive('off')      # 'off' | 'one' | 'all'
     now_playing: reactive[str]   = reactive('')
-    position: reactive[float]    = reactive(0.0)
-    duration: reactive[float]    = reactive(0.0)
-    is_paused: reactive[bool]    = reactive(False)
     status_msg: reactive[str]    = reactive('Ready — press / to search')
     volume: reactive[int]        = reactive(80)
+    # position / duration / is_paused are NOT reactive on purpose: they're polled
+    # every second and rendered manually into the player-bar Statics. As reactives
+    # they would each trigger a full-screen App repaint per tick — the periodic
+    # stutter felt while scrolling. Plain attributes + manual update avoid that.
 
     def __init__(self):
         super().__init__()
@@ -551,6 +552,11 @@ class YTMApp(App):
         self._cfg_timer = None
         self._update_available = False   # set by the boot-time update check
         self._restart_requested = False  # set when an update asks for a relaunch
+        # Polled playback state (plain attrs — see note on the reactive block).
+        self.position = 0.0
+        self.duration = 0.0
+        self.is_paused = False
+        self._last_bar_sig = None        # skip redundant player-bar redraws
         self.search_source = self._config.search_source
         self.volume        = self._config.volume
         self.app_mode      = self._config.app_mode
@@ -940,6 +946,14 @@ class YTMApp(App):
         self.position  = self._player.get_position()
         self.duration  = self._player.get_duration()
         self.is_paused = self._player.is_paused()
+        # Only redraw the player bar when something visible actually changed.
+        # While paused or idle the position is frozen, so this skips the redraw
+        # (and the repaint) entirely — no work happens on most ticks.
+        sig = (int(self.position), int(self.duration), self.is_paused,
+               self.now_playing, self.volume, self._queue_idx, len(self._queue))
+        if sig == self._last_bar_sig:
+            return
+        self._last_bar_sig = sig
         self._update_player_bar()
 
     def _update_player_bar(self) -> None:
@@ -1016,6 +1030,8 @@ class YTMApp(App):
     def action_toggle_pause(self) -> None:
         self._player.toggle_pause()
         self.is_paused = self._player.is_paused()
+        self._last_bar_sig = None      # force an immediate bar redraw
+        self._update_player_bar()
 
     def action_next_track(self) -> None:
         nxt = self._queue_idx + 1
