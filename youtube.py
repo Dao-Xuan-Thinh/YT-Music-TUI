@@ -191,13 +191,14 @@ def search(query, source='ytm', max_results=15, cookies_file=None):
     return deduped[:max_results]
 
 
-def resolve(inp, source='ytm', cookies_file=None):
+def resolve(inp, source='ytm', cookies_file=None, max_results=15):
     """
     Smart entry point: URL (video/playlist) or keyword search.
     Always returns a list of track dicts.
     """
     if not _is_url(inp):
-        return search(inp, source=source, cookies_file=cookies_file)
+        return search(inp, source=source, max_results=max_results,
+                      cookies_file=cookies_file)
 
     # It's a URL — determine if playlist or single video
     parsed = urllib.parse.urlparse(inp)

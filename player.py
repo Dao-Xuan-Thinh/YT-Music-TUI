@@ -204,9 +204,10 @@ class _MpvIPC:
         self._req_id    = 0
         self._pending   = {}                     # req_id -> {'evt', 'result'}
 
-        self.position   = 0.0
-        self.duration   = 0.0
-        self.on_end     = None
+        self.position      = 0.0
+        self.duration      = 0.0
+        self.on_end        = None
+        self._pending_seek = 0.0     # absolute seek to apply once the file loads
 
     # ── Connection ─────────────────────────────────────────────────────────
 
@@ -263,7 +264,14 @@ class _MpvIPC:
 
     def _dispatch(self, obj):
         evt = obj.get('event')
-        if evt == 'property-change':
+        if evt == 'file-loaded':
+            # Apply a pending resume seek now that the file is decodable.
+            # Use _fire (non-blocking) — we're on the loop thread; send() would
+            # deadlock waiting for a response this same thread must read.
+            if self._pending_seek > 0:
+                self._fire(['seek', self._pending_seek, 'absolute'])
+                self._pending_seek = 0.0
+        elif evt == 'property-change':
             name = obj.get('name')
             data = obj.get('data')
             if data is not None:
@@ -396,53 +404,79 @@ class Player:
 
     # ── Playback ──────────────────────────────────────────────────────────
 
-    def play(self, url):
+    def play(self, url, start=0.0):
+        """Play url. start>0 resumes playback at that absolute offset (seconds)."""
         if not self.backend:
             raise RuntimeError(
                 'No audio backend. Install mpv (macOS: brew install mpv) or ffmpeg.'
             )
-        if self.backend == 'mpv':
-            self._play_mpv(url)
-        else:
-            self.stop()
-            self._play_ffplay(url)
-        self._current_url = url
-        self._paused = False
+        with self._lock:
+            if self.backend == 'mpv':
+                self._play_mpv(url, start)
+            else:
+                self._play_ffplay(url, start)
+            self._current_url = url
+            self._paused = False
 
-    def _play_mpv(self, url):
+    def _play_mpv(self, url, start=0.0):
         self._ensure_mpv_running()
         if self._ipc:
             self._ipc.position = 0.0
             self._ipc.duration = 0.0
+            # Schedule the resume seek to fire on the 'file-loaded' event.
+            self._ipc._pending_seek = float(start) if start and start > 0 else 0.0
             self._ipc.command('loadfile', url, 'replace')
             # mpv's 'pause' property persists across loadfile. Without this, a
             # track loaded after a pause (e.g. 'next' while paused) stays paused
             # while the UI shows it playing. Force-resume on every explicit play.
             self._ipc.set_property('pause', False)
         else:
-            # IPC unavailable — launch mpv directly with URL
+            # IPC unavailable — launch mpv directly with the URL. Without IPC we
+            # get no position/seek/pause, but at least keep auto-advance working
+            # by watching the process exit and firing on_end (like ffplay does).
             self._shutdown_mpv()
             cmd = ['mpv', '--no-video', '--ytdl=yes', '--really-quiet', url]
+            if start and start > 0:
+                cmd.append(f'--start=+{int(start)}')
             ytdlp = _find_ytdlp()
             if ytdlp:
                 cmd.append(f'--script-opts=ytdl_hook-ytdl_path={ytdlp}')
             if self.cookies_file and os.path.isfile(self.cookies_file):
                 cmd.append(f'--ytdl-raw-options=cookiefile={self.cookies_file}')
-            self._proc = subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
+            self._proc = proc
 
-    def _play_ffplay(self, url):
-        if os.path.isfile(url):
-            def _run_local():
-                self._proc = subprocess.Popen(
-                    ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet', url],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-                self._proc.wait()
-                if self._on_end_cb:
+            def _watch():
+                proc.wait()
+                if proc is self._proc and self._on_end_cb:
                     self._on_end_cb()
-            threading.Thread(target=_run_local, daemon=True).start()
+            threading.Thread(target=_watch, daemon=True).start()
+
+    def _spawn_ffplay(self, target, start=0.0):
+        """Launch ffplay on a (local path or stream) URL and watch for end."""
+        args = ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet']
+        if start and start > 0:
+            args += ['-ss', str(int(start))]   # ffplay seeks before -i
+        args.append(target)
+        proc = subprocess.Popen(
+            args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self._proc = proc
+
+        def _watch():
+            proc.wait()
+            # Only auto-advance on a natural finish — not when this proc was
+            # superseded by the next track or an explicit stop (proc replaced).
+            if proc is self._proc and self._on_end_cb:
+                self._on_end_cb()
+        threading.Thread(target=_watch, daemon=True).start()
+
+    def _play_ffplay(self, url, start=0.0):
+        self._terminate_proc()   # supersede any previous ffplay (lock-free)
+        if os.path.isfile(url):
+            self._spawn_ffplay(url, start)
             return
 
         import yt_dlp
@@ -463,33 +497,35 @@ class Player:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             stream_url = info.get('url') or url
+        self._spawn_ffplay(stream_url, start)
 
-        def _run():
-            self._proc = subprocess.Popen(
-                ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet', stream_url],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            self._proc.wait()
-            if self._on_end_cb:
-                self._on_end_cb()
+    def _terminate_proc(self):
+        """Stop the current child process (ffplay / direct-launch mpv). Lock-free.
 
-        threading.Thread(target=_run, daemon=True).start()
+        Sets self._proc = None first so any watcher thread sees it was superseded
+        and does NOT fire on_end (prevents an auto-advance cascade)."""
+        proc = self._proc
+        self._proc = None
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    def _stop_locked(self):
+        if self.backend == 'mpv' and self._ipc:
+            self._ipc.command('stop')
+            self._ipc.position = 0.0
+            self._ipc.duration = 0.0
+        else:
+            self._terminate_proc()
+        self._paused = False
+        self._current_url = None
 
     def stop(self):
         with self._lock:
-            if self.backend == 'mpv' and self._ipc:
-                self._ipc.command('stop')
-                self._ipc.position = 0.0
-                self._ipc.duration = 0.0
-            elif self._proc and self._proc.poll() is None:
-                self._proc.terminate()
-                try:
-                    self._proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    self._proc.kill()
-                self._proc = None
-            self._paused = False
-            self._current_url = None
+            self._stop_locked()
 
     def quit(self):
         """Fully shut down the mpv daemon."""

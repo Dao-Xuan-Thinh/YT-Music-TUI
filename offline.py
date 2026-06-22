@@ -18,7 +18,7 @@ def scan_folder(folder_path: str) -> list:
     Returns list of track dicts: {id, title, uploader, duration, url, thumbnail}.
     """
     results = []
-    folder_path = os.path.abspath(folder_path)
+    folder_path = os.path.abspath(os.path.expanduser(os.path.expandvars(folder_path)))
     for root, dirs, files in os.walk(folder_path):
         dirs.sort()
         for fname in sorted(files):

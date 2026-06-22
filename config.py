@@ -14,7 +14,15 @@ _DEFAULTS = {
     'max_results':   15,
     'local_folder':  '',
     'theme':         'tokyo-night',
+    'app_mode':      'online',  # 'online' or 'offline' — remembered across runs
 }
+
+
+def _expand(path):
+    """Expand ~ and environment variables in a user-supplied path."""
+    if not path:
+        return ''
+    return os.path.expanduser(os.path.expandvars(path))
 
 
 class Config:
@@ -39,6 +47,20 @@ class Config:
                 json.dump(self._data, f, indent=2)
         except Exception as exc:
             raise RuntimeError(f'Could not save config: {exc}') from exc
+
+    def update(self, **kwargs):
+        """Set one or more values WITHOUT writing to disk (call flush() later).
+
+        Lets the app coalesce rapid changes (volume +/- spam, theme cycling) into
+        a single write instead of one disk write per keypress.
+        """
+        for key, value in kwargs.items():
+            if key in _DEFAULTS:
+                self._data[key] = value
+
+    def flush(self):
+        """Persist any pending in-memory changes."""
+        self.save()
 
     # ── Accessors ─────────────────────────────────────────────────────────
 
@@ -84,6 +106,16 @@ class Config:
         self.save()
 
     @property
+    def app_mode(self):
+        return self._data.get('app_mode') if self._data.get('app_mode') in ('online', 'offline') else 'online'
+
+    @app_mode.setter
+    def app_mode(self, mode):
+        if mode in ('online', 'offline'):
+            self._data['app_mode'] = mode
+            self.save()
+
+    @property
     def theme(self):
         """Theme name, validated against Textual's built-in themes."""
         name = self._data.get('theme') or _DEFAULTS['theme']
@@ -102,8 +134,8 @@ class Config:
             self.save()
 
     def valid_cookies(self):
-        """Return cookies_file path if the file exists, else empty string."""
-        cf = self.cookies_file
+        """Return cookies_file path (expanded) if the file exists, else empty string."""
+        cf = _expand(self.cookies_file)
         return cf if (cf and os.path.isfile(cf)) else ''
 
 
@@ -116,9 +148,11 @@ if __name__ == '__main__':
     # Round-trip test
     cfg.volume = 75
     cfg.search_source = 'both'
+    cfg.update(volume=42)       # in-memory only
+    cfg.flush()                 # now persisted
     cfg.save()
 
     cfg2 = Config()
-    assert cfg2.volume == 75
+    assert cfg2.volume == 42, cfg2.volume
     assert cfg2.search_source == 'both'
-    print('\nRound-trip OK. config.json written.')
+    print('\nRound-trip OK (incl. update/flush). config.json written.')

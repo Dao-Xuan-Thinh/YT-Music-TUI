@@ -16,63 +16,52 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
   *Fixed:* `_play_mpv()` now force-resumes (`set_property('pause', False)`) after
   every explicit `loadfile`. (`player.py`)
 
-- [ ] **`config.max_results` is dead config.** `config.py` exposes `max_results`
-  (default 15) but `main.py`/`youtube.py` never pass it — search is hard-coded to
-  `max_results=15` in `youtube.resolve()`/`search()`. Either wire it through
-  (`youtube.resolve(query, ..., max_results=self._config.max_results)`) or drop
-  the key. (`main.py:394`, `youtube.py:147`, `config.py:74`)
+- [x] **`config.max_results` is dead config.** Now threaded through
+  `youtube.resolve(..., max_results=)` and passed from `main._do_search` as
+  `self._config.max_results`.
 
-- [ ] **ffplay fallback has no transport controls.** With ffplay (no mpv),
-  `get_position`/`get_duration` always return `0.0`, and `seek`/`set_volume`/
-  `pause` are no-ops — the progress bar never moves and `space`/`←→`/`+/-` do
-  nothing. At minimum, surface "limited controls (ffplay)" in the status line so
-  it doesn't look broken. (`player.py:431`, `player.py:529-537`)
+- [~] **ffplay fallback has no transport controls.** Still no position/seek/
+  volume with ffplay, but the app now shows a "Using ffplay (limited controls)"
+  status on start, and ffplay auto-advance is fixed (see below). Full controls
+  remain mpv-only by design.
 
-- [ ] **IPC-failure fallback loses the player.** When `_ipc` can't connect,
-  `_play_mpv()` shells out to a one-shot `mpv … url` (`player.py:419`). That
-  process reports no position, ignores pause/seek/volume, and never fires
-  `on_end` (no auto-advance). Consider retrying the daemon, or wiring the
-  one-shot's `.wait()` to `on_end` like the ffplay path does.
+- [x] **IPC-failure fallback loses the player.** The one-shot `mpv … url` path
+  now spawns a watcher thread that fires `on_end` on exit (auto-advance works),
+  and honors a resume `--start=+N`. (`player.py:_play_mpv`)
 
-- [ ] **Volume thrashes the config file.** Every `+`/`-` keypress calls
-  `_apply_volume()` → `config.volume` setter → `save()` → full JSON rewrite
-  (`main.py:756`, `config.py:58`). Debounce: save on quit / after a short idle,
-  not on every keystroke. Same applies to rapid theme cycling.
+- [x] **Volume thrashes the config file.** Added `Config.update()`/`flush()`;
+  volume and theme changes now update in memory and flush via a 1s debounced
+  timer (`main._schedule_config_flush`) + on quit.
 
-- [ ] **Progressive playlist load can stomp an in-progress filter.** The full
-  fetch in `_do_load_playlist()` calls `_populate_results()`, which resets
-  `_filter_text` and `view_mode` (`main.py:420`, `main.py:465`). If the user
-  starts filtering while "fetching the rest…", their filter is wiped when the
-  full list lands. Re-apply the current filter instead of clearing.
+- [x] **Progressive playlist load can stomp an in-progress filter.**
+  `_populate_results(..., keep_filter=True)` preserves the active filter when the
+  full playlist lands.
 
-- [ ] **Unix socket cleanup can race / unlink the wrong file.** `close()`
-  `os.unlink(_CONNECT_TARGET)` unconditionally if the path exists
-  (`player.py:176`). Since the endpoint is PID-unique this is low-risk, but mpv
-  usually owns that file — only unlink sockets we know mpv has exited from.
+- [~] **Unix socket cleanup can race / unlink the wrong file.** Endpoint is
+  PID-unique; left best-effort. Low-risk, untouched.
 
-- [ ] **`stop()`/`_play_mpv()` locking is inconsistent.** `stop()` takes
-  `self._lock` but `play()`/`_play_mpv()`/`_ensure_mpv_running()` don't, so a
-  `stop` racing a `play` is theoretically unsafe (`player.py:474` vs `399`).
-  Low priority given single-user TUI, but worth tidying.
+- [x] **`stop()`/`_play_mpv()` locking is inconsistent.** `play()` now runs the
+  start path under `self._lock`; `stop()` split into `_stop_locked()` so both
+  share consistent locking. (`player.py`)
 
 ---
 
 ## 2. New features
 
-- [ ] **Persistent playlists / favorites.** Save the current queue (or a "liked"
-  set) to disk and reload it — a `~/.config/yttui/playlists/*.json` store. Makes
-  the app useful beyond a single session.
+- [x] **Persistent playlists / favorites.** New `library.py` stores liked songs,
+  named playlists, pinned folders, and recent plays; surfaced on the boot
+  **home screen** (Folders / Liked / Recent). `l` likes, `w` saves a playlist.
 
-- [ ] **Play history + "recently played".** Append played tracks to a history
-  file; add a view to replay them. Pairs naturally with the queue/library view
-  toggle already in place (`view_mode`).
+- [x] **Play history + "recently played".** `library.add_recent()` on every play;
+  shown in the home screen's Recent tab.
 
-- [ ] **Shuffle & repeat.** `shuffle` (randomize queue order) and
-  `repeat` (off / one / all) — both purely queue-side logic in `main.py`, work
-  identically online and offline. Add `r` (repeat cycle) and `z` (shuffle).
+- [x] **Shuffle & repeat.** `z` shuffles the queue (keeping current track first),
+  `r` cycles repeat off/one/all; honored by `_on_track_end`/`action_next_track`,
+  persisted in sessions.
 
-- [ ] **Resume playback position.** Persist `current_url` + position on quit;
-  offer to resume on next launch. mpv already reports `time-pos`.
+- [x] **Resume playback position.** Sessions saved on quit (queue + position +
+  shuffle/repeat); home screen "Resume" dropdown restores and seeks via
+  `Player.play(url, start=)` (mpv `file-loaded` seek).
 
 - [ ] **Lyrics / metadata panel.** Optional side panel showing album/year/
   thumbnail (ASCII or via terminal image protocol). ytmusicapi returns album +
@@ -96,8 +85,7 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
 
 ## 3. Quality-of-life
 
-- [ ] **Visible "stop" / clear.** There's `stop()` in the player but no binding —
-  add `.` or `x` to stop and clear "now playing".
+- [x] **Visible "stop" / clear.** `x` stops playback and clears "now playing".
 
 - [ ] **Jump to now-playing.** A key (`g`) to scroll the table to the currently
   playing track, useful in long playlists.
@@ -105,24 +93,31 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
 - [ ] **Click / mouse seek on the progress bar.** Textual supports mouse; let a
   click on `#progress-row` seek to that fraction of the track.
 
+- [x] **Playing-row highlight.** The currently-playing track is marked ▶ and
+  styled with the theme accent in both library and queue views.
+
+- [x] **Show queue length / position** in the player bar (`Queue 3/120`) and the
+  footer info bar.
+
+- [x] **Settings `~` expansion + validation.** `SettingsScreen` expands `~`/env
+  vars and shows live ✓/✗ for the cookies file and folder; `config.valid_cookies`
+  and `offline.scan_folder` also expand.
+
+- [x] **Remember last mode (online/offline)** across launches via `config.app_mode`.
+
+- [x] **Confirm-on-quit when something is playing.** `q` shows a Yes/No modal
+  (and saves the session) while a track is playing.
+
+- [x] **Help overlay.** All footer key hints removed; `?` opens a full
+  `KeybindingsScreen` listing every shortcut. A custom footer info bar replaces
+  the default Footer with mode/source/shuffle/repeat/queue/volume/theme.
+
 - [ ] **Status line auto-clears.** Transient messages ("Added to queue: …")
   linger forever. Auto-revert to a default after ~4s via `set_timer`.
 
-- [ ] **Show queue length / position in the player bar.** e.g. `3/120` so the
-  user knows where they are without switching to queue view.
+- [ ] **Remember last query** across launches (last mode is now remembered).
 
-- [ ] **Confirm-on-quit when something is playing** (optional toggle), to avoid
-  accidental `q`.
-
-- [ ] **Settings: `~` expansion + validation.** Cookie/folder paths typed with
-  `~` aren't expanded (`config.py` stores them raw; `valid_cookies()` does a bare
-  `os.path.isfile`). Run paths through `os.path.expanduser` and show a ✓/✗ in the
-  Settings modal. (`config.py:104`, `main.py:766`)
-
-- [ ] **Help overlay.** A `?` modal listing all keybindings (the Footer only
-  shows `show=True` ones; `+/-`, `←→`, `C`, `escape` are hidden).
-
-- [ ] **Remember last mode (online/offline) and last query** across launches.
+- [ ] **Jump to now-playing / mouse seek on the progress bar** (still open).
 
 - [ ] **Loading spinner / indeterminate progress** during search and big
   playlist fetches, instead of a static "Loading…" string.

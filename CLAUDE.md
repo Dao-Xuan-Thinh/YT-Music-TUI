@@ -15,18 +15,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The project is modular with clear separation of concerns:
 
 ```
-main.py         ← Entry point; Textual TUI wiring, keyboard bindings, playback flow
-youtube.py      ← yt-dlp wrapper: resolve() (URL or keyword), search(), get_info()
+main.py         ← Entry point; Textual TUI wiring, home screen, keybindings, playback flow
+youtube.py      ← yt-dlp + ytmusicapi wrapper: resolve() (URL or keyword), search(), playlists
 player.py       ← mpv IPC + ffplay fallback; single-thread event loop for non-blocking IPC
-config.py       ← JSON persistence: cookies_file, volume, search_source
+config.py       ← JSON persistence: cookies_file, volume, search_source, theme, app_mode
+library.py      ← JSON persistence: liked songs, saved playlists, pinned folders, recent, sessions
+offline.py      ← Local audio folder scanner (mutagen tags) for offline mode
 ```
 
 ### Core Flow
 
-1. **Search** (`/` key) → `youtube.resolve()` detects URL or keyword → results populate DataTable
-2. **Play** (Enter on result) → `player.play(url)` loads URL via mpv IPC `loadfile replace`
-3. **Queue**: selecting a result sets the queue to remaining results; on track end, auto-advances
-4. **Settings** (`s` key) → modal to set cookies file path; persisted to config.json
+1. **Boot** → a `HomeScreen` shows: a Resume-session dropdown, plus Folders /
+   Liked / Recent tabs (backed by `library.py`). Selecting loads/plays; Esc or
+   "Search / Browse" enters the main UI.
+2. **Search** (`/` key) → `youtube.resolve()` detects URL or keyword → results populate DataTable
+3. **Play** (Enter on result) → `player.play(url, start=)` loads URL via mpv IPC `loadfile replace`
+4. **Queue**: selecting a result sets the queue to remaining results; on track end, auto-advances
+   (honoring `shuffle` and `repeat` off/one/all). `add_recent()` records each play.
+5. **Settings** (`s`) sets cookies/local-folder (with `~` expansion + ✓/✗); **quit** (`q`)
+   confirms when playing and saves a resume session.
 
 ### Key Design Patterns
 
@@ -66,7 +73,8 @@ Install with: `pip install -r requirements.txt`
 - Prints current settings
 
 **main.py (full TUI):** `python main.py`
-- Keybindings: `/` (search), `space` (pause), `n` (next), `t` (cycle source), `+/-` (volume), `←→` (seek), `s` (settings), `q` (quit)
+- Keybindings: `/` search · `f` filter · `space` pause · `n` next · `p` play-next · `a` +queue · `x` stop · `Q` queue/library · `z` shuffle · `r` repeat · `l` like · `w` save playlist · `h` home · `t` source · `o` online/offline · `c`/`C` theme · `+/-` volume · `←→` seek · `s` settings · `?` key list · `q` quit
+- The footer is a custom info bar (mode/source/shuffle/repeat/queue/volume/theme); `?` is the only key hint and opens the full `KeybindingsScreen`.
 
 ## Critical Gotchas
 
@@ -150,12 +158,15 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 
 | File | Purpose |
 |------|---------|
-| `main.py` | Textual App: screens, bindings, search/play flow |
-| `youtube.py` | yt-dlp wrapper: search, URL resolution, metadata |
-| `player.py` | mpv IPC + ffplay fallback; Windows named pipe event loop |
-| `config.py` | JSON settings persistence |
+| `main.py` | Textual App: home screen, modals, bindings, search/play flow |
+| `youtube.py` | yt-dlp + ytmusicapi wrapper: search, URL/playlist resolution, metadata |
+| `player.py` | mpv IPC + ffplay fallback; per-OS transport (named pipe / AF_UNIX) |
+| `config.py` | JSON settings persistence (cookies, volume, source, theme, app_mode) |
+| `library.py` | JSON persistence: liked, playlists, pinned folders, recent, sessions |
+| `offline.py` | Local audio folder scanner (mutagen tags) |
 | `requirements.txt` | Python dependencies |
-| `config.json` | Auto-created runtime config (cookies path, volume, source) |
+| `config.json` | Auto-created runtime config (gitignored) |
+| `library.json` / `sessions.json` | Auto-created library + resume sessions (gitignored) |
 
 ## Common Tasks
 
@@ -173,4 +184,12 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 
 **Switch search source:** `t` (cycles YT Music → YouTube → Both)
 
-**Quit:** `q`
+**Like / save a playlist:** `l` likes the highlighted/playing track; `w` saves the current list as a named playlist (both appear on the home screen)
+
+**Shuffle / repeat:** `z` shuffles the queue; `r` cycles repeat off → one → all
+
+**Resume a session:** pick one from the home screen's Resume dropdown (sessions are saved on quit)
+
+**See all keys:** `?`
+
+**Quit:** `q` (confirms + saves a session when something is playing)
