@@ -36,7 +36,7 @@ SOURCE_CYCLE = ['ytm', 'yt', 'both']
 SOURCE_LABEL = {'ytm': 'YT Music', 'yt': 'YouTube', 'both': 'Both'}
 
 REPEAT_CYCLE = ['off', 'one', 'all']
-REPEAT_LABEL = {'off': '🔁 off', 'one': '🔂 one', 'all': '🔁 all'}
+REPEAT_LABEL = {'off': '↻ off', 'one': '↻ one', 'all': '↻ all'}
 
 # Curated "cool" themes for quick-cycle (subset of Textual's built-ins)
 THEME_CYCLE = [
@@ -392,7 +392,7 @@ class HomeScreen(Screen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id='home-box'):
-            yield Label('🎧  YouTube Music TUI', id='home-title')
+            yield Label('♫  YouTube Music TUI', id='home-title')
             yield Label('Pick up where you left off, or browse your library.',
                         id='home-sub')
 
@@ -401,7 +401,7 @@ class HomeScreen(Screen):
             for s in sessions:
                 title = s.get('title') or 'session'
                 n = len(s.get('queue', []))
-                opts.append((f"▶ {title}  ·  {n} tracks  ·  {_ago(s.get('ts'))}",
+                opts.append((f"▸ {title}  ·  {n} tracks  ·  {_ago(s.get('ts'))}",
                              s.get('id')))
             yield Select(opts, prompt='Resume a session…', id='resume-select',
                          allow_blank=True)
@@ -410,11 +410,11 @@ class HomeScreen(Screen):
                 with TabPane('Folders', id='tab-folders'):
                     items = []
                     for p in self._lib.playlists():
-                        it = ListItem(Label(f"🎵 {p['name']}  ({len(p['tracks'])})"))
+                        it = ListItem(Label(f"♫ {p['name']}  ({len(p['tracks'])})"))
                         it.payload = {'kind': 'playlist', 'name': p['name']}
                         items.append(it)
                     for path in self._lib.folders():
-                        it = ListItem(Label(f"📁 {path}"))
+                        it = ListItem(Label(f"▪ {path}"))
                         it.payload = {'kind': 'folder', 'path': path}
                         items.append(it)
                     yield ListView(*(items or [self._empty_item()]), id='list-folders')
@@ -431,7 +431,7 @@ class HomeScreen(Screen):
                              for i, t in enumerate(recent)]
                     yield ListView(*(items or [self._empty_item()]), id='list-recent')
 
-            yield Button('🔍  Search / Browse', id='home-search', variant='primary')
+            yield Button('Search / Browse', id='home-search', variant='primary')
 
     def on_mount(self) -> None:
         try:
@@ -851,7 +851,7 @@ class YTMApp(App):
         if self.view_mode == 'queue':
             for qi, r in enumerate(self._queue):
                 playing = (qi == self._queue_idx) and bool(self.now_playing)
-                marker = '▶' if playing else str(qi + 1)
+                marker = '▸' if playing else str(qi + 1)
                 dur = _fmt(r['duration']) if r['duration'] else '?'
                 tbl.add_row(*self._row_cells(marker, r['title'], r['uploader'],
                                              dur, playing), key=f'q{qi}')
@@ -859,7 +859,7 @@ class YTMApp(App):
         else:
             for master_idx, r in self._visible_results():
                 playing = playing_key is not None and _track_key(r) == playing_key
-                marker = '▶' if playing else str(master_idx + 1)
+                marker = '▸' if playing else str(master_idx + 1)
                 dur = _fmt(r['duration']) if r['duration'] else '?'
                 tbl.add_row(*self._row_cells(marker, r['title'], r['uploader'],
                                              dur, playing), key=str(master_idx))
@@ -961,8 +961,8 @@ class YTMApp(App):
         dur = self.duration
         qpos = (f'{self._queue_idx + 1}/{len(self._queue)}'
                 if self._queue and self._queue_idx >= 0 else '0/0')
-        pause_icon = '❚❚' if self.is_paused else '▶'
-        controls = (f'◀◀  {pause_icon}  ▶▶   Vol: {self.volume}%   '
+        pause_icon = '‖' if self.is_paused else '▸'
+        controls = (f'◂◂  {pause_icon}  ▸▸   Vol: {self.volume}%   '
                     f'Queue {qpos}   {_fmt(pos)} / {_fmt(dur)}')
         bar = _bar(pos, dur, width=50)
         try:
@@ -983,16 +983,16 @@ class YTMApp(App):
 
     def _update_footer(self) -> None:
         if self.app_mode == 'offline':
-            mode, src = '📂 OFFLINE', 'local'
+            mode, src = 'OFFLINE', 'local'
         else:
-            mode, src = '🌐 ONLINE', SOURCE_LABEL[self.search_source]
-        shuf = '🔀 on' if self.shuffle else '🔀 off'
+            mode, src = 'ONLINE', SOURCE_LABEL[self.search_source]
+        shuf = '⇄ on' if self.shuffle else '⇄ off'
         rep = REPEAT_LABEL[self.repeat]
         qpos = (f'{self._queue_idx + 1}/{len(self._queue)}'
                 if self._queue and self._queue_idx >= 0 else '0/0')
-        upd = '    ⬆ update (u)' if self._update_available else ''
+        upd = '    ↑ update (u)' if self._update_available else ''
         left = (f'{mode} · {src}    {shuf} · {rep}    '
-                f'♪ {qpos}    🔊 {self.volume}%    🎨 {self.theme}{upd}')
+                f'♪ {qpos}    vol {self.volume}%    theme {self.theme}{upd}')
         try:
             self.query_one('#footer-left', Static).update(left)
         except NoMatches:
