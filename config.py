@@ -23,6 +23,9 @@ _DEFAULTS = {
     'oauth_client_secret': '',
     # Active auth method for ytmusicapi: 'none' | 'oauth' | 'cookies'.
     'auth_method':         'none',
+    # Display name of the signed-in account (shown in the footer). Cached from
+    # get_account_info() at sign-in / first boot so the footer needs no network.
+    'account_name':        '',
 }
 
 
@@ -123,6 +126,15 @@ class Config:
         self.save()
 
     @property
+    def account_name(self):
+        return self._data.get('account_name', '')
+
+    @account_name.setter
+    def account_name(self, name):
+        self._data['account_name'] = name or ''
+        self.save()
+
+    @property
     def app_mode(self):
         return self._data.get('app_mode') if self._data.get('app_mode') in ('online', 'offline') else 'online'
 
@@ -163,15 +175,10 @@ class Config:
 
     @property
     def theme(self):
-        """Theme name, validated against Textual's built-in themes."""
-        name = self._data.get('theme') or _DEFAULTS['theme']
-        try:
-            from textual.theme import BUILTIN_THEMES
-            if name not in BUILTIN_THEMES:
-                return _DEFAULTS['theme']
-        except Exception:
-            pass
-        return name
+        """Theme name as stored. Not validated against BUILTIN_THEMES here because
+        the app also registers custom themes at startup (which aren't in that set);
+        the App-level setter falls back gracefully if a name is truly unknown."""
+        return self._data.get('theme') or _DEFAULTS['theme']
 
     @theme.setter
     def theme(self, name):

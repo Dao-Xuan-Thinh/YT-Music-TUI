@@ -14,6 +14,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import (
@@ -22,6 +23,7 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 from textual.screen import ModalScreen, Screen
+from textual.theme import Theme
 
 import youtube
 import player as player_module
@@ -38,11 +40,93 @@ SOURCE_LABEL = {'ytm': 'YT Music', 'yt': 'YouTube', 'both': 'Both'}
 REPEAT_CYCLE = ['off', 'one', 'all']
 REPEAT_LABEL = {'off': '↻ off', 'one': '↻ one', 'all': '↻ all'}
 
-# Curated "cool" themes for quick-cycle (subset of Textual's built-ins)
+# ── Custom themes ─────────────────────────────────────────────────────────────
+# Registered at startup via App.register_theme(); they then appear in the picker
+# (c) and the quick-cycle (C) alongside Textual's built-ins. Go wild — each is a
+# hand-picked palette. The subset listed in ANIMATED_PALETTES below also drives a
+# color-wave across the playing track.
+CUSTOM_THEMES = [
+    Theme(name='synthwave', dark=True, primary='#ff5fd2', secondary='#36f9f6',
+          accent='#ff8b39', foreground='#f7f0ff', background='#16111f',
+          surface='#241a33', panel='#2f2342', success='#72f1b8',
+          warning='#fede5d', error='#fe4450'),
+    Theme(name='vaporwave', dark=True, primary='#ff71ce', secondary='#01cdfe',
+          accent='#b967ff', foreground='#fdf6ff', background='#1a1426',
+          surface='#2a2040', panel='#352a4d', success='#05ffa1',
+          warning='#fffb96', error='#ff6e6e'),
+    Theme(name='matrix', dark=True, primary='#39ff14', secondary='#00b300',
+          accent='#7dff6b', foreground='#c8ffc8', background='#020a02',
+          surface='#06160a', panel='#0a2010', success='#39ff14',
+          warning='#aaff00', error='#ff3b3b'),
+    Theme(name='prism', dark=True, primary='#ff4d4d', secondary='#4dd2ff',
+          accent='#ffd24d', foreground='#fafafa', background='#0f0f14',
+          surface='#1a1a22', panel='#24242f', success='#4dff88',
+          warning='#ffd24d', error='#ff4d6d'),
+    Theme(name='ember', dark=True, primary='#ff7b29', secondary='#ffb454',
+          accent='#ffd45e', foreground='#fff1e0', background='#170d08',
+          surface='#251409', panel='#331c0d', success='#c6d65b',
+          warning='#ffb454', error='#ff4d34'),
+    Theme(name='deep-ocean', dark=True, primary='#2bd6c6', secondary='#3a8fff',
+          accent='#5ef0ff', foreground='#e0f7ff', background='#04121a',
+          surface='#082230', panel='#0c3142', success='#3ff0b0',
+          warning='#ffd166', error='#ff5d73'),
+    Theme(name='blood-moon', dark=True, primary='#ff3b54', secondary='#b3001e',
+          accent='#ff7a45', foreground='#ffe6e6', background='#120406',
+          surface='#240a0e', panel='#330f15', success='#d6c65b',
+          warning='#ff9f45', error='#ff2e4d'),
+    Theme(name='aurora', dark=True, primary='#5eead4', secondary='#818cf8',
+          accent='#c084fc', foreground='#ecfdf5', background='#06121a',
+          surface='#0c2230', panel='#123042', success='#34d399',
+          warning='#fbbf24', error='#fb7185'),
+    Theme(name='sakura', dark=False, primary='#e35d8f', secondary='#f7a8c4',
+          accent='#b56bd6', foreground='#3a2230', background='#fff0f5',
+          surface='#ffe1ec', panel='#ffd0e0', success='#5fb98f',
+          warning='#e0a23a', error='#e0445d'),
+    Theme(name='arctic', dark=False, primary='#2f6fed', secondary='#3aa0ff',
+          accent='#00b4d8', foreground='#0d2438', background='#f0f6ff',
+          surface='#e0ecfb', panel='#cfe0f5', success='#2faf6f',
+          warning='#d99a2b', error='#e0445d'),
+    Theme(name='solar-flare', dark=True, primary='#ffb300', secondary='#ff7043',
+          accent='#ffd54f', foreground='#fff8e1', background='#1a1205',
+          surface='#2a1e08', panel='#3a2a0c', success='#c0ca33',
+          warning='#ff7043', error='#e53935'),
+    Theme(name='cyberpunk', dark=True, primary='#fcee0a', secondary='#00f0ff',
+          accent='#ff2a6d', foreground='#f5fdff', background='#0a0e12',
+          surface='#121a22', panel='#1a2630', success='#05ffa1',
+          warning='#fcee0a', error='#ff2a6d'),
+    Theme(name='mono-amber', dark=True, primary='#ffb000', secondary='#cc8800',
+          accent='#ffd166', foreground='#ffcf7a', background='#0c0a06',
+          surface='#161208', panel='#1f1a0c', success='#ffb000',
+          warning='#ffcf7a', error='#ff5e5e'),
+    Theme(name='nebula', dark=True, primary='#a06bff', secondary='#6b8bff',
+          accent='#ff6bd6', foreground='#f3eaff', background='#0c0818',
+          surface='#171029', panel='#22183b', success='#5fe0c0',
+          warning='#ffcf66', error='#ff5d8f'),
+]
+
+# Themes whose now-playing track gets an animated color-wave. The value is a list
+# of colors the wave interpolates through (2-3 = a cohesive gradient, a long list
+# = a rainbow). Only these themes animate; all others use a static accent.
+ANIMATED_PALETTES = {
+    'synthwave':   ['#ff5fd2', '#b967ff', '#36f9f6', '#b967ff'],
+    'vaporwave':   ['#ff71ce', '#b967ff', '#01cdfe', '#05ffa1'],
+    'matrix':      ['#0a3d0a', '#39ff14', '#aaff66', '#39ff14'],
+    'prism':       ['#ff4d4d', '#ffa64d', '#ffe24d', '#4dff88',
+                    '#4dd2ff', '#7d4dff', '#ff4dd2'],
+    'ember':       ['#ff3b1f', '#ff7b29', '#ffb454', '#ffd45e'],
+    'deep-ocean':  ['#0a3142', '#2bd6c6', '#5ef0ff', '#3a8fff'],
+    'blood-moon':  ['#5a0010', '#ff3b54', '#ff7a45', '#ff3b54'],
+    'aurora':      ['#34d399', '#5eead4', '#818cf8', '#c084fc'],
+    'solar-flare': ['#ff7043', '#ffb300', '#ffd54f', '#fff3c0'],
+    'cyberpunk':   ['#ff2a6d', '#fcee0a', '#00f0ff', '#ff2a6d'],
+    'nebula':      ['#6b8bff', '#a06bff', '#ff6bd6', '#a06bff'],
+}
+
+# Curated "cool" themes for quick-cycle (built-ins + the custom themes above).
 THEME_CYCLE = [
     'tokyo-night', 'dracula', 'catppuccin-mocha', 'gruvbox', 'nord',
     'rose-pine', 'monokai', 'flexoki', 'solarized-dark', 'catppuccin-macchiato',
-]
+] + [t.name for t in CUSTOM_THEMES]
 
 # OS-aware example paths for settings placeholders
 if os.name == 'nt':
@@ -100,6 +184,36 @@ def _bar(pos, dur, width=40):
     filled = int(width * pos / dur)
     filled = max(0, min(width, filled))
     return '█' * filled + '─' * (width - filled)
+
+
+def _hex(c):
+    """'#rrggbb' → (r, g, b)."""
+    c = c.lstrip('#')
+    return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+
+
+def _wave_text(s, palette, frame, bold=True, spread=0.6, speed=0.45):
+    """Build a Rich Text where each character is colored by a moving gradient
+    sampled from `palette` (a list of hex colors, treated as a cyclic loop), giving
+    a wave that flows across the text as `frame` advances. Cheap: a few float ops
+    per character, no allocation beyond the Text itself."""
+    if not s:
+        return Text('')
+    n = len(palette)
+    text = Text(s)
+    base = 'bold ' if bold else ''
+    for i, ch in enumerate(s):
+        # Position along the palette loop for this char at this frame.
+        p = (i * spread - frame * speed) % n
+        k = int(p)
+        t = p - k
+        r1, g1, b1 = _hex(palette[k])
+        r2, g2, b2 = _hex(palette[(k + 1) % n])
+        r = int(r1 + (r2 - r1) * t)
+        g = int(g1 + (g2 - g1) * t)
+        b = int(b1 + (b2 - b1) * t)
+        text.stylize(f'{base}#{r:02x}{g:02x}{b:02x}', i, i + 1)
+    return text
 
 
 def _ago(ts):
@@ -225,6 +339,10 @@ class ThemePickerScreen(ModalScreen):
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         if event.option.id:
             self.app.theme = event.option.id
+            try:
+                self.app._sync_animation()   # live-preview the wave too
+            except Exception:
+                pass
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option.id)
@@ -232,6 +350,10 @@ class ThemePickerScreen(ModalScreen):
     def action_cancel(self) -> None:
         self.app.theme = self._original_theme
         self.dismiss(None)
+        try:
+            self.app._sync_animation()
+        except Exception:
+            pass
 
 
 # ── Keybindings help screen ─────────────────────────────────────────────────────
@@ -531,7 +653,7 @@ class AccountScreen(ModalScreen):
             return
         if ok:
             self._status(f'Signed in as {msg} ✓')
-            self._finish('cookies', cookies_file=path)
+            self._finish('cookies', cookies_file=path, account_name=msg)
         else:
             self._status(f'Cookies not accepted: {msg}')
 
@@ -574,7 +696,7 @@ class AccountScreen(ModalScreen):
                          else f'Login failed: {err}')
 
     # ── Finish / cancel ──────────────────────────────────────────────────
-    def _finish(self, method, cookies_file=None) -> None:
+    def _finish(self, method, cookies_file=None, account_name='') -> None:
         if self._closed:
             return
         self._closed = True
@@ -584,7 +706,8 @@ class AccountScreen(ModalScreen):
         cookies = (cookies_file if cookies_file is not None
                    else self.query_one('#cookies-input', Input).value.strip())
         self.dismiss({'method': method, 'client_id': cid,
-                      'client_secret': csec, 'cookies_file': cookies})
+                      'client_secret': csec, 'cookies_file': cookies,
+                      'account_name': account_name})
 
     def action_cancel(self) -> None:
         if self._closed:
@@ -900,6 +1023,10 @@ class YTMApp(App):
         self.duration = 0.0
         self.is_paused = False
         self._last_bar_sig = None        # skip redundant player-bar redraws
+        # Color-wave animation state (see _sync_animation / _animate_tick).
+        self._anim_frame = 0
+        self._anim_timer = None          # active Timer while the wave is running
+        self._playing_row = None         # displayed row index of the playing track
         self.search_source = self._config.search_source
         self.volume        = self._config.volume
         self.app_mode      = self._config.app_mode
@@ -936,6 +1063,11 @@ class YTMApp(App):
             yield Static('? Keys', id='footer-right')
 
     def on_mount(self) -> None:
+        for t in CUSTOM_THEMES:
+            try:
+                self.register_theme(t)
+            except Exception:
+                pass
         try:
             self.theme = self._config.theme
         except Exception:
@@ -950,8 +1082,22 @@ class YTMApp(App):
         self._update_footer()
         threading.Thread(target=self._init_player, daemon=True).start()
         threading.Thread(target=self._check_for_update, daemon=True).start()
+        # If signed in but we don't have the display name yet, fetch it once.
+        if youtube.is_authenticated() and not self._config.account_name:
+            threading.Thread(target=self._init_account_name, daemon=True).start()
         # Boot straight into the home screen.
         self.push_screen(HomeScreen(self._lib), self._on_home_result)
+
+    def _init_account_name(self) -> None:
+        name = youtube.fetch_account_name()
+        if name:
+            def _save():
+                self._config.account_name = name
+                self._update_footer()
+            try:
+                self.call_from_thread(_save)
+            except Exception:
+                pass
 
     def _init_player(self) -> None:
         if self._player.backend is None:
@@ -1209,6 +1355,7 @@ class YTMApp(App):
             saved = 0
         tbl.clear()
         playing_key = self._playing_key()
+        self._playing_row = None      # recomputed below if the playing track shows
         count = 0
         if self.view_mode == 'queue':
             for qi, r in enumerate(self._queue):
@@ -1217,6 +1364,8 @@ class YTMApp(App):
                 dur = _fmt(r['duration']) if r['duration'] else '?'
                 tbl.add_row(*self._row_cells(marker, r['title'], r['uploader'],
                                              dur, playing), key=f'q{qi}')
+                if playing:
+                    self._playing_row = count
                 count += 1
         else:
             for master_idx, r in self._visible_results():
@@ -1225,6 +1374,8 @@ class YTMApp(App):
                 dur = _fmt(r['duration']) if r['duration'] else '?'
                 tbl.add_row(*self._row_cells(marker, r['title'], r['uploader'],
                                              dur, playing), key=str(master_idx))
+                if playing:
+                    self._playing_row = count
                 count += 1
         if count:
             tbl.move_cursor(row=min(saved, count - 1))
@@ -1277,9 +1428,11 @@ class YTMApp(App):
         self.now_playing = f'{track["title"]}  —  {track["uploader"]}'
         self._lib.add_recent(track)
         self._play_started_at = time.monotonic()   # for the cascade guard below
+        self.is_paused = False        # play un-pauses; lets the wave start at once
         self._set_status('Loading…')
         self._render_table()
         self._update_footer()
+        self._sync_animation()
         url = track['url']
 
         def _run():
@@ -1327,6 +1480,8 @@ class YTMApp(App):
         self.position  = self._player.get_position()
         self.duration  = self._player.get_duration()
         self.is_paused = self._player.is_paused()
+        # Start/stop the color-wave to match play/pause/stop state (cheap check).
+        self._sync_animation()
         # Only redraw the player bar when something visible actually changed.
         # While paused or idle the position is frozen, so this skips the redraw
         # (and the repaint) entirely — no work happens on most ticks.
@@ -1347,13 +1502,67 @@ class YTMApp(App):
                     f'Queue {qpos}   {_fmt(pos)} / {_fmt(dur)}')
         bar = _bar(pos, dur, width=50)
         try:
-            self.query_one('#now-playing', Static).update(
-                f'♪  {self.now_playing}' if self.now_playing else '♪  Nothing playing'
-            )
+            # While the wave is running it owns #now-playing — don't clobber it with
+            # plain text each poll tick (that would flicker once a second).
+            if self._anim_timer is None:
+                self.query_one('#now-playing', Static).update(
+                    f'♪  {self.now_playing}' if self.now_playing else '♪  Nothing playing'
+                )
             self.query_one('#controls-row', Static).update(controls)
             self.query_one('#progress-row', Static).update(bar)
         except NoMatches:
             pass
+
+    # ── Color-wave animation ────────────────────────────────────────────────
+    def _sync_animation(self) -> None:
+        """Start/stop the color-wave timer to match current state. Safe to call
+        often. The wave runs ONLY while an animated theme is active AND a track is
+        actively playing (not paused); otherwise the timer is fully stopped, so
+        there is zero idle cost when it isn't visible."""
+        desired = (self.theme in ANIMATED_PALETTES and bool(self.now_playing)
+                   and not self.is_paused)
+        if desired and self._anim_timer is None:
+            self._anim_timer = self.set_interval(0.08, self._animate_tick)
+        elif not desired and self._anim_timer is not None:
+            try:
+                self._anim_timer.stop()
+            except Exception:
+                pass
+            self._anim_timer = None
+            # Repaint once so the last wave frame is replaced by the static accent.
+            self._update_player_bar()
+            self._render_table()
+
+    def _animate_tick(self) -> None:
+        palette = ANIMATED_PALETTES.get(self.theme)
+        if not palette or not self.now_playing:
+            return
+        self._anim_frame += 1
+        f = self._anim_frame
+        # Now-playing bar (single height-1 widget).
+        try:
+            self.query_one('#now-playing', Static).update(
+                Text('♪  ') + _wave_text(self.now_playing, palette, f))
+        except NoMatches:
+            pass
+        # The playing row's 4 cells (no full-table rebuild). Each column's phase is
+        # staggered so the wave appears to travel across the row.
+        row = self._playing_row
+        if row is None:
+            return
+        try:
+            tbl = self.query_one('#results-table', DataTable)
+            values = tbl.get_row_at(row)
+        except Exception:
+            return
+        for col, val in enumerate(values):
+            plain = val.plain if isinstance(val, Text) else str(val)
+            try:
+                tbl.update_cell_at(Coordinate(row, col),
+                                   _wave_text(plain, palette, f - col * 4),
+                                   update_width=False)
+            except Exception:
+                pass
 
     def _set_status(self, msg: str) -> None:
         self.status_msg = msg
@@ -1372,9 +1581,17 @@ class YTMApp(App):
         qpos = (f'{self._queue_idx + 1}/{len(self._queue)}'
                 if self._queue and self._queue_idx >= 0 else '0/0')
         upd = '    ↑ update (u)' if self._update_available else ''
-        acct = f'    {youtube.auth_status()}' if youtube.is_authenticated() else ''
-        left = (f'{mode} · {src}    {shuf} · {rep}    '
-                f'♪ {qpos}    vol {self.volume}%    theme {self.theme}{acct}{upd}')
+        base = (f'{mode} · {src}    {shuf} · {rep}    '
+                f'♪ {qpos}    vol {self.volume}%    theme {self.theme}')
+        # Build as Rich Text so the account name can pop in the theme's accent color
+        # against the muted footer. Falls back to the method label when no name yet.
+        left = Text(base, no_wrap=True)
+        if youtube.is_authenticated():
+            name = self._config.account_name or youtube.auth_status()
+            left.append('    ')
+            left.append(f'♥ {name}', style=f'bold {self._accent()}')
+        if upd:
+            left.append(upd)
         try:
             self.query_one('#footer-left', Static).update(left)
         except NoMatches:
@@ -1551,6 +1768,7 @@ class YTMApp(App):
         self._schedule_config_flush()
         self._set_status(f'Theme: {new}')
         self._update_footer()
+        self._sync_animation()      # (de)activate the wave for the new theme
 
     def action_theme_picker(self) -> None:
         names = sorted(self.available_themes.keys())
@@ -1562,6 +1780,7 @@ class YTMApp(App):
                 self._schedule_config_flush()
                 self._set_status(f'Theme: {chosen}')
             self._update_footer()
+            self._sync_animation()
 
         self.push_screen(ThemePickerScreen(self.theme, names), _after)
 
@@ -1659,6 +1878,9 @@ class YTMApp(App):
             # formats). Streaming cookies are a separate setting (Settings, `s`).
             if cookies != self._config.auth_cookies_file:
                 self._config.auth_cookies_file = cookies
+            # Persist the signed-in display name for the footer (cleared on sign-out).
+            self._config.account_name = (result.get('account_name', '')
+                                         if method != 'none' else '')
             youtube.configure_auth(method, cid, csec, cookies)
             self._update_footer()
             self._set_status('YouTube auth: ' + youtube.auth_status()

@@ -175,6 +175,21 @@ def cookies_auth_ok(cookies_file):
         return False, f'{type(exc).__name__}: {exc}'
 
 
+def fetch_account_name():
+    """Return the signed-in account's display name using the cached client, or ''.
+
+    Cheap-ish (one API call, no cookie re-parse) — call from a daemon thread once
+    to populate the footer when the cached name is missing. Returns '' if not
+    authenticated or on any error."""
+    if not _authed:
+        return ''
+    try:
+        info = _get_ytm().get_account_info() or {}
+        return info.get('accountName') or ''
+    except Exception:
+        return ''
+
+
 def login(client_id, client_secret, on_code, should_cancel=None):
     """Run the OAuth device flow and persist the token to _OAUTH_FILE.
 

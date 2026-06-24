@@ -20,7 +20,7 @@ youtube.py      ← yt-dlp + ytmusicapi wrapper: resolve() (URL or keyword), sea
                   auth (cookies/browser + OAuth device flow) + authenticated client, get_home() feed
 player.py       ← mpv IPC + ffplay fallback; single-thread event loop for non-blocking IPC
 config.py       ← JSON persistence: cookies_file (streaming) + auth_cookies_file (account),
-                  volume, search_source, theme, app_mode
+                  account_name, volume, search_source, theme, app_mode
 library.py      ← JSON persistence: liked songs, saved playlists, pinned folders, recent, sessions
 offline.py      ← Local audio folder scanner (mutagen tags) for offline mode
 updater.py      ← Self-update via git (check/pull/deps refresh, branch switch) + re-exec on restart
@@ -79,7 +79,9 @@ Install with: `pip install -r requirements.txt`
 
 **main.py (full TUI):** `python main.py`
 - Keybindings: `/` search · `f` filter · `space` pause · `n` next · `p` play-next · `a` +queue · `x` stop · `Q` queue/library · `z` shuffle · `r` repeat · `l` like · `w` save playlist · `h` home · `t` source · `o` online/offline · `c`/`C` theme · `+/-` volume · `←→` seek · `s` settings · `g` account/sign-in · `u` update · `?` key list · `q` quit
-- The footer is a custom info bar (mode/source/shuffle/repeat/queue/volume/theme); `?` is the only key hint and opens the full `KeybindingsScreen`.
+- The footer is a custom info bar (mode/source/shuffle/repeat/queue/volume/theme); when
+  signed in it also shows the account display name (`♥ <name>`) styled in the theme accent
+  via a Rich `Text`. `?` is the only key hint and opens the full `KeybindingsScreen`.
 
 ## Critical Gotchas
 
@@ -129,6 +131,27 @@ mpv runs as a separate process and resolves `yt-dlp` from its own PATH. In a vir
 ### Textual Tab Key
 
 Textual reserves the Tab key for focus cycling. Source-cycle binding uses `t` instead.
+
+### Custom themes + animated color-wave
+
+`CUSTOM_THEMES` (a list of `textual.theme.Theme`) is registered in `on_mount` via
+`register_theme()` **before** applying the saved theme, so the custom names appear in the
+picker (`c`) and quick-cycle (`C`) next to the built-ins. Because these names aren't in
+Textual's `BUILTIN_THEMES`, `config.theme`'s getter no longer validates against that set
+(it returns the stored name as-is; the App-level `try/except` around `self.theme = …`
+handles a truly-unknown name).
+
+`ANIMATED_PALETTES` maps a subset of theme names → a list of colors. When such a theme is
+active **and** a track is actively playing (not paused), a color-wave flows across the
+now-playing bar and the playing `▸` row. `_wave_text(s, palette, frame)` colors each char
+by an interpolated, frame-advancing position along the (cyclic) palette. `_sync_animation()`
+starts/stops a ~12 fps `set_interval` (`_anim_timer`) based on `theme ∈ ANIMATED_PALETTES
+and now_playing and not is_paused`; it's called from `_poll_player` (1 Hz) plus the
+play/theme-change hooks, so **the timer is fully stopped whenever the wave isn't visible —
+zero idle cost** (preserves the lightweight goal). `_animate_tick` updates only the
+`#now-playing` Static and the 4 cells of the one playing row (`_playing_row`, recorded in
+`_render_table`) via `update_cell_at` — never a full-table rebuild. While the wave runs it
+owns `#now-playing`, so `_update_player_bar` skips that widget (avoids a 1 Hz flicker).
 
 ### mpv Pre-start in Background
 
