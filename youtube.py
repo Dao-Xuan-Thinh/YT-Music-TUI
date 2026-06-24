@@ -32,17 +32,27 @@ _auth_method = 'none'        # 'none' | 'oauth' | 'cookies'
 _client_id = ''
 _client_secret = ''
 _cookies_file = ''
+_authed = False              # cached auth state (avoids re-parsing cookies per call)
 
 
 def configure_auth(method='none', client_id='', client_secret='', cookies_file=''):
     """Set the active auth method + its inputs and drop the cached client so the
     next _get_ytm() rebuilds. method: 'none' | 'oauth' | 'cookies'."""
-    global _auth_method, _client_id, _client_secret, _cookies_file, _ytm
+    global _auth_method, _client_id, _client_secret, _cookies_file, _ytm, _authed
     _auth_method = method if method in ('none', 'oauth', 'cookies') else 'none'
     _client_id = client_id or ''
     _client_secret = client_secret or ''
     _cookies_file = os.path.expanduser(os.path.expandvars(cookies_file or ''))
     _ytm = None
+    # Evaluate auth validity ONCE here (parses the cookie file) and cache it; the
+    # footer/status query is_authenticated() often and a 1 MB cookie reparse per
+    # call froze the UI.
+    if _auth_method == 'oauth':
+        _authed = _oauth_ready()
+    elif _auth_method == 'cookies':
+        _authed = _browser_headers_from_cookies(_cookies_file) is not None
+    else:
+        _authed = False
 
 
 def _oauth_ready():
@@ -103,12 +113,9 @@ def _browser_headers_from_cookies(path):
 
 
 def is_authenticated():
-    """True if the active auth method has usable credentials."""
-    if _auth_method == 'oauth':
-        return _oauth_ready()
-    if _auth_method == 'cookies':
-        return _browser_headers_from_cookies(_cookies_file) is not None
-    return False
+    """True if the active auth method has usable credentials (cached by
+    configure_auth so this is O(1) — see _authed)."""
+    return _authed
 
 
 def auth_status():
@@ -228,12 +235,14 @@ def login(client_id, client_secret, on_code, should_cancel=None):
 
 def logout():
     """Delete the saved OAuth token and drop the cached client."""
-    global _ytm
+    global _ytm, _authed
     try:
         os.remove(_OAUTH_FILE)
     except OSError:
         pass
     _ytm = None
+    if _auth_method == 'oauth':
+        _authed = False
 
 
 def _parse_home(data):
@@ -245,8 +254,12 @@ def _parse_home(data):
     """
     sections = []
     for sec in data:
+        if not isinstance(sec, dict):
+            continue
         items = []
         for c in (sec.get('contents') or []):
+            if not isinstance(c, dict):
+                continue   # YTM occasionally returns a null entry in a section
             if c.get('videoId'):
                 items.append({'kind': 'song', 'track': _ytm_track_to_dict(c)})
             elif c.get('playlistId'):
@@ -263,17 +276,20 @@ def ytm_home(limit=3):
 
     OAuth tokens are issued for a "TV / limited-input device" client, which YouTube
     rejects (HTTP 400 "invalid argument") against ytmusicapi's default WEB_REMIX
-    request context for this endpoint. On failure we retry inside as_mobile(), which
-    swaps the context to ANDROID_MUSIC — the OAuth token is accepted there.
+    request context for this endpoint. If the *network call* fails we retry inside
+    as_mobile() (ANDROID_MUSIC context). Parsing happens outside the try so a parser
+    error never triggers the mobile retry — that retry rejects cookie auth with 400.
     """
     yt = _get_ytm()
     try:
-        return _parse_home(yt.get_home(limit=limit))
+        data = yt.get_home(limit=limit)
     except Exception:
         if is_authenticated() and hasattr(yt, 'as_mobile'):
             with yt.as_mobile():
-                return _parse_home(yt.get_home(limit=limit))
-        raise
+                data = yt.get_home(limit=limit)
+        else:
+            raise
+    return _parse_home(data)
 
 
 def ytm_home_public(limit=3):

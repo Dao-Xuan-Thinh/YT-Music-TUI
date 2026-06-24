@@ -8,7 +8,8 @@ import os
 _CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
 
 _DEFAULTS = {
-    'cookies_file':  '',
+    'cookies_file':  '',        # yt-dlp/mpv STREAMING cookies (age-restricted), via Settings (s)
+    'auth_cookies_file': '',    # ytmusicapi ACCOUNT cookies (personalization), via Account (g)
     'volume':        80,
     'search_source': 'ytm',   # 'ytm', 'yt', 'both'
     'max_results':   15,
@@ -113,6 +114,15 @@ class Config:
         self.save()
 
     @property
+    def auth_cookies_file(self):
+        return self._data.get('auth_cookies_file', '')
+
+    @auth_cookies_file.setter
+    def auth_cookies_file(self, path):
+        self._data['auth_cookies_file'] = path or ''
+        self.save()
+
+    @property
     def app_mode(self):
         return self._data.get('app_mode') if self._data.get('app_mode') in ('online', 'offline') else 'online'
 
@@ -172,6 +182,11 @@ class Config:
     def valid_cookies(self):
         """Return cookies_file path (expanded) if the file exists, else empty string."""
         cf = _expand(self.cookies_file)
+        return cf if (cf and os.path.isfile(cf)) else ''
+
+    def valid_auth_cookies(self):
+        """Return auth_cookies_file path (expanded) if the file exists, else ''."""
+        cf = _expand(self.auth_cookies_file)
         return cf if (cf and os.path.isfile(cf)) else ''
 
 

@@ -35,6 +35,13 @@ cookies**. It verifies by fetching your account; on success it shows
 **"Signed in as &lt;you&gt; ✓"**, the footer shows `cookies`, and your For You feed
 personalizes. Re-export when the cookies eventually expire (months).
 
+> **These account cookies are used only for YouTube Music metadata/personalization —
+> never for audio streaming.** An authenticated YouTube session makes the underlying
+> yt-dlp extractor receive a format set it can't play (you'd get no audio and the queue
+> skipping track-to-track), so streaming always stays anonymous. The separate
+> *Streaming cookies* field in **Settings (`s`)** is only for age-restricted videos and
+> is independent of sign-in.
+
 ---
 
 ## B. OAuth (device login) — currently rejected by YT Music

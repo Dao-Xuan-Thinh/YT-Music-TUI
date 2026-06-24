@@ -19,7 +19,8 @@ main.py         ← Entry point; Textual TUI wiring, home screen, keybindings, p
 youtube.py      ← yt-dlp + ytmusicapi wrapper: resolve() (URL or keyword), search(), playlists,
                   auth (cookies/browser + OAuth device flow) + authenticated client, get_home() feed
 player.py       ← mpv IPC + ffplay fallback; single-thread event loop for non-blocking IPC
-config.py       ← JSON persistence: cookies_file, volume, search_source, theme, app_mode
+config.py       ← JSON persistence: cookies_file (streaming) + auth_cookies_file (account),
+                  volume, search_source, theme, app_mode
 library.py      ← JSON persistence: liked songs, saved playlists, pinned folders, recent, sessions
 offline.py      ← Local audio folder scanner (mutagen tags) for offline mode
 updater.py      ← Self-update via git (check/pull/deps refresh, branch switch) + re-exec on restart
@@ -196,16 +197,32 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 You** tab and search personalize. Setup: `YOUTUBE_LOGIN.md`.
 - **Cookies (works):** point it at a `cookies.txt` exported from a logged-in
   music.youtube.com; ytmusicapi uses it as browser auth (SAPISIDHASH), which `youtubei`
-  accepts. Reuses the app's `cookies_file`. Built in `youtube._browser_headers_from_cookies`
-  / `cookies_auth_ok`.
+  accepts. Stored in `config.auth_cookies_file` (NOT `cookies_file` — see gotcha below).
+  Built in `youtube._browser_headers_from_cookies` / `cookies_auth_ok`. Only the ~24
+  auth-relevant cookie names are sent (`_AUTH_COOKIE_NAMES`) — a full-browser dump's
+  ~100 KB Cookie header is rejected by YouTube with an empty body.
 - **OAuth (device flow):** kept, but **YouTube Music currently rejects OAuth tokens with
   `HTTP 400 INVALID_ARGUMENT`** (Google disabled third-party-client tokens for `youtubei`;
   no client-side fix, 1.12.1 is the latest ytmusicapi). Token in `oauth.json` (gitignored).
 
-`youtube.configure_auth(method, …, cookies_file)` wires the active method at boot;
-`youtube._get_ytm()` builds the matching `YTMusic` (cookies → `auth=headers`, oauth →
-`oauth_credentials`, else anonymous), degrading to anonymous on error. `auth_status()`
-labels the footer.
+`youtube.configure_auth(method, …, cookies_file=auth_cookies_file)` wires the active
+method at boot; `youtube._get_ytm()` builds the matching `YTMusic` (cookies →
+`auth=headers`, oauth → `oauth_credentials`, else anonymous), degrading to anonymous on
+error. `auth_status()` labels the footer. `is_authenticated()` is cached (computed once in
+`configure_auth`) so the footer/status don't re-parse the cookie file each refresh.
+
+### Gotcha: auth cookies must NOT reach yt-dlp (two separate cookie files)
+
+`config.auth_cookies_file` (ytmusicapi account auth, set via Account `g`) and
+`config.cookies_file` (yt-dlp/mpv **streaming** cookies for age-restricted videos, set via
+Settings `s`) are **deliberately separate**. An authenticated YouTube session makes yt-dlp
+receive a SABR-only format set it can't play (`Requested format is not available`) → every
+track errors → `end-file[reason=error]` cascades the queue song-by-song with **no audio**.
+So the player is only ever given `valid_cookies()` (streaming), never the auth cookies.
+`App.__init__` has a one-time migration: if `cookies_file` holds a logged-in YTM export
+(detected via `_browser_headers_from_cookies`), it's moved to `auth_cookies_file`,
+`auth_method`→`cookies`, and `cookies_file` cleared. `_on_track_end` also has a cascade
+guard (≥3 sub-2s ends in a row → stop with an error instead of skipping the whole queue).
 
 **Like / save a playlist:** `l` likes the highlighted/playing track; `w` saves the current list as a named playlist (both appear on the home screen)
 

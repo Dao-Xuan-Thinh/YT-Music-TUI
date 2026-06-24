@@ -145,10 +145,12 @@ class SettingsScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id='settings-box'):
-            yield Label('Cookies file path (Netscape format .txt):')
+            yield Label('Streaming cookies for age-restricted videos (Netscape .txt):')
             yield Input(value=self._current_cookies, id='cookies-input',
                         placeholder=_EG_COOKIES)
             yield Static('', id='cookies-status', classes='valid')
+            yield Static('Optional. For signing in to YouTube Music, use Account '
+                         '(g) instead — not this field.', classes='hint')
             yield Label('Local audio folder (offline mode — press o):')
             yield Input(value=self._current_folder, id='folder-input',
                         placeholder=_EG_FOLDER)
@@ -868,6 +870,20 @@ class YTMApp(App):
         super().__init__()
         self._config  = Config()
         self._lib     = Library()
+        # One-time migration: earlier builds stored the YTM account cookie dump in
+        # `cookies_file`, which is ALSO the yt-dlp/mpv streaming cookie file. An
+        # authenticated YouTube session makes yt-dlp get a SABR-only format set it
+        # can't play ("Requested format is not available") → every track errors and
+        # the queue skips song-by-song with no audio. If the saved streaming cookies
+        # are actually a logged-in YTM export, move them to the auth slot and stop
+        # feeding them to the player.
+        if (not self._config.auth_cookies_file and self._config.valid_cookies()
+                and youtube._browser_headers_from_cookies(
+                    self._config.valid_cookies()) is not None):
+            self._config.auth_cookies_file = self._config.cookies_file
+            if self._config.auth_method == 'none':
+                self._config.auth_method = 'cookies'
+            self._config.cookies_file = ''
         self._player  = player_module.Player(
             cookies_file=self._config.valid_cookies()
         )
@@ -892,7 +908,7 @@ class YTMApp(App):
         youtube.configure_auth(self._config.auth_method,
                                self._config.oauth_client_id,
                                self._config.oauth_client_secret,
-                               self._config.cookies_file)
+                               self._config.auth_cookies_file)
 
     # ── Layout ────────────────────────────────────────────────────────────
 
@@ -1260,6 +1276,7 @@ class YTMApp(App):
         self._queue_idx = idx
         self.now_playing = f'{track["title"]}  —  {track["uploader"]}'
         self._lib.add_recent(track)
+        self._play_started_at = time.monotonic()   # for the cascade guard below
         self._set_status('Loading…')
         self._render_table()
         self._update_footer()
@@ -1276,6 +1293,21 @@ class YTMApp(App):
 
     def _on_track_end(self) -> None:
         """Called by the player when a track finishes (natural eof/error)."""
+        # Cascade guard: if tracks keep ending almost immediately after loading,
+        # they're failing to play (e.g. extraction error), not finishing. Advancing
+        # would skip through the whole queue silently. Stop after a few in a row.
+        started = getattr(self, '_play_started_at', None)
+        if started is not None and (time.monotonic() - started) < 2.0:
+            self._consec_fail = getattr(self, '_consec_fail', 0) + 1
+        else:
+            self._consec_fail = 0
+        if self._consec_fail >= 3:
+            self._consec_fail = 0
+            self.call_from_thread(
+                self._set_status,
+                "Playback keeps failing — can't load these tracks (try without "
+                "streaming cookies: Settings 's', or check your connection).")
+            return
         if self.repeat == 'one':
             self.call_from_thread(self._play_queue_item, self._queue_idx)
             return
@@ -1615,16 +1647,18 @@ class YTMApp(App):
             method = result.get('method', 'none')
             cid = result.get('client_id', self._config.oauth_client_id)
             csec = result.get('client_secret', self._config.oauth_client_secret)
-            cookies = result.get('cookies_file', self._config.cookies_file)
+            cookies = result.get('cookies_file', self._config.auth_cookies_file)
             # Persist the chosen method + its inputs and re-wire the client.
             self._config.auth_method = method
             if cid != self._config.oauth_client_id:
                 self._config.oauth_client_id = cid
             if csec != self._config.oauth_client_secret:
                 self._config.oauth_client_secret = csec
-            if cookies != self._config.cookies_file:
-                self._config.cookies_file = cookies
-                self._player.cookies_file = cookies   # keep yt-dlp cookies in sync
+            # Auth cookies feed ytmusicapi ONLY — deliberately NOT the player. An
+            # authenticated YouTube session breaks yt-dlp streaming (SABR-only
+            # formats). Streaming cookies are a separate setting (Settings, `s`).
+            if cookies != self._config.auth_cookies_file:
+                self._config.auth_cookies_file = cookies
             youtube.configure_auth(method, cid, csec, cookies)
             self._update_footer()
             self._set_status('YouTube auth: ' + youtube.auth_status()
@@ -1634,7 +1668,7 @@ class YTMApp(App):
             AccountScreen(self._config.auth_method,
                           self._config.oauth_client_id,
                           self._config.oauth_client_secret,
-                          self._config.cookies_file),
+                          self._config.auth_cookies_file),
             _after,
         )
 
