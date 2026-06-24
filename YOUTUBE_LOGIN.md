@@ -1,13 +1,47 @@
 # Signing in to your YouTube account
 
 The app can sign into your Google/YouTube account so it shows **personalized**
-content (your "For You" home feed, and personalized search ranking). It uses
-Google's **OAuth device flow** — you never type your Google password into the app;
-you authorize it in a browser and the app stores a refresh token locally
-(`oauth.json`, which is gitignored).
+content (your "For You" home feed, and personalized search ranking). Open the
+**Account** screen with the **`g`** key and pick a method.
 
-Because Google retired the shared credentials `ytmusicapi` used to ship with, you
-provide **your own** OAuth client. It's free and takes ~5 minutes, once.
+> ### ⚠️ Which method? Use **Cookies**.
+> YouTube Music's internal API currently **rejects OAuth tokens** from
+> user-created Google Cloud clients (every call returns `HTTP 400 INVALID_ARGUMENT`).
+> This is a known, Google-side limitation — not a bug in this app — and there's no
+> client-side fix. **Cookie auth is the working method.** The OAuth flow is kept for
+> when/if Google re-enables it, but expect it to fail today.
+
+---
+
+## A. Cookie auth (recommended — works today)
+
+The app authenticates as your logged-in browser session (no password stored; it uses
+your session cookies). You provide a **cookies.txt** exported while logged in to
+music.youtube.com.
+
+### 1. Export cookies.txt
+- **Browser extension:** install "Get cookies.txt LOCALLY" (Chrome/Edge/Firefox), open
+  <https://music.youtube.com> **while logged in**, click the extension → **Export** →
+  save the `.txt` (Netscape format).
+- **Or via yt-dlp:** `yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download "https://music.youtube.com"`
+  (swap `chrome` for your browser).
+
+The file must contain your `__Secure-3PAPISID` / `SAPISID` cookies (a logged-in export
+does).
+
+### 2. Use it in the app
+Press **`g`** → put the cookies.txt path in the **Cookies** field → **Use these
+cookies**. It verifies by fetching your account; on success it shows
+**"Signed in as &lt;you&gt; ✓"**, the footer shows `cookies`, and your For You feed
+personalizes. Re-export when the cookies eventually expire (months).
+
+---
+
+## B. OAuth (device login) — currently rejected by YT Music
+
+Kept for completeness; **expect `HTTP 400` today**. If you still want to try it: Google
+retired the shared credentials `ytmusicapi` used to ship with, so you provide **your
+own** OAuth client (free, ~5 min).
 
 ---
 

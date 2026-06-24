@@ -17,7 +17,7 @@ The project is modular with clear separation of concerns:
 ```
 main.py         ← Entry point; Textual TUI wiring, home screen, keybindings, playback flow
 youtube.py      ← yt-dlp + ytmusicapi wrapper: resolve() (URL or keyword), search(), playlists,
-                  OAuth login (device flow) + authenticated client, get_home() feed
+                  auth (cookies/browser + OAuth device flow) + authenticated client, get_home() feed
 player.py       ← mpv IPC + ffplay fallback; single-thread event loop for non-blocking IPC
 config.py       ← JSON persistence: cookies_file, volume, search_source, theme, app_mode
 library.py      ← JSON persistence: liked songs, saved playlists, pinned folders, recent, sessions
@@ -191,12 +191,21 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 
 **Switch search source:** `t` (cycles YT Music → YouTube → Both)
 
-**Sign in to YouTube:** `g` opens the Account screen — paste your Google Cloud OAuth
-client id/secret and Log in (device flow: visit the URL, enter the shown code). Once
-signed in, the home screen's **For You** tab and search are personalized. Setup steps:
-`YOUTUBE_LOGIN.md`. Auth is OAuth device-flow (no password in the app); the token lives
-in `oauth.json` (gitignored). `youtube.configure_auth()` wires the saved client at boot;
-`youtube._get_ytm()` builds an authenticated `YTMusic` when a token exists, else anonymous.
+**Sign in to YouTube:** `g` opens the Account screen with two methods (config
+`auth_method`: `none`/`oauth`/`cookies`). Once authenticated, the home screen's **For
+You** tab and search personalize. Setup: `YOUTUBE_LOGIN.md`.
+- **Cookies (works):** point it at a `cookies.txt` exported from a logged-in
+  music.youtube.com; ytmusicapi uses it as browser auth (SAPISIDHASH), which `youtubei`
+  accepts. Reuses the app's `cookies_file`. Built in `youtube._browser_headers_from_cookies`
+  / `cookies_auth_ok`.
+- **OAuth (device flow):** kept, but **YouTube Music currently rejects OAuth tokens with
+  `HTTP 400 INVALID_ARGUMENT`** (Google disabled third-party-client tokens for `youtubei`;
+  no client-side fix, 1.12.1 is the latest ytmusicapi). Token in `oauth.json` (gitignored).
+
+`youtube.configure_auth(method, …, cookies_file)` wires the active method at boot;
+`youtube._get_ytm()` builds the matching `YTMusic` (cookies → `auth=headers`, oauth →
+`oauth_credentials`, else anonymous), degrading to anonymous on error. `auth_status()`
+labels the footer.
 
 **Like / save a playlist:** `l` likes the highlighted/playing track; `w` saves the current list as a named playlist (both appear on the home screen)
 

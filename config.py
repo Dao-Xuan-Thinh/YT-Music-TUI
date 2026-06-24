@@ -20,6 +20,8 @@ _DEFAULTS = {
     # client construction for token refresh. See YOUTUBE_LOGIN.md.
     'oauth_client_id':     '',
     'oauth_client_secret': '',
+    # Active auth method for ytmusicapi: 'none' | 'oauth' | 'cookies'.
+    'auth_method':         'none',
 }
 
 
@@ -137,6 +139,17 @@ class Config:
     def oauth_client_secret(self, value):
         self._data['oauth_client_secret'] = value or ''
         self.save()
+
+    @property
+    def auth_method(self):
+        m = self._data.get('auth_method', 'none')
+        return m if m in ('none', 'oauth', 'cookies') else 'none'
+
+    @auth_method.setter
+    def auth_method(self, value):
+        if value in ('none', 'oauth', 'cookies'):
+            self._data['auth_method'] = value
+            self.save()
 
     @property
     def theme(self):

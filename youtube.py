@@ -28,31 +28,94 @@ class _SilentLogger:
 _OAUTH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oauth.json')
 
 _ytm = None
+_auth_method = 'none'        # 'none' | 'oauth' | 'cookies'
 _client_id = ''
 _client_secret = ''
+_cookies_file = ''
 
 
-def configure_auth(client_id, client_secret):
-    """Set the OAuth client credentials and drop the cached client so the next
-    _get_ytm() rebuilds (authenticated if a token file is present)."""
-    global _client_id, _client_secret, _ytm
+def configure_auth(method='none', client_id='', client_secret='', cookies_file=''):
+    """Set the active auth method + its inputs and drop the cached client so the
+    next _get_ytm() rebuilds. method: 'none' | 'oauth' | 'cookies'."""
+    global _auth_method, _client_id, _client_secret, _cookies_file, _ytm
+    _auth_method = method if method in ('none', 'oauth', 'cookies') else 'none'
     _client_id = client_id or ''
     _client_secret = client_secret or ''
+    _cookies_file = os.path.expanduser(os.path.expandvars(cookies_file or ''))
     _ytm = None
 
 
-def is_authenticated():
-    """True if we have client credentials and a saved OAuth token to use them with."""
+def _oauth_ready():
     return bool(_client_id and _client_secret and os.path.isfile(_OAUTH_FILE))
 
 
+def _browser_headers_from_cookies(path):
+    """Build a ytmusicapi browser-auth header dict from a Netscape cookies file.
+
+    ytmusicapi authenticates as a web session: it reads the SAPISID from the cookie
+    header and recomputes the SAPISIDHASH `authorization` on each request. We just
+    need a cookie header carrying a logged-in session. Returns None if the file has
+    no SAPISID/__Secure-3PAPISID (i.e. not a logged-in YouTube cookie export).
+    """
+    import http.cookiejar
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        jar = http.cookiejar.MozillaCookieJar(path)
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except Exception:
+        return None
+    by_name = {}     # de-dupe by cookie name, keep insertion order (last wins)
+    for ck in jar:
+        if 'youtube' in (ck.domain or '') or 'google' in (ck.domain or ''):
+            by_name[ck.name] = ck.value
+    if not ('SAPISID' in by_name or '__Secure-3PAPISID' in by_name):
+        return None
+    cookie_header = '; '.join(f'{name}={value}' for name, value in by_name.items())
+    return {
+        'cookie': cookie_header,
+        # Must contain "SAPISIDHASH" so ytmusicapi detects BROWSER auth; the real
+        # value is recomputed from the cookie's SAPISID on every request.
+        'authorization': 'SAPISIDHASH placeholder',
+        'x-goog-authuser': '0',
+        'origin': 'https://music.youtube.com',
+        'user-agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                       'AppleWebKit/537.36 (KHTML, like Gecko) '
+                       'Chrome/120.0 Safari/537.36'),
+    }
+
+
+def is_authenticated():
+    """True if the active auth method has usable credentials."""
+    if _auth_method == 'oauth':
+        return _oauth_ready()
+    if _auth_method == 'cookies':
+        return _browser_headers_from_cookies(_cookies_file) is not None
+    return False
+
+
+def auth_status():
+    """Short label for the footer/UI describing the active auth method."""
+    if _auth_method == 'cookies':
+        return 'cookies' if is_authenticated() else 'cookies (not set)'
+    if _auth_method == 'oauth':
+        return 'oauth' if _oauth_ready() else 'oauth (not set)'
+    return 'public'
+
+
 def _get_ytm():
-    """Lazily create a YTMusic client — authenticated if credentials + token exist,
-    otherwise anonymous (public data only). Falls back to anonymous on any error."""
+    """Lazily create a YTMusic client for the active auth method. Falls back to an
+    anonymous client (public data only) on any construction error."""
     global _ytm
     if _ytm is None:
         from ytmusicapi import YTMusic
-        if is_authenticated():
+        if _auth_method == 'cookies':
+            headers = _browser_headers_from_cookies(_cookies_file)
+            try:
+                _ytm = YTMusic(auth=headers) if headers else YTMusic()
+            except Exception:
+                _ytm = YTMusic()
+        elif _auth_method == 'oauth' and _oauth_ready():
             try:
                 from ytmusicapi import OAuthCredentials
                 oc = OAuthCredentials(_client_id, _client_secret)
@@ -62,6 +125,30 @@ def _get_ytm():
         else:
             _ytm = YTMusic()
     return _ytm
+
+
+def cookies_auth_ok(cookies_file):
+    """Validate a cookies file by fetching the signed-in account.
+
+    Returns (ok: bool, message): on success message is the account name; on failure
+    it's the reason. Uses get_account_info() (not get_library_playlists, which
+    returns [] for unauthenticated sessions instead of failing).
+    """
+    from ytmusicapi import YTMusic
+    headers = _browser_headers_from_cookies(
+        os.path.expanduser(os.path.expandvars(cookies_file or '')))
+    if headers is None:
+        return False, ('no logged-in YouTube cookies found in that file '
+                       '(need SAPISID / __Secure-3PAPISID)')
+    try:
+        info = YTMusic(auth=headers).get_account_info() or {}
+        name = info.get('accountName')
+        if name:
+            return True, name
+        return False, ('cookies not accepted — re-export them while logged in to '
+                       'music.youtube.com')
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {exc}'
 
 
 def login(client_id, client_secret, on_code, should_cancel=None):
