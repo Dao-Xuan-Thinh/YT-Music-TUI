@@ -870,9 +870,16 @@ class YTMApp(App):
 
     def _accent(self):
         try:
-            return self.current_theme.accent or '#89b4fa'
+            accent = self.current_theme.accent or '#89b4fa'
         except Exception:
             return '#89b4fa'
+        # The ANSI themes use Textual's own color names ('ansi_green',
+        # 'ansi_bright_magenta') which Rich can't parse — so the styled Text was
+        # silently dropped and the playing row showed no highlight. Strip the
+        # prefix to Rich's equivalent ('green', 'bright_magenta').
+        if isinstance(accent, str) and accent.startswith('ansi_'):
+            accent = accent[len('ansi_'):]
+        return accent
 
     def _playing_key(self):
         if not self.now_playing:
