@@ -49,6 +49,21 @@ def _oauth_ready():
     return bool(_client_id and _client_secret and os.path.isfile(_OAUTH_FILE))
 
 
+# The only cookies YouTube Music's API needs for auth. A typical cookies.txt is a
+# full-browser dump (hundreds of sites, plus ~95 per-tab `ST-*` session cookies);
+# sending all of them makes a ~100 KB Cookie header that YouTube rejects with an
+# empty body. We send just these (~2 KB).
+_AUTH_COOKIE_NAMES = {
+    'SAPISID', '__Secure-1PAPISID', '__Secure-3PAPISID',
+    'SID', '__Secure-1PSID', '__Secure-3PSID',
+    'HSID', 'SSID', 'APISID',
+    '__Secure-1PSIDTS', '__Secure-3PSIDTS',
+    '__Secure-1PSIDCC', '__Secure-3PSIDCC', 'SIDCC',
+    'LOGIN_INFO', 'VISITOR_INFO1_LIVE', 'VISITOR_PRIVACY_METADATA',
+    'YSC', 'PREF', 'CONSENT', 'SOCS', 'NID', '__Secure-YNID',
+}
+
+
 def _browser_headers_from_cookies(path):
     """Build a ytmusicapi browser-auth header dict from a Netscape cookies file.
 
@@ -67,6 +82,8 @@ def _browser_headers_from_cookies(path):
         return None
     by_name = {}     # de-dupe by cookie name, keep insertion order (last wins)
     for ck in jar:
+        if ck.name not in _AUTH_COOKIE_NAMES:
+            continue   # skip ST-* / unrelated cookies → keep the header small
         if 'youtube' in (ck.domain or '') or 'google' in (ck.domain or ''):
             by_name[ck.name] = ck.value
     if not ('SAPISID' in by_name or '__Secure-3PAPISID' in by_name):
