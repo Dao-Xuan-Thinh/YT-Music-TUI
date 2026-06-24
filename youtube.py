@@ -155,8 +155,21 @@ def _parse_home(data):
 
 
 def ytm_home(limit=3):
-    """The YouTube Music home feed (personalized when authenticated)."""
-    return _parse_home(_get_ytm().get_home(limit=limit))
+    """The YouTube Music home feed (personalized when authenticated).
+
+    OAuth tokens are issued for a "TV / limited-input device" client, which YouTube
+    rejects (HTTP 400 "invalid argument") against ytmusicapi's default WEB_REMIX
+    request context for this endpoint. On failure we retry inside as_mobile(), which
+    swaps the context to ANDROID_MUSIC — the OAuth token is accepted there.
+    """
+    yt = _get_ytm()
+    try:
+        return _parse_home(yt.get_home(limit=limit))
+    except Exception:
+        if is_authenticated() and hasattr(yt, 'as_mobile'):
+            with yt.as_mobile():
+                return _parse_home(yt.get_home(limit=limit))
+        raise
 
 
 def ytm_home_public(limit=3):
