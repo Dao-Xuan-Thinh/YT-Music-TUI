@@ -205,8 +205,9 @@ def _wave_text(s, palette, frame, bold=True, spread=0.6, speed=0.45):
     for i, ch in enumerate(s):
         # Position along the palette loop for this char at this frame.
         p = (i * spread - frame * speed) % n
-        k = int(p)
-        t = p - k
+        fk = int(p)        # floor (p ≥ 0)
+        t = p - fk         # fractional part in [0, 1)
+        k = fk % n         # guard the float-rounding-to-n edge → always in range
         r1, g1, b1 = _hex(palette[k])
         r2, g2, b2 = _hex(palette[(k + 1) % n])
         r = int(r1 + (r2 - r1) * t)
@@ -1539,11 +1540,12 @@ class YTMApp(App):
             return
         self._anim_frame += 1
         f = self._anim_frame
-        # Now-playing bar (single height-1 widget).
+        # Now-playing bar (single height-1 widget). Catch everything — a timer
+        # callback must never raise (that crashes the app).
         try:
             self.query_one('#now-playing', Static).update(
                 Text('♪  ') + _wave_text(self.now_playing, palette, f))
-        except NoMatches:
+        except Exception:
             pass
         # The playing row's 4 cells (no full-table rebuild). Each column's phase is
         # staggered so the wave appears to travel across the row.
@@ -1763,7 +1765,11 @@ class YTMApp(App):
         cur = self.theme
         idx = THEME_CYCLE.index(cur) if cur in THEME_CYCLE else -1
         new = THEME_CYCLE[(idx + 1) % len(THEME_CYCLE)]
-        self.theme = new
+        try:
+            self.theme = new        # raises if a custom theme failed to register
+        except Exception:
+            self._set_status(f'Theme unavailable: {new}')
+            return
         self._config.update(theme=new)
         self._schedule_config_flush()
         self._set_status(f'Theme: {new}')
