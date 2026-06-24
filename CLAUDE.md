@@ -21,7 +21,7 @@ player.py       ← mpv IPC + ffplay fallback; single-thread event loop for non-
 config.py       ← JSON persistence: cookies_file, volume, search_source, theme, app_mode
 library.py      ← JSON persistence: liked songs, saved playlists, pinned folders, recent, sessions
 offline.py      ← Local audio folder scanner (mutagen tags) for offline mode
-updater.py      ← Self-update via git (check/pull/deps refresh) + re-exec on restart
+updater.py      ← Self-update via git (check/pull/deps refresh, branch switch) + re-exec on restart
 ```
 
 ### Core Flow
@@ -31,8 +31,10 @@ updater.py      ← Self-update via git (check/pull/deps refresh) + re-exec on r
    "Search / Browse" enters the main UI.
 2. **Search** (`/` key) → `youtube.resolve()` detects URL or keyword → results populate DataTable
 3. **Play** (Enter on result) → `player.play(url, start=)` loads URL via mpv IPC `loadfile replace`
-4. **Queue**: selecting a result sets the queue to remaining results; on track end, auto-advances
-   (honoring `shuffle` and `repeat` off/one/all). `add_recent()` records each play.
+4. **Queue**: selecting a result makes the whole loaded list the queue and positions the
+   index at the chosen track (so jumping matches auto-advance — the `n/total` counter stays
+   stable). On track end, auto-advances (honoring `shuffle` and `repeat` off/one/all).
+   `add_recent()` records each play.
 5. **Settings** (`s`) sets cookies/local-folder (with `~` expansion + ✓/✗); **quit** (`q`)
    confirms when playing and saves a resume session.
 
@@ -165,7 +167,7 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 | `config.py` | JSON settings persistence (cookies, volume, source, theme, app_mode) |
 | `library.py` | JSON persistence: liked, playlists, pinned folders, recent, sessions |
 | `offline.py` | Local audio folder scanner (mutagen tags) |
-| `updater.py` | Self-update: git fetch/compare, ff-only pull, deps refresh, re-exec |
+| `updater.py` | Self-update: git fetch/compare, ff-only pull, deps refresh, branch switch, re-exec |
 | `requirements.txt` | Python dependencies |
 | `config.json` | Auto-created runtime config (gitignored) |
 | `library.json` / `sessions.json` | Auto-created library + resume sessions (gitignored) |
@@ -194,9 +196,14 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 
 **See all keys:** `?`
 
-**Update the app:** `u` — fetches from the git remote; if newer commits exist it
-confirms, fast-forward-pulls, reinstalls deps when `requirements.txt` changed, then
-offers to restart (re-execs the interpreter). A background check at boot flags an
-available update in the footer (`⬆ update (u)`). Requires the install to be a git
-checkout with an upstream remote; otherwise `u` reports "update with git pull".
-Refuses to run if the working tree has local changes (stash/commit first).
+**Update the app:** `u` — opens the Update screen (`UpdateScreen`) showing the current
+branch + revision, with options to **update this branch** or **switch branches** (e.g.
+`master` ↔ `test`). Update fetches the remote; if newer commits exist it confirms,
+fast-forward-pulls, reinstalls deps when `requirements.txt` changed, then offers to
+restart (re-execs the interpreter). Switching checks out the chosen branch (creating a
+local tracking branch from `origin/<branch>` if needed), ff-pulls, refreshes deps, and
+offers to restart. A background check at boot flags an available update in the footer
+(`↑ update (u)`). Requires the install to be a git checkout with an upstream remote;
+otherwise `u` reports "update with git pull". Refuses to run if the working tree has
+local changes (stash/commit first). Branch backend lives in `updater.py`
+(`current_branch`, `list_branches`, `switch_branch`).

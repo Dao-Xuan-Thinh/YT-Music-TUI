@@ -63,6 +63,29 @@ def _upstream():
     return out if ok else ''
 
 
+def current_branch():
+    """Name of the checked-out branch (or '' if detached / unavailable)."""
+    ok, out, _ = _git('rev-parse', '--abbrev-ref', 'HEAD', timeout=10)
+    return out if ok and out != 'HEAD' else ''
+
+
+def list_branches():
+    """Short names of branches available on origin (e.g. ['master', 'test'])."""
+    ok, out, _ = _git('branch', '-r', timeout=15)
+    if not ok:
+        return []
+    names = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or '->' in line:        # skip 'origin/HEAD -> origin/master'
+            continue
+        if line.startswith('origin/'):
+            name = line[len('origin/'):]
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
 def check_for_update():
     """
     Fetch from the remote and report how far behind upstream we are.
@@ -117,6 +140,22 @@ def _read_requirements_hash():
         return ''
 
 
+def _refresh_deps():
+    """pip install -r requirements.txt. Returns an error string, or '' on success."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, '-m', 'pip', 'install', '-r',
+             os.path.join(_REPO_DIR, 'requirements.txt'), '--quiet'],
+            capture_output=True, text=True, timeout=300,
+            creationflags=_NO_WINDOW,
+        )
+        if proc.returncode != 0:
+            return proc.stderr.strip() or proc.stdout.strip() or 'pip install failed'
+        return ''
+    except Exception as exc:  # pragma: no cover - defensive
+        return str(exc)
+
+
 def apply_update():
     """
     Pull the latest code (fast-forward only) and refresh deps if they changed.
@@ -153,27 +192,98 @@ def apply_update():
     result['deps_changed'] = bool(before) and before != after
 
     if result['updated'] and result['deps_changed']:
-        try:
-            proc = subprocess.run(
-                [sys.executable, '-m', 'pip', 'install', '-r',
-                 os.path.join(_REPO_DIR, 'requirements.txt'), '--quiet'],
-                capture_output=True, text=True, timeout=300,
-                creationflags=_NO_WINDOW,
-            )
-            if proc.returncode != 0:
-                result['error'] = (
-                    'updated, but dependency install failed — run '
-                    '"pip install -r requirements.txt" manually: '
-                    + (proc.stderr.strip() or proc.stdout.strip())
-                )
-        except Exception as exc:  # pragma: no cover - defensive
-            result['error'] = f'updated, but dependency install failed: {exc}'
+        err = _refresh_deps()
+        if err:
+            result['error'] = ('updated, but dependency install failed — run '
+                               '"pip install -r requirements.txt" manually: ' + err)
 
     if result['updated']:
         result['message'] = 'Updated' + (' (dependencies refreshed)'
                                          if result['deps_changed'] else '')
     else:
         result['message'] = 'Already up to date'
+    return result
+
+
+def switch_branch(target):
+    """
+    Switch to another branch and fast-forward it.
+
+    Fetches first, checks out `target` (creating a local tracking branch from
+    origin/<target> if it doesn't exist locally), ff-pulls, and refreshes deps if
+    requirements.txt changed across the switch.
+
+    Returns a dict:
+      {'ok': bool, 'switched': bool, 'branch': str, 'deps_changed': bool,
+       'message': str, 'error': str | None}
+    """
+    result = {'ok': False, 'switched': False, 'branch': '', 'deps_changed': False,
+              'message': '', 'error': None}
+
+    if not available_backend():
+        result['error'] = 'not a git checkout'
+        return result
+
+    target = (target or '').strip()
+    if not target:
+        result['error'] = 'no branch specified'
+        return result
+
+    if current_branch() == target:
+        result['ok'] = True
+        result['branch'] = target
+        result['message'] = f'Already on {target}'
+        return result
+
+    # Refuse to clobber local edits — a checkout would either fail or drag them
+    # onto the other branch.
+    ok, out, _ = _git('status', '--porcelain', timeout=15)
+    if ok and out.strip():
+        result['error'] = ('you have local changes — commit or stash them first, '
+                           'then switch branches')
+        return result
+
+    before = _read_requirements_hash()
+
+    ok, _, err = _git('fetch', '--quiet', timeout=60)
+    if not ok:
+        result['error'] = err or 'git fetch failed'
+        return result
+
+    # Local branch already there? Plain switch; otherwise create it tracking origin.
+    local_ok, _, _ = _git('rev-parse', '--verify', '--quiet',
+                          f'refs/heads/{target}', timeout=10)
+    if local_ok:
+        ok, out, err = _git('switch', target, timeout=30)
+    else:
+        ok, out, err = _git('switch', '-c', target, '--track',
+                            f'origin/{target}', timeout=30)
+    if not ok:
+        result['error'] = err or out or f'could not switch to {target}'
+        return result
+
+    result['switched'] = True
+    result['branch'] = target
+
+    # Fast-forward to the remote tip (no-op if already current).
+    ok, out, err = _git('pull', '--ff-only', timeout=120)
+    if not ok:
+        result['ok'] = True   # we did switch; just couldn't pull
+        result['message'] = f'Switched to {target} (pull skipped: {err or out})'
+        return result
+
+    result['ok'] = True
+    after = _read_requirements_hash()
+    result['deps_changed'] = bool(before) and before != after
+
+    if result['deps_changed']:
+        dep_err = _refresh_deps()
+        if dep_err:
+            result['error'] = ('switched, but dependency install failed — run '
+                               '"pip install -r requirements.txt" manually: ' + dep_err)
+
+    result['message'] = ('Switched to ' + target
+                         + (' (dependencies refreshed)' if result['deps_changed'] else ''))
     return result
 
 

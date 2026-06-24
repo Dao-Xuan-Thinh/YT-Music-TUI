@@ -346,6 +346,64 @@ class NameScreen(ModalScreen):
         self.dismiss(None)
 
 
+# ── Update screen ────────────────────────────────────────────────────────────────
+
+class UpdateScreen(ModalScreen):
+    """Update the current branch, or switch between branches (e.g. master / test).
+
+    Dismisses with {'action': 'update'} or {'action': 'switch', 'branch': name},
+    or None on cancel.
+    """
+    BINDINGS = [
+        Binding('escape', 'cancel', 'Cancel'),
+        Binding('q', 'cancel', 'Cancel'),
+    ]
+
+    CSS = """
+    UpdateScreen { align: center middle; }
+    #update-box {
+        width: 60; height: auto;
+        border: round $accent; padding: 1 2; background: $surface;
+    }
+    #update-title { text-style: bold; color: $accent; margin-bottom: 1; }
+    #update-info { margin-bottom: 1; }
+    #update-box Button { width: 100%; margin-bottom: 1; }
+    """
+
+    def __init__(self, branch, revision, branches):
+        super().__init__()
+        self._branch = branch or '(detached)'
+        self._revision = revision or '?'
+        # Other branches you can switch to (exclude the current one).
+        self._others = [b for b in branches if b and b != branch]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id='update-box'):
+            yield Label('Update', id='update-title')
+            yield Static(f'Branch: {self._branch}   ({self._revision})',
+                         id='update-info')
+            yield Button(f'Update this branch ({self._branch})', id='upd-pull',
+                         variant='primary')
+            # Index-based ids — branch names can contain characters invalid as
+            # Textual widget ids (e.g. '/').
+            for i, b in enumerate(self._others):
+                yield Button(f'Switch to {b}', id=f'upd-switch-{i}')
+            yield Button('Cancel (Esc)', id='upd-cancel')
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ''
+        if bid == 'upd-pull':
+            self.dismiss({'action': 'update'})
+        elif bid.startswith('upd-switch-'):
+            self.dismiss({'action': 'switch',
+                          'branch': self._others[int(bid[len('upd-switch-'):])]})
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 # ── Home screen ─────────────────────────────────────────────────────────────────
 
 class HomeScreen(Screen):
@@ -572,7 +630,11 @@ class YTMApp(App):
         with Horizontal(id='filter-row'):
             yield Input(placeholder='Filter loaded list… (Esc to clear)',
                         id='filter-input')
-        yield DataTable(id='results-table', cursor_type='row')
+        # cursor_foreground_priority='renderable' so the playing row's accent
+        # color (set in _row_cells) survives even when it's also the cursor row;
+        # the default 'css' lets the cursor style override it (Bug: no highlight).
+        yield DataTable(id='results-table', cursor_type='row',
+                        cursor_foreground_priority='renderable')
         with Vertical(id='player-bar'):
             yield Static('♪  Nothing playing', id='now-playing')
             yield Static('', id='controls-row')
@@ -900,9 +962,12 @@ class YTMApp(App):
         else:
             idx = int(key)
             if idx < len(self._results):
-                self._queue = self._results[idx:]
-                self._queue_idx = 0
-                self._play_queue_item(0)
+                # Keep the whole loaded list as the queue and point the index at
+                # the chosen track, so jumping behaves like auto-advance — the
+                # n/total counter stays stable instead of resetting to 1.
+                self._queue = list(self._results)
+                self._queue_idx = idx
+                self._play_queue_item(idx)
 
     def _play_queue_item(self, idx: int, start: float = 0.0) -> None:
         if idx < 0 or idx >= len(self._queue):
@@ -1264,6 +1329,22 @@ class YTMApp(App):
                 'Self-update unavailable (not a git checkout) — update with git pull.'
             )
             return
+        branch = updater.current_branch()
+        rev = updater.current_revision()
+        branches = updater.list_branches() or ([branch] if branch else [])
+        self.push_screen(
+            UpdateScreen(branch, rev, branches), self._on_update_choice
+        )
+
+    def _on_update_choice(self, choice) -> None:
+        if not choice:
+            return
+        if choice['action'] == 'update':
+            self._check_then_update()
+        elif choice['action'] == 'switch':
+            self._confirm_switch_branch(choice['branch'])
+
+    def _check_then_update(self) -> None:
         self._set_status('Checking for updates…')
 
         def _run():
@@ -1271,6 +1352,52 @@ class YTMApp(App):
             self.call_from_thread(self._after_update_check, info)
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _confirm_switch_branch(self, branch) -> None:
+        def _confirmed(yes):
+            if yes:
+                self._do_switch_branch(branch)
+            else:
+                self._set_status('Branch switch cancelled.')
+
+        self.push_screen(
+            ConfirmScreen(
+                f'Switch to branch "{branch}"?\n'
+                'This pulls that branch and restarts the app.'
+            ),
+            _confirmed,
+        )
+
+    def _do_switch_branch(self, branch) -> None:
+        self._set_status(f'Switching to {branch}…')
+
+        def _run():
+            result = updater.switch_branch(branch)
+            self.call_from_thread(self._after_branch_switched, result)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _after_branch_switched(self, result) -> None:
+        if result.get('error') and not result.get('ok'):
+            self._set_status(f'Switch failed: {result["error"]}')
+            return
+        if result.get('error'):        # non-fatal (e.g. deps) — surface it
+            self._set_status(result['error'])
+        self._update_available = False
+        self._update_footer()
+
+        def _confirmed(yes):
+            if yes:
+                self._restart_app()
+            else:
+                self._set_status(
+                    f'{result["message"]} — restart to use it.'
+                )
+
+        self.push_screen(
+            ConfirmScreen(f'{result["message"]}.\nRestart now to load it?'),
+            _confirmed,
+        )
 
     def _after_update_check(self, info) -> None:
         if info.get('error'):
