@@ -635,30 +635,59 @@ class HomeScreen(Screen):
         threading.Thread(target=self._load_foryou, daemon=True).start()
 
     def _load_foryou(self) -> None:
+        err = None
+        fallback = False
         try:
             sections = youtube.ytm_home(limit=4)
-            err = None
         except Exception as exc:
-            sections, err = [], str(exc)
+            err = f'{type(exc).__name__}: {exc}'
+            self._log_feed_error()      # full traceback → err.txt for diagnosis
+            sections = []
+            # Personalized feed failed — fall back to the generic feed so the tab
+            # still shows something instead of going blank.
+            if youtube.is_authenticated():
+                try:
+                    sections = youtube.ytm_home_public(limit=4)
+                    fallback = bool(sections)
+                except Exception:
+                    pass
         try:
-            self.app.call_from_thread(self._populate_foryou, sections, err)
+            self.app.call_from_thread(self._populate_foryou, sections, err, fallback)
         except Exception:
             pass   # screen dismissed before the feed arrived
 
-    def _populate_foryou(self, sections, err=None) -> None:
+    @staticmethod
+    def _log_feed_error() -> None:
+        """Best-effort: append the active exception's traceback to err.txt."""
+        import traceback
+        try:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'err.txt')
+            with open(path, 'a', encoding='utf-8') as f:
+                f.write('\n--- For You feed error ---\n')
+                f.write(traceback.format_exc())
+        except Exception:
+            pass
+
+    def _populate_foryou(self, sections, err=None, fallback=False) -> None:
         try:
             lv = self.query_one('#list-foryou', ListView)
         except NoMatches:
             return
         lv.clear()   # removes only the existing placeholder (captured at call time)
         if not sections:
-            msg = ('Couldn’t load feed.' if err else
+            msg = (f'Feed error: {err}  —  press g to check sign-in' if err else
                    'No feed yet — press g to sign in for your For You feed.')
-            empty = ListItem(Label(msg))
+            empty = ListItem(Label(msg, markup=False))
             empty.payload = None
             lv.append(empty)
             return
         items = []
+        if fallback:
+            banner = ListItem(Label(
+                f'(personalized feed unavailable: {err}) — showing popular instead',
+                markup=False))
+            banner.payload = None
+            items.append(banner)
         for sec in sections:
             header = ListItem(Label(f"[bold]{sec['title']}[/]"))
             header.payload = None   # non-selectable section heading

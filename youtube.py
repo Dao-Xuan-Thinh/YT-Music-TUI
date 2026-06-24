@@ -132,14 +132,13 @@ def logout():
     _ytm = None
 
 
-def ytm_home(limit=3):
-    """The YouTube Music home feed via ytmusicapi (personalized when authenticated).
+def _parse_home(data):
+    """Map a ytmusicapi get_home() response into our section/item shape.
 
     Returns [{'title': str, 'items': [...]}] where each item is either
     {'kind': 'song', 'track': <track dict>} or
     {'kind': 'playlist', 'name': str, 'playlistId': str}. Empty sections dropped.
     """
-    data = _get_ytm().get_home(limit=limit)
     sections = []
     for sec in data:
         items = []
@@ -153,6 +152,18 @@ def ytm_home(limit=3):
         if items:
             sections.append({'title': sec.get('title') or '', 'items': items})
     return sections
+
+
+def ytm_home(limit=3):
+    """The YouTube Music home feed (personalized when authenticated)."""
+    return _parse_home(_get_ytm().get_home(limit=limit))
+
+
+def ytm_home_public(limit=3):
+    """The generic (anonymous) home feed — fallback when a signed-in user's
+    personalized feed errors, so the For You tab still shows something."""
+    from ytmusicapi import YTMusic
+    return _parse_home(YTMusic().get_home(limit=limit))
 
 
 def _parse_ytm_duration(t):
