@@ -15,6 +15,11 @@ _DEFAULTS = {
     'local_folder':  '',
     'theme':         'tokyo-night',
     'app_mode':      'online',  # 'online' or 'offline' — remembered across runs
+    # YouTube OAuth client (device flow). The token itself lives in oauth.json;
+    # these are your Google Cloud OAuth client credentials, needed again at
+    # client construction for token refresh. See YOUTUBE_LOGIN.md.
+    'oauth_client_id':     '',
+    'oauth_client_secret': '',
 }
 
 
@@ -114,6 +119,24 @@ class Config:
         if mode in ('online', 'offline'):
             self._data['app_mode'] = mode
             self.save()
+
+    @property
+    def oauth_client_id(self):
+        return self._data.get('oauth_client_id', '')
+
+    @oauth_client_id.setter
+    def oauth_client_id(self, value):
+        self._data['oauth_client_id'] = value or ''
+        self.save()
+
+    @property
+    def oauth_client_secret(self):
+        return self._data.get('oauth_client_secret', '')
+
+    @oauth_client_secret.setter
+    def oauth_client_secret(self, value):
+        self._data['oauth_client_secret'] = value or ''
+        self.save()
 
     @property
     def theme(self):

@@ -74,6 +74,7 @@ KEYS_HELP = [
     ('+ / -',    'Volume up / down'),
     ('← / →',    'Seek -10s / +10s'),
     ('s',        'Settings (cookies + local folder)'),
+    ('g',        'YouTube account / sign in (For You feed)'),
     ('u',        'Check for updates / update the app'),
     ('?',        'This help'),
     ('q',        'Quit'),
@@ -404,6 +405,135 @@ class UpdateScreen(ModalScreen):
         self.dismiss(None)
 
 
+# ── Account screen ───────────────────────────────────────────────────────────────
+
+class AccountScreen(ModalScreen):
+    """YouTube account: OAuth client credentials + device-flow sign in / out.
+
+    Dismisses with {'logged_in': bool, 'client_id': str, 'client_secret': str}.
+    """
+    BINDINGS = [Binding('escape', 'cancel', 'Close')]
+
+    CSS = """
+    AccountScreen { align: center middle; }
+    #account-box {
+        width: 78; height: auto;
+        border: round $accent; padding: 1 2; background: $surface;
+    }
+    #account-title { text-style: bold; color: $accent; margin-bottom: 1; }
+    #account-box Label { margin-bottom: 0; }
+    #account-box Input { margin-bottom: 1; }
+    #account-hint { color: $text-muted; }
+    #account-status { height: auto; margin-top: 1; color: $warning; }
+    #account-btns { height: 3; margin-top: 1; }
+    """
+
+    def __init__(self, client_id='', client_secret='', authenticated=False):
+        super().__init__()
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._authed = authenticated
+        self._cancel = False     # polled by login() to abort
+        self._busy = False       # a login thread is running
+        self._closed = False     # guards late call_from_thread callbacks
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id='account-box'):
+            yield Label('YouTube account', id='account-title')
+            yield Static(
+                'Signed in ✓' if self._authed
+                else 'Not signed in — enter your OAuth client below and Log in.',
+                id='account-state')
+            yield Label('Client ID:')
+            yield Input(value=self._client_id, id='cid-input',
+                        placeholder='xxxxx.apps.googleusercontent.com')
+            yield Label('Client secret:')
+            yield Input(value=self._client_secret, id='csec-input',
+                        password=True, placeholder='GOCSPX-…')
+            yield Static('Need these? See YOUTUBE_LOGIN.md (one-time Google Cloud setup).',
+                         id='account-hint')
+            yield Static('', id='account-status')
+            with Horizontal(id='account-btns'):
+                yield Button('Log in', id='acct-login', variant='primary')
+                yield Button('Log out', id='acct-logout', variant='error')
+                yield Button('Close', id='acct-close')
+
+    def _status(self, msg) -> None:
+        if self._closed:
+            return
+        try:
+            self.query_one('#account-status', Static).update(msg)
+        except NoMatches:
+            pass
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == 'acct-login':
+            self._start_login()
+        elif event.button.id == 'acct-logout':
+            self._do_logout()
+        else:
+            self.action_cancel()
+
+    def _start_login(self) -> None:
+        if self._busy:
+            return
+        cid = self.query_one('#cid-input', Input).value.strip()
+        csec = self.query_one('#csec-input', Input).value.strip()
+        if not cid or not csec:
+            self._status('Enter both client ID and client secret first.')
+            return
+        self._busy = True
+        self._cancel = False
+        self._status('Requesting device code…')
+
+        def on_code(user_code, url):
+            self.app.call_from_thread(
+                self._status,
+                f'Go to  {url}\nEnter code:  {user_code}\n(waiting for you to authorize…)'
+            )
+
+        def run():
+            res = youtube.login(cid, csec, on_code,
+                                should_cancel=lambda: self._cancel)
+            self.app.call_from_thread(self._after_login, res)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _after_login(self, res) -> None:
+        self._busy = False
+        if self._closed:
+            return
+        if res.get('ok'):
+            self._status('Signed in ✓')
+            self._finish()
+        else:
+            err = res.get('error') or 'login failed'
+            self._status('Login cancelled.' if err == 'cancelled'
+                         else f'Login failed: {err}')
+
+    def _do_logout(self) -> None:
+        youtube.logout()
+        self._authed = False
+        try:
+            self.query_one('#account-state', Static).update('Signed out.')
+        except NoMatches:
+            pass
+        self._status('Signed out — token removed.')
+
+    def _finish(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._cancel = True
+        cid = self.query_one('#cid-input', Input).value.strip()
+        csec = self.query_one('#csec-input', Input).value.strip()
+        self.dismiss({'logged_in': youtube.is_authenticated(),
+                      'client_id': cid, 'client_secret': csec})
+
+    def action_cancel(self) -> None:
+        self._finish()
+
+
 # ── Home screen ─────────────────────────────────────────────────────────────────
 
 class HomeScreen(Screen):
@@ -465,6 +595,11 @@ class HomeScreen(Screen):
                          allow_blank=True)
 
             with TabbedContent(id='home-tabs'):
+                with TabPane('For You', id='tab-foryou'):
+                    # Populated in the background by on_mount → _populate_foryou.
+                    placeholder = ListItem(Label('Loading your feed…'))
+                    placeholder.payload = None
+                    yield ListView(placeholder, id='list-foryou')
                 with TabPane('Folders', id='tab-folders'):
                     items = []
                     for p in self._lib.playlists():
@@ -493,9 +628,55 @@ class HomeScreen(Screen):
 
     def on_mount(self) -> None:
         try:
-            self.query_one('#list-folders', ListView).focus()
+            self.query_one('#list-foryou', ListView).focus()
         except NoMatches:
             pass
+        # Fetch the (personalized when signed in) home feed off the UI thread.
+        threading.Thread(target=self._load_foryou, daemon=True).start()
+
+    def _load_foryou(self) -> None:
+        try:
+            sections = youtube.ytm_home(limit=4)
+            err = None
+        except Exception as exc:
+            sections, err = [], str(exc)
+        try:
+            self.app.call_from_thread(self._populate_foryou, sections, err)
+        except Exception:
+            pass   # screen dismissed before the feed arrived
+
+    def _populate_foryou(self, sections, err=None) -> None:
+        try:
+            lv = self.query_one('#list-foryou', ListView)
+        except NoMatches:
+            return
+        lv.clear()   # removes only the existing placeholder (captured at call time)
+        if not sections:
+            msg = ('Couldn’t load feed.' if err else
+                   'No feed yet — press g to sign in for your For You feed.')
+            empty = ListItem(Label(msg))
+            empty.payload = None
+            lv.append(empty)
+            return
+        items = []
+        for sec in sections:
+            header = ListItem(Label(f"[bold]{sec['title']}[/]"))
+            header.payload = None   # non-selectable section heading
+            items.append(header)
+            songs = [it['track'] for it in sec['items'] if it['kind'] == 'song']
+            si = 0
+            for it in sec['items']:
+                if it['kind'] == 'song':
+                    row = self._track_item(it['track'], {
+                        'kind': 'tracklist', 'tracks': songs,
+                        'index': si, 'label': sec['title']})
+                    si += 1
+                else:
+                    row = ListItem(Label(f"♫ {it['name']}"))
+                    row.payload = {'kind': 'foryou_playlist',
+                                   'playlistId': it['playlistId']}
+                items.append(row)
+        lv.extend(items)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.value is not Select.BLANK and event.value:
@@ -575,6 +756,7 @@ class YTMApp(App):
         Binding('left', 'seek_back', 'Seek-', show=False),
         Binding('right', 'seek_fwd', 'Seek+', show=False),
         Binding('s', 'settings', 'Settings', show=False),
+        Binding('g', 'account', 'Account', show=False),
         Binding('u', 'update', 'Update', show=False),
         Binding('escape', 'clear_filter', 'Clear filter', show=False),
         Binding('question_mark', 'show_keys', 'Keys', show=True),
@@ -618,6 +800,10 @@ class YTMApp(App):
         self.search_source = self._config.search_source
         self.volume        = self._config.volume
         self.app_mode      = self._config.app_mode
+        # Wire the saved OAuth client so ytmusicapi calls run authenticated when a
+        # token exists (personalized search / For You feed). No-op if not set up.
+        youtube.configure_auth(self._config.oauth_client_id,
+                               self._config.oauth_client_secret)
 
     # ── Layout ────────────────────────────────────────────────────────────
 
@@ -718,6 +904,8 @@ class YTMApp(App):
             self._populate_results(tracks)
             self._queue = list(tracks)
             self._play_queue_item(result.get('index', 0))
+        elif kind == 'foryou_playlist':
+            self._do_load_playlist(result['playlistId'])
 
     def _resume_session(self, session) -> None:
         queue = session.get('queue') or []
@@ -1063,8 +1251,9 @@ class YTMApp(App):
         qpos = (f'{self._queue_idx + 1}/{len(self._queue)}'
                 if self._queue and self._queue_idx >= 0 else '0/0')
         upd = '    ↑ update (u)' if self._update_available else ''
+        acct = '    signed in' if youtube.is_authenticated() else ''
         left = (f'{mode} · {src}    {shuf} · {rep}    '
-                f'♪ {qpos}    vol {self.volume}%    theme {self.theme}{upd}')
+                f'♪ {qpos}    vol {self.volume}%    theme {self.theme}{acct}{upd}')
         try:
             self.query_one('#footer-left', Static).update(left)
         except NoMatches:
@@ -1325,6 +1514,32 @@ class YTMApp(App):
 
         self.push_screen(
             SettingsScreen(self._config.cookies_file, self._config.local_folder),
+            _after,
+        )
+
+    # ── YouTube account ─────────────────────────────────────────────────────
+
+    def action_account(self) -> None:
+        def _after(result):
+            if result is None:
+                return
+            cid = result.get('client_id', '')
+            csec = result.get('client_secret', '')
+            # Persist whatever creds the user entered and re-wire the client.
+            if cid != self._config.oauth_client_id:
+                self._config.oauth_client_id = cid
+            if csec != self._config.oauth_client_secret:
+                self._config.oauth_client_secret = csec
+            youtube.configure_auth(cid, csec)
+            self._update_footer()
+            self._set_status('Signed in to YouTube — personalized results enabled.'
+                             if result.get('logged_in')
+                             else 'YouTube account: not signed in.')
+
+        self.push_screen(
+            AccountScreen(self._config.oauth_client_id,
+                          self._config.oauth_client_secret,
+                          youtube.is_authenticated()),
             _after,
         )
 

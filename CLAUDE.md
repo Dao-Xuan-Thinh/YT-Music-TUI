@@ -16,7 +16,8 @@ The project is modular with clear separation of concerns:
 
 ```
 main.py         ← Entry point; Textual TUI wiring, home screen, keybindings, playback flow
-youtube.py      ← yt-dlp + ytmusicapi wrapper: resolve() (URL or keyword), search(), playlists
+youtube.py      ← yt-dlp + ytmusicapi wrapper: resolve() (URL or keyword), search(), playlists,
+                  OAuth login (device flow) + authenticated client, get_home() feed
 player.py       ← mpv IPC + ffplay fallback; single-thread event loop for non-blocking IPC
 config.py       ← JSON persistence: cookies_file, volume, search_source, theme, app_mode
 library.py      ← JSON persistence: liked songs, saved playlists, pinned folders, recent, sessions
@@ -76,7 +77,7 @@ Install with: `pip install -r requirements.txt`
 - Prints current settings
 
 **main.py (full TUI):** `python main.py`
-- Keybindings: `/` search · `f` filter · `space` pause · `n` next · `p` play-next · `a` +queue · `x` stop · `Q` queue/library · `z` shuffle · `r` repeat · `l` like · `w` save playlist · `h` home · `t` source · `o` online/offline · `c`/`C` theme · `+/-` volume · `←→` seek · `s` settings · `u` update · `?` key list · `q` quit
+- Keybindings: `/` search · `f` filter · `space` pause · `n` next · `p` play-next · `a` +queue · `x` stop · `Q` queue/library · `z` shuffle · `r` repeat · `l` like · `w` save playlist · `h` home · `t` source · `o` online/offline · `c`/`C` theme · `+/-` volume · `←→` seek · `s` settings · `g` account/sign-in · `u` update · `?` key list · `q` quit
 - The footer is a custom info bar (mode/source/shuffle/repeat/queue/volume/theme); `?` is the only key hint and opens the full `KeybindingsScreen`.
 
 ## Critical Gotchas
@@ -162,7 +163,9 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 | File | Purpose |
 |------|---------|
 | `main.py` | Textual App: home screen, modals, bindings, search/play flow |
-| `youtube.py` | yt-dlp + ytmusicapi wrapper: search, URL/playlist resolution, metadata |
+| `youtube.py` | yt-dlp + ytmusicapi wrapper: search, URL/playlist resolution, metadata; OAuth login (`login`/`logout`/`configure_auth`/`is_authenticated`) + `ytm_home()` feed |
+| `YOUTUBE_LOGIN.md` | User guide: create a Google Cloud OAuth client + sign in (the `g` flow) |
+| `oauth.json` | Auto-created OAuth token cache (gitignored) |
 | `player.py` | mpv IPC + ffplay fallback; per-OS transport (named pipe / AF_UNIX) |
 | `config.py` | JSON settings persistence (cookies, volume, source, theme, app_mode) |
 | `library.py` | JSON persistence: liked, playlists, pinned folders, recent, sessions |
@@ -187,6 +190,13 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 **Next track in queue:** `n`
 
 **Switch search source:** `t` (cycles YT Music → YouTube → Both)
+
+**Sign in to YouTube:** `g` opens the Account screen — paste your Google Cloud OAuth
+client id/secret and Log in (device flow: visit the URL, enter the shown code). Once
+signed in, the home screen's **For You** tab and search are personalized. Setup steps:
+`YOUTUBE_LOGIN.md`. Auth is OAuth device-flow (no password in the app); the token lives
+in `oauth.json` (gitignored). `youtube.configure_auth()` wires the saved client at boot;
+`youtube._get_ytm()` builds an authenticated `YTMusic` when a token exists, else anonymous.
 
 **Like / save a playlist:** `l` likes the highlighted/playing track; `w` saves the current list as a named playlist (both appear on the home screen)
 

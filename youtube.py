@@ -8,6 +8,7 @@ metadata natively. (yt-dlp's flat playlist extraction caps YTM playlists at
 Regular YouTube search/URLs and all audio streaming stay on yt-dlp/mpv.
 """
 
+import os
 import urllib.parse
 import yt_dlp
 
@@ -21,15 +22,137 @@ class _SilentLogger:
 
 # ── ytmusicapi (YouTube Music) ────────────────────────────────────────────────
 
+# OAuth token cache (written by login(); read at client construction). The Google
+# Cloud client_id/secret that produced it are supplied separately (configure_auth)
+# because YTMusic needs them again to refresh the token. See YOUTUBE_LOGIN.md.
+_OAUTH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oauth.json')
+
 _ytm = None
+_client_id = ''
+_client_secret = ''
+
+
+def configure_auth(client_id, client_secret):
+    """Set the OAuth client credentials and drop the cached client so the next
+    _get_ytm() rebuilds (authenticated if a token file is present)."""
+    global _client_id, _client_secret, _ytm
+    _client_id = client_id or ''
+    _client_secret = client_secret or ''
+    _ytm = None
+
+
+def is_authenticated():
+    """True if we have client credentials and a saved OAuth token to use them with."""
+    return bool(_client_id and _client_secret and os.path.isfile(_OAUTH_FILE))
+
 
 def _get_ytm():
-    """Lazily create an unauthenticated YTMusic client (works for public data)."""
+    """Lazily create a YTMusic client — authenticated if credentials + token exist,
+    otherwise anonymous (public data only). Falls back to anonymous on any error."""
     global _ytm
     if _ytm is None:
         from ytmusicapi import YTMusic
-        _ytm = YTMusic()
+        if is_authenticated():
+            try:
+                from ytmusicapi import OAuthCredentials
+                oc = OAuthCredentials(_client_id, _client_secret)
+                _ytm = YTMusic(_OAUTH_FILE, oauth_credentials=oc)
+            except Exception:
+                _ytm = YTMusic()    # bad/expired token → degrade to public
+        else:
+            _ytm = YTMusic()
     return _ytm
+
+
+def login(client_id, client_secret, on_code, should_cancel=None):
+    """Run the OAuth device flow and persist the token to _OAUTH_FILE.
+
+    Blocking (poll-based) — call from a daemon thread. `on_code(user_code, url)` is
+    invoked once the device code is issued so the UI can display it. `should_cancel`
+    (optional) is polled between attempts to allow aborting.
+
+    Returns {'ok': bool, 'error': str | None}.
+    """
+    import time
+    from pathlib import Path
+    from ytmusicapi import OAuthCredentials
+    from ytmusicapi.auth.oauth.token import RefreshingToken
+
+    try:
+        oc = OAuthCredentials(client_id, client_secret)
+        code = oc.get_code()
+    except Exception as exc:
+        return {'ok': False, 'error': f'{exc}'}
+
+    on_code(code.get('user_code', '??????'), code.get('verification_url', ''))
+
+    interval = int(code.get('interval') or 5) or 5
+    deadline = time.time() + int(code.get('expires_in') or 1800)
+    device_code = code['device_code']
+
+    while time.time() < deadline:
+        if should_cancel and should_cancel():
+            return {'ok': False, 'error': 'cancelled'}
+        try:
+            raw = oc.token_from_code(device_code)
+        except Exception as exc:
+            return {'ok': False, 'error': f'{exc}'}
+        if 'access_token' in raw:
+            # Persist exactly as ytmusicapi's prompt_for_token does, so YTMusic can
+            # load it back; setting local_cache writes the file.
+            refresh_exp = raw.get('refresh_token_expires_in', raw['expires_in'])
+            token = RefreshingToken(
+                credentials=oc,
+                access_token=raw['access_token'],
+                refresh_token=raw['refresh_token'],
+                scope=raw['scope'],
+                token_type=raw['token_type'],
+                expires_in=refresh_exp,
+            )
+            token.update(raw)
+            token.local_cache = Path(_OAUTH_FILE)
+            configure_auth(client_id, client_secret)   # flip to authenticated
+            return {'ok': True, 'error': None}
+        err = raw.get('error')
+        if err in ('authorization_pending', 'slow_down'):
+            time.sleep(interval)
+            continue
+        return {'ok': False, 'error': err or 'login failed'}
+
+    return {'ok': False, 'error': 'login timed out — code expired'}
+
+
+def logout():
+    """Delete the saved OAuth token and drop the cached client."""
+    global _ytm
+    try:
+        os.remove(_OAUTH_FILE)
+    except OSError:
+        pass
+    _ytm = None
+
+
+def ytm_home(limit=3):
+    """The YouTube Music home feed via ytmusicapi (personalized when authenticated).
+
+    Returns [{'title': str, 'items': [...]}] where each item is either
+    {'kind': 'song', 'track': <track dict>} or
+    {'kind': 'playlist', 'name': str, 'playlistId': str}. Empty sections dropped.
+    """
+    data = _get_ytm().get_home(limit=limit)
+    sections = []
+    for sec in data:
+        items = []
+        for c in (sec.get('contents') or []):
+            if c.get('videoId'):
+                items.append({'kind': 'song', 'track': _ytm_track_to_dict(c)})
+            elif c.get('playlistId'):
+                items.append({'kind': 'playlist',
+                              'name': c.get('title') or 'Playlist',
+                              'playlistId': c['playlistId']})
+        if items:
+            sections.append({'title': sec.get('title') or '', 'items': items})
+    return sections
 
 
 def _parse_ytm_duration(t):
