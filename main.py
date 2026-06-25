@@ -725,6 +725,8 @@ class HomeScreen(Screen):
     BINDINGS = [
         Binding('escape', 'go_search', 'Search'),
         Binding('slash', 'go_search', 'Search'),
+        Binding('left', 'prev_tab', 'Prev tab'),
+        Binding('right', 'next_tab', 'Next tab'),
         Binding('d', 'delete_item', 'Delete'),
         Binding('r,R', 'rename_item', 'Rename'),
         Binding('q', 'quit_app', 'Quit'),
@@ -738,6 +740,8 @@ class HomeScreen(Screen):
         'tab-liked':   '#list-liked',
         'tab-recent':  '#list-recent',
     }
+    # Left/right tab cycle order (matches the TabPane order in compose()).
+    _TAB_ORDER = ['tab-resume', 'tab-foryou', 'tab-folders', 'tab-liked', 'tab-recent']
 
     CSS = """
     HomeScreen { align: center middle; }
@@ -747,9 +751,9 @@ class HomeScreen(Screen):
     }
     #home-title { text-style: bold; color: $accent; margin-bottom: 1; }
     #home-sub { color: $text-muted; margin-bottom: 1; }
-    #resume-select { margin-bottom: 1; }
     #home-tabs { height: 1fr; }
     #home-search { margin-top: 1; width: 100%; }
+    #home-status { height: 1; color: $accent; margin-top: 1; }
     ListView { height: 1fr; }
     """
 
@@ -813,7 +817,8 @@ class HomeScreen(Screen):
         with Vertical(id='home-box'):
             yield Label('♫  YouTube Music TUI', id='home-title')
             yield Label('Pick up where you left off, or browse your library.   '
-                        '·  d delete · r rename', id='home-sub')
+                        '·  ←/→ switch tab · enter open · d delete · r rename',
+                        id='home-sub')
 
             with TabbedContent(id='home-tabs'):
                 with TabPane('Resume', id='tab-resume'):
@@ -831,6 +836,7 @@ class HomeScreen(Screen):
                     yield ListView(*self._recent_items(), id='list-recent')
 
             yield Button('Search / Browse', id='home-search', variant='primary')
+            yield Label('', id='home-status')
 
     def on_mount(self) -> None:
         try:
@@ -839,6 +845,49 @@ class HomeScreen(Screen):
             pass
         # Fetch the (personalized when signed in) home feed off the UI thread.
         threading.Thread(target=self._load_foryou, daemon=True).start()
+
+    def _status(self, msg: str) -> None:
+        """Show a one-line feedback message in the home box (best-effort)."""
+        try:
+            self.query_one('#home-status', Label).update(msg)
+        except NoMatches:
+            pass
+
+    # ── Tab navigation ─────────────────────────────────────────────────────────
+
+    def _focus_active_list(self) -> None:
+        """Move focus into the active tab's ListView so the highlight + arrow
+        navigation are well-defined (and so r/d act on a real row)."""
+        _pane, lv = self._focused_list()
+        if lv is not None:
+            try:
+                if lv.index is None and len(lv):
+                    lv.index = 0
+                lv.focus()
+            except Exception:
+                pass
+
+    def _cycle_tab(self, step: int) -> None:
+        try:
+            tabs = self.query_one('#home-tabs', TabbedContent)
+        except NoMatches:
+            return
+        order = self._TAB_ORDER
+        try:
+            i = order.index(tabs.active)
+        except ValueError:
+            i = 0
+        tabs.active = order[(i + step) % len(order)]
+
+    def action_prev_tab(self) -> None:
+        self._cycle_tab(-1)
+
+    def action_next_tab(self) -> None:
+        self._cycle_tab(1)
+
+    def on_tabbed_content_tab_activated(self, event) -> None:
+        # Pull focus into the newly-shown list so a highlighted row always exists.
+        self._focus_active_list()
 
     def _load_foryou(self) -> None:
         err = None
@@ -967,16 +1016,24 @@ class HomeScreen(Screen):
             lv = self.query_one(sel, ListView)
         except NoMatches:
             return
+        old = lv.index
         lv.clear()
-        lv.extend(build())
+        items = build()
+        lv.extend(items)
+        # clear() drops the highlight (index→None); restore one near the old spot
+        # so a following r/d still has a row to act on (and the cursor is visible).
+        if items:
+            lv.index = max(0, min(old if old is not None else 0, len(items) - 1))
 
     def action_delete_item(self) -> None:
         _pane, lv = self._focused_list()
         if lv is None:
+            self._status('Nothing to manage on this tab.')
             return
         item = lv.highlighted_child
         payload = getattr(item, 'payload', None) if item else None
         if not payload:
+            self._status('Highlight an item first (↑/↓), then d to delete.')
             return
         kind = payload.get('kind')
         if kind == 'playlist':
@@ -984,19 +1041,22 @@ class HomeScreen(Screen):
             self._confirm(
                 f'Delete playlist "{name}"?',
                 lambda: (self._lib.delete_playlist(name),
-                         self._reload_tab('tab-folders')))
+                         self._reload_tab('tab-folders'),
+                         self._status(f'Deleted playlist "{name}".')))
         elif kind == 'folder':
             path = payload['path']
             self._confirm(
                 f'Unpin folder?\n{path}',
                 lambda: (self._lib.unpin_folder(path),
-                         self._reload_tab('tab-folders')))
+                         self._reload_tab('tab-folders'),
+                         self._status('Unpinned folder.')))
         elif kind == 'session':
             sid = payload['id']
             self._confirm(
                 'Delete this saved session?',
                 lambda: (self._lib.delete_session(sid),
-                         self._reload_tab('tab-resume')))
+                         self._reload_tab('tab-resume'),
+                         self._status('Deleted session.')))
         elif kind == 'tracklist':
             # Liked vs Recent — instant (trivially redone), no confirm.
             tracks = payload.get('tracks') or []
@@ -1007,23 +1067,32 @@ class HomeScreen(Screen):
             if payload.get('label') == 'Liked':
                 self._lib.toggle_like(track)        # unlike
                 self._reload_tab('tab-liked')
+                self._status('Removed from Liked.')
             else:
                 self._lib.remove_recent(track)
                 self._reload_tab('tab-recent')
+                self._status('Removed from Recent.')
 
     def action_rename_item(self) -> None:
         _pane, lv = self._focused_list()
         if lv is None:
+            self._status('Switch to Folders (←/→) to rename a saved playlist.')
             return
         item = lv.highlighted_child
         payload = getattr(item, 'payload', None) if item else None
         if not payload or payload.get('kind') != 'playlist':
+            self._status('Highlight a saved playlist (Folders tab) to rename.')
             return
         old = payload['name']
 
         def _cb(new):
-            if new and new != old and self._lib.rename_playlist(old, new):
+            if not new or new == old:
+                return
+            if self._lib.rename_playlist(old, new):
                 self._reload_tab('tab-folders')
+                self._status(f'Renamed to "{new}".')
+            else:
+                self._status('Rename failed — that name already exists.')
 
         self.app.push_screen(
             NameScreen(f'Rename playlist "{old}" to:', default=old), _cb)

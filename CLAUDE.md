@@ -29,9 +29,11 @@ updater.py      ← Self-update via git (check/pull/deps refresh, branch switch)
 ### Core Flow
 
 1. **Boot** → a `HomeScreen` shows tabs **Resume / For You / Folders / Liked /
-   Recent** (backed by `library.py`). Selecting loads/plays/resumes; on any
+   Recent** (backed by `library.py`). `←/→` switch tabs (and auto-focus that tab's
+   list so a row is always highlighted). Selecting loads/plays/resumes; on any
    manageable tab `d` deletes the highlighted entry (unlike / unpin / delete
-   playlist or session) and `r` renames a highlighted playlist. Esc or
+   playlist or session) and `r` renames a highlighted playlist — a one-line
+   `#home-status` reports the result (or why nothing happened). Esc or
    "Search / Browse" enters the main UI.
 2. **Search** (`/` key) → `youtube.resolve()` detects URL or keyword → results populate DataTable
 3. **Play** (Enter on result) → `player.play(url, start=)` loads URL via mpv IPC `loadfile replace`
