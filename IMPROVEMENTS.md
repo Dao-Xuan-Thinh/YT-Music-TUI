@@ -63,9 +63,12 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
   shuffle/repeat); home screen "Resume" dropdown restores and seeks via
   `Player.play(url, start=)` (mpv `file-loaded` seek).
 
-- [ ] **Lyrics / metadata panel.** Optional side panel showing album/year/
-  thumbnail (ASCII or via terminal image protocol). ytmusicapi returns album +
-  thumbnails already (`youtube.py:_ytm_track_to_dict`).
+- [ ] **Now-Playing / lyrics view.** ⭐ *Next headline feature.* A full-screen
+  now-playing view: big title/artist, album art rendered as ASCII (or a terminal
+  image protocol), a wide progress bar, and time-synced scrolling lyrics.
+  ytmusicapi exposes lyrics (`get_lyrics` via `get_watch_playlist`) plus album +
+  thumbnails already (`youtube.py:_ytm_track_to_dict`). The most visual "cool
+  design" surface; keep it gated/lazy to preserve the lightweight goal.
 
 - [ ] **Album / artist browse.** ytmusicapi supports `get_album`,
   `get_artist`, `get_watch_playlist` (radio). A "browse" mode would go well
@@ -81,10 +84,12 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
   local folder without re-typing the path, plus optional caching of scanned tags
   (mutagen scan of a big library is slow on every load). (`offline.py`)
 
-- [ ] **Library management UI.** `library.py` already has `delete_playlist`,
-  `unpin_folder`, `delete_session`, and `toggle_like` — but no UI invokes them.
-  Add delete/rename on the home screen (e.g. `d` on a Folders/Liked/session entry)
-  so the library doesn't only grow. (`main.HomeScreen`)
+- [x] **Library management UI.** Home screen tabs (Resume / Folders / Liked /
+  Recent) now support `d` delete and `R` rename: `d` deletes the highlighted entry
+  (delete playlist / unpin folder / delete session — confirmed; unlike /
+  remove-from-recent — instant) and `R` renames a saved playlist. Sessions moved
+  from the old dropdown into a **Resume tab** so they manage uniformly. Added
+  `library.rename_playlist` / `remove_recent` / `clear_recent`. (`main.HomeScreen`)
 
 - [ ] **Append to / overwrite-confirm playlists.** `save_playlist(name, …)`
   silently overwrites a same-named playlist. Add "append to existing playlist"
@@ -215,9 +220,11 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
 The original top items (max_results, debounce, shuffle/repeat, help overlay, `~`
 expansion) all shipped. Remaining high-value / low-risk picks:
 
-1. **Library management UI** (§2) — delete/rename playlists, unlike, delete
-   sessions; otherwise the library only ever grows.
+1. **Now-Playing / lyrics view** (§2) — ⭐ headline next feature: full-screen
+   now-playing with ASCII album art + time-synced lyrics.
 2. **Liked indicator in rows** + **status line auto-clear** (§3) — small, daily.
 3. **Atomic JSON writes** (§4) — cheap insurance against corrupting config/library.
 4. **Queue editing: reorder + remove** (§2) — rounds out queue control.
 5. **Commit the headless tests as `tests/`** (§5) — locks in this session's behavior.
+
+(Done: **Library management UI** (§2) — delete/rename on the home screen.)

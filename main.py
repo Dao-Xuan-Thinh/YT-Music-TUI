@@ -19,7 +19,7 @@ from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import (
     Button, DataTable, Header, Input, Label, ListItem, ListView,
-    OptionList, Select, Static, TabbedContent, TabPane,
+    OptionList, Static, TabbedContent, TabPane,
 )
 from textual.widgets.option_list import Option
 from textual.screen import ModalScreen, Screen
@@ -725,8 +725,19 @@ class HomeScreen(Screen):
     BINDINGS = [
         Binding('escape', 'go_search', 'Search'),
         Binding('slash', 'go_search', 'Search'),
+        Binding('d', 'delete_item', 'Delete'),
+        Binding('R', 'rename_item', 'Rename'),
         Binding('q', 'quit_app', 'Quit'),
     ]
+
+    # Active TabPane id → its ListView selector. Only these tabs are manageable
+    # (the For-You feed isn't part of the saved library).
+    _PANE_LIST = {
+        'tab-resume':  '#list-resume',
+        'tab-folders': '#list-folders',
+        'tab-liked':   '#list-liked',
+        'tab-recent':  '#list-recent',
+    }
 
     CSS = """
     HomeScreen { align: center middle; }
@@ -762,57 +773,68 @@ class HomeScreen(Screen):
         item.payload = None
         return item
 
+    # ── Per-tab item builders (shared by compose() and _reload_tab()) ──────────
+
+    def _resume_items(self):
+        items = []
+        for s in self._lib.sessions():
+            title = s.get('title') or 'session'
+            n = len(s.get('queue', []))
+            it = ListItem(Label(f"▸ {title}  ·  {n} tracks  ·  {_ago(s.get('ts'))}"))
+            it.payload = {'kind': 'session', 'id': s.get('id')}
+            items.append(it)
+        return items or [self._empty_item()]
+
+    def _folder_items(self):
+        items = []
+        for p in self._lib.playlists():
+            it = ListItem(Label(f"♫ {p['name']}  ({len(p['tracks'])})"))
+            it.payload = {'kind': 'playlist', 'name': p['name']}
+            items.append(it)
+        for path in self._lib.folders():
+            it = ListItem(Label(f"▪ {path}"))
+            it.payload = {'kind': 'folder', 'path': path}
+            items.append(it)
+        return items or [self._empty_item()]
+
+    def _liked_items(self):
+        liked = self._lib.liked()
+        items = [self._track_item(t, {'kind': 'tracklist', 'tracks': liked,
+                 'index': i, 'label': 'Liked'}) for i, t in enumerate(liked)]
+        return items or [self._empty_item()]
+
+    def _recent_items(self):
+        recent = self._lib.recent()
+        items = [self._track_item(t, {'kind': 'tracklist', 'tracks': recent,
+                 'index': i, 'label': 'Recent'}) for i, t in enumerate(recent)]
+        return items or [self._empty_item()]
+
     def compose(self) -> ComposeResult:
         with Vertical(id='home-box'):
             yield Label('♫  YouTube Music TUI', id='home-title')
-            yield Label('Pick up where you left off, or browse your library.',
-                        id='home-sub')
-
-            sessions = self._lib.sessions()
-            opts = []
-            for s in sessions:
-                title = s.get('title') or 'session'
-                n = len(s.get('queue', []))
-                opts.append((f"▸ {title}  ·  {n} tracks  ·  {_ago(s.get('ts'))}",
-                             s.get('id')))
-            yield Select(opts, prompt='Resume a session…', id='resume-select',
-                         allow_blank=True)
+            yield Label('Pick up where you left off, or browse your library.   '
+                        '·  d delete · R rename', id='home-sub')
 
             with TabbedContent(id='home-tabs'):
+                with TabPane('Resume', id='tab-resume'):
+                    yield ListView(*self._resume_items(), id='list-resume')
                 with TabPane('For You', id='tab-foryou'):
                     # Populated in the background by on_mount → _populate_foryou.
                     placeholder = ListItem(Label('Loading your feed…'))
                     placeholder.payload = None
                     yield ListView(placeholder, id='list-foryou')
                 with TabPane('Folders', id='tab-folders'):
-                    items = []
-                    for p in self._lib.playlists():
-                        it = ListItem(Label(f"♫ {p['name']}  ({len(p['tracks'])})"))
-                        it.payload = {'kind': 'playlist', 'name': p['name']}
-                        items.append(it)
-                    for path in self._lib.folders():
-                        it = ListItem(Label(f"▪ {path}"))
-                        it.payload = {'kind': 'folder', 'path': path}
-                        items.append(it)
-                    yield ListView(*(items or [self._empty_item()]), id='list-folders')
+                    yield ListView(*self._folder_items(), id='list-folders')
                 with TabPane('Liked', id='tab-liked'):
-                    liked = self._lib.liked()
-                    items = [self._track_item(t, {'kind': 'tracklist',
-                             'tracks': liked, 'index': i, 'label': 'Liked'})
-                             for i, t in enumerate(liked)]
-                    yield ListView(*(items or [self._empty_item()]), id='list-liked')
+                    yield ListView(*self._liked_items(), id='list-liked')
                 with TabPane('Recent', id='tab-recent'):
-                    recent = self._lib.recent()
-                    items = [self._track_item(t, {'kind': 'tracklist',
-                             'tracks': recent, 'index': i, 'label': 'Recent'})
-                             for i, t in enumerate(recent)]
-                    yield ListView(*(items or [self._empty_item()]), id='list-recent')
+                    yield ListView(*self._recent_items(), id='list-recent')
 
             yield Button('Search / Browse', id='home-search', variant='primary')
 
     def on_mount(self) -> None:
         try:
-            self.query_one('#list-foryou', ListView).focus()
+            self.query_one('#list-resume', ListView).focus()
         except NoMatches:
             pass
         # Fetch the (personalized when signed in) home feed off the UI thread.
@@ -891,20 +913,120 @@ class HomeScreen(Screen):
                 items.append(row)
         lv.extend(items)
 
-    def on_select_changed(self, event: Select.Changed) -> None:
-        if event.value is not Select.BLANK and event.value:
-            session = self._lib.get_session(event.value)
-            if session:
-                self.dismiss({'kind': 'resume', 'session': session})
-
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         payload = getattr(event.item, 'payload', None)
-        if payload:
-            self.dismiss(payload)
+        if not payload:
+            return
+        if payload.get('kind') == 'session':
+            session = self._lib.get_session(payload.get('id'))
+            if session:
+                self.dismiss({'kind': 'resume', 'session': session})
+            return
+        self.dismiss(payload)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == 'home-search':
             self.dismiss({'kind': 'search'})
+
+    # ── Library management (delete / rename) ───────────────────────────────────
+
+    def _focused_list(self):
+        """(pane_id, ListView) for the active tab, or (pane_id, None) if the
+        active tab isn't manageable / not found."""
+        try:
+            pane = self.query_one('#home-tabs', TabbedContent).active
+        except NoMatches:
+            return None, None
+        sel = self._PANE_LIST.get(pane)
+        if not sel:
+            return pane, None
+        try:
+            return pane, self.query_one(sel, ListView)
+        except NoMatches:
+            return pane, None
+
+    def _confirm(self, message, on_yes) -> None:
+        def _cb(ok):
+            if ok:
+                on_yes()
+        self.app.push_screen(ConfirmScreen(message), _cb)
+
+    def _reload_tab(self, pane_id) -> None:
+        """Rebuild a single tab's ListView from the current library state."""
+        builders = {
+            'tab-resume':  self._resume_items,
+            'tab-folders': self._folder_items,
+            'tab-liked':   self._liked_items,
+            'tab-recent':  self._recent_items,
+        }
+        build = builders.get(pane_id)
+        sel = self._PANE_LIST.get(pane_id)
+        if not build or not sel:
+            return
+        try:
+            lv = self.query_one(sel, ListView)
+        except NoMatches:
+            return
+        lv.clear()
+        lv.extend(build())
+
+    def action_delete_item(self) -> None:
+        _pane, lv = self._focused_list()
+        if lv is None:
+            return
+        item = lv.highlighted_child
+        payload = getattr(item, 'payload', None) if item else None
+        if not payload:
+            return
+        kind = payload.get('kind')
+        if kind == 'playlist':
+            name = payload['name']
+            self._confirm(
+                f'Delete playlist "{name}"?',
+                lambda: (self._lib.delete_playlist(name),
+                         self._reload_tab('tab-folders')))
+        elif kind == 'folder':
+            path = payload['path']
+            self._confirm(
+                f'Unpin folder?\n{path}',
+                lambda: (self._lib.unpin_folder(path),
+                         self._reload_tab('tab-folders')))
+        elif kind == 'session':
+            sid = payload['id']
+            self._confirm(
+                'Delete this saved session?',
+                lambda: (self._lib.delete_session(sid),
+                         self._reload_tab('tab-resume')))
+        elif kind == 'tracklist':
+            # Liked vs Recent — instant (trivially redone), no confirm.
+            tracks = payload.get('tracks') or []
+            idx = payload.get('index', -1)
+            if not (0 <= idx < len(tracks)):
+                return
+            track = tracks[idx]
+            if payload.get('label') == 'Liked':
+                self._lib.toggle_like(track)        # unlike
+                self._reload_tab('tab-liked')
+            else:
+                self._lib.remove_recent(track)
+                self._reload_tab('tab-recent')
+
+    def action_rename_item(self) -> None:
+        _pane, lv = self._focused_list()
+        if lv is None:
+            return
+        item = lv.highlighted_child
+        payload = getattr(item, 'payload', None) if item else None
+        if not payload or payload.get('kind') != 'playlist':
+            return
+        old = payload['name']
+
+        def _cb(new):
+            if new and new != old and self._lib.rename_playlist(old, new):
+                self._reload_tab('tab-folders')
+
+        self.app.push_screen(
+            NameScreen(f'Rename playlist "{old}" to:', default=old), _cb)
 
     def action_go_search(self) -> None:
         self.dismiss({'kind': 'search'})

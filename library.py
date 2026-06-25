@@ -96,6 +96,22 @@ class Library:
         del self._lib['recent'][RECENT_CAP:]
         _save(_LIB_FILE, self._lib)
 
+    def remove_recent(self, track_or_id):
+        """Drop a single track from recent (by id/url). No-op if absent."""
+        key = track_or_id if isinstance(track_or_id, str) else _track_key(track_or_id)
+        if not key:
+            return
+        before = len(self._lib['recent'])
+        self._lib['recent'] = [t for t in self._lib['recent'] if _track_key(t) != key]
+        if len(self._lib['recent']) != before:
+            _save(_LIB_FILE, self._lib)
+
+    def clear_recent(self):
+        """Empty the recent list."""
+        if self._lib['recent']:
+            self._lib['recent'] = []
+            _save(_LIB_FILE, self._lib)
+
     # ── Playlists ─────────────────────────────────────────────────────────────
 
     def playlists(self):
@@ -119,6 +135,26 @@ class Library:
     def delete_playlist(self, name):
         self._lib['playlists'] = [p for p in self._lib['playlists'] if p.get('name') != name]
         _save(_LIB_FILE, self._lib)
+
+    def rename_playlist(self, old, new):
+        """Rename a saved playlist. Returns True on success.
+
+        No-op (returns False) if names are blank, the source is missing, or the
+        target name already exists (and isn't just the same playlist).
+        """
+        old = (old or '').strip()
+        new = (new or '').strip()
+        if not old or not new:
+            return False
+        src = self.get_playlist(old)
+        if src is None:
+            return False
+        if new != old and self.get_playlist(new) is not None:
+            return False   # refuse to clobber a different existing playlist
+        self.save_playlist(new, src['tracks'])
+        if new != old:
+            self.delete_playlist(old)
+        return True
 
     # ── Pinned folders ────────────────────────────────────────────────────────
 
@@ -189,10 +225,18 @@ if __name__ == '__main__':
 
     lib.add_recent(t1); lib.add_recent(t2); lib.add_recent(t1)
     assert [t['id'] for t in lib.recent()] == ['a', 'b'], lib.recent()
+    lib.remove_recent(t1)                     # drop one by track
+    assert [t['id'] for t in lib.recent()] == ['b'], lib.recent()
+    lib.clear_recent()
+    assert lib.recent() == []
 
     lib.save_playlist('Fav', [t1, t2])
     lib.save_playlist('Fav', [t2])           # overwrite
     assert len(lib.playlists()) == 1 and len(lib.get_playlist('Fav')['tracks']) == 1
+    assert lib.rename_playlist('Fav', 'Best') is True
+    assert lib.get_playlist('Fav') is None and lib.get_playlist('Best') is not None
+    assert lib.rename_playlist('Best', '') is False        # blank target → no-op
+    assert lib.rename_playlist('Nope', 'X') is False       # missing source → no-op
 
     lib.pin_folder('/music'); lib.pin_folder('/music')
     assert lib.folders() == ['/music']
@@ -204,7 +248,7 @@ if __name__ == '__main__':
 
     # Reload from disk → persistence round-trip
     lib2 = Library()
-    assert lib2.get_playlist('Fav') and lib2.folders() == ['/music']
+    assert lib2.get_playlist('Best') and lib2.folders() == ['/music']
     assert lib2.get_session(sid)['queue_idx'] == 1
 
     for f in (_LIB_FILE, _SESSIONS_FILE):
