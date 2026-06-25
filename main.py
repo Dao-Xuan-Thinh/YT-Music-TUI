@@ -726,7 +726,7 @@ class HomeScreen(Screen):
         Binding('escape', 'go_search', 'Search'),
         Binding('slash', 'go_search', 'Search'),
         Binding('d', 'delete_item', 'Delete'),
-        Binding('R', 'rename_item', 'Rename'),
+        Binding('r,R', 'rename_item', 'Rename'),
         Binding('q', 'quit_app', 'Quit'),
     ]
 
@@ -813,7 +813,7 @@ class HomeScreen(Screen):
         with Vertical(id='home-box'):
             yield Label('♫  YouTube Music TUI', id='home-title')
             yield Label('Pick up where you left off, or browse your library.   '
-                        '·  d delete · R rename', id='home-sub')
+                        '·  d delete · r rename', id='home-sub')
 
             with TabbedContent(id='home-tabs'):
                 with TabPane('Resume', id='tab-resume'):

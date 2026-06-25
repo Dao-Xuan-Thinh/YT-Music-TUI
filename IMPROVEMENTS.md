@@ -172,6 +172,22 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
   the AF_UNIX path-length limit, but on locked-down systems consider
   `$XDG_RUNTIME_DIR` when it's short enough. (`player.py:38`)
 
+- [ ] **Mobile / "host it on the phone itself" (research, 2026-06-25).**
+  - **Android via Termux is the viable native path.** `pkg install python mpv
+    ffmpeg` → `pip install -r requirements.txt` → `python main.py`. The real
+    Textual TUI runs in the Termux terminal with audio out the phone speakers;
+    `_find_ytdlp()` finds Termux's yt-dlp on `$PREFIX/bin` automatically.
+  - **Blocker to fix when pursued:** the mpv IPC socket is hard-coded to
+    `/tmp/ytm-tui-<pid>.sock` (`player.py:38`), but `/tmp` doesn't exist on Termux
+    (`$TMPDIR` = `…/com.termux/files/usr/tmp`). Use `$TMPDIR` /
+    `tempfile.gettempdir()` while keeping the path short for the AF_UNIX limit.
+    May also need an mpv `--ao` fallback (opensles/pulse). Pairs with the `/tmp`
+    item above.
+  - **iOS:** not viable natively (no mpv, restricted audio/background; iSH/a-Shell
+    can't run the mpv streaming path). Only a thin client to a remote box.
+  - **`textual serve`** (browser/touch UI) is a possible later phase, but the
+    Python+mpv process still has to run locally (Termux) to be "on the phone."
+
 - [ ] **Atomic JSON writes.** `config.py` / `library.py` write JSON in place; a
   crash mid-write (or two writers) can truncate the file. Write to a temp file and
   `os.replace()` it into position. (`config._save`, `library._save`)

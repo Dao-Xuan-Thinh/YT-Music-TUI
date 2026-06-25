@@ -31,7 +31,7 @@ updater.py      ← Self-update via git (check/pull/deps refresh, branch switch)
 1. **Boot** → a `HomeScreen` shows tabs **Resume / For You / Folders / Liked /
    Recent** (backed by `library.py`). Selecting loads/plays/resumes; on any
    manageable tab `d` deletes the highlighted entry (unlike / unpin / delete
-   playlist or session) and `R` renames a highlighted playlist. Esc or
+   playlist or session) and `r` renames a highlighted playlist. Esc or
    "Search / Browse" enters the main UI.
 2. **Search** (`/` key) → `youtube.resolve()` detects URL or keyword → results populate DataTable
 3. **Play** (Enter on result) → `player.play(url, start=)` loads URL via mpv IPC `loadfile replace`
@@ -257,7 +257,7 @@ guard (≥3 sub-2s ends in a row → stop with an error instead of skipping the 
 
 **Manage the library:** on the home screen's Resume / Folders / Liked / Recent tabs,
 `d` deletes the highlighted entry (delete playlist / unpin folder / delete session /
-unlike / remove-from-recent — playlists, folders and sessions confirm first) and `R`
+unlike / remove-from-recent — playlists, folders and sessions confirm first) and `r`
 renames a highlighted saved playlist. Backed by `library.py`
 (`delete_playlist`/`rename_playlist`/`unpin_folder`/`delete_session`/`toggle_like`/`remove_recent`).
 
