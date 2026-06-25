@@ -6,6 +6,27 @@
 > build iOS** — compilation/verification happens on the Mac mini. Treat code here
 > as a blueprint to build *there*, then iterate from real Xcode output.
 
+## ▶ Resuming on the Mac mini (start here)
+
+The Claude Code session from the Windows box does **not** sync — but the work does
+(it's all in git + these docs). To pick up:
+
+1. `git clone git@github.com:Dao-Xuan-Thinh/YT-Music-TUI.git && cd YT-Music-TUI`
+2. `git checkout mobile-fork`
+3. Start Claude Code in the folder and say: *"Read `NATIVE_REWRITE.md` and
+   `CLAUDE.md`; we're doing the SwiftUI + AVPlayer + embedded-Python native
+   rewrite — start with Milestone 1 (extraction spike)."*
+
+**State as of this kickoff:**
+- Desktop app is feature-complete on `master`/`test` (library management, themes,
+  color-wave, auth, the Termux socket-path fix). No native code exists yet.
+- **Decision locked:** SwiftUI + AVPlayer (force m4a/AAC) + embedded Python
+  (`python-apple-support`) running `yt-dlp` for extraction. MPVKit = optional
+  Phase 2 (Opus / desktop parity).
+- **First task = Milestone 1**, the go/no-go gate: prove `yt-dlp` runs embedded on
+  a real device and resolves a video to a playable `m4a` URL. Everything else is
+  low-risk once that works.
+
 ## Goal
 
 A native iOS/iPadOS app that runs **on the device** with **audio out the device**,
