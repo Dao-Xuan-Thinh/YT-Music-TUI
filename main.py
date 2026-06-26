@@ -1220,6 +1220,8 @@ class YTMApp(App):
         self._anim_timer = None          # active Timer while the wave is running
         self._playing_row = None         # displayed row index of the playing track
         self._freeze_file = None         # set by _install_freeze_watchdog (diagnostics)
+        self._pollcount = 0              # diagnostics: event-loop liveness counter
+        self._lastkey = ''               # diagnostics: last key the app received
         self.search_source = self._config.search_source
         self.volume        = self._config.volume
         self.app_mode      = self._config.app_mode
@@ -1309,16 +1311,58 @@ class YTMApp(App):
         reschedules it, so a healthy app keeps canceling it and it only ever fires
         during a real freeze — even one that holds the GIL (which a Python daemon
         watchdog could not catch). Best-effort: any failure just disables it."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        self._dbg_path = os.path.join(here, 'uidbg.log')
+        self._snap_path = os.path.join(here, 'snapshot.txt')
         try:
             import faulthandler
-            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'freeze.txt')
             # Append so a dump from a prior frozen run survives a relaunch (the file
             # only ever grows on an actual freeze; it stays empty in normal use).
-            self._freeze_file = open(path, 'a', encoding='utf-8')
+            self._freeze_file = open(os.path.join(here, 'freeze.txt'), 'a', encoding='utf-8')
             faulthandler.enable()
             self._freeze_arm()
         except Exception:
             self._freeze_file = None
+        # The freeze is UI-only (event loop + render stay alive), so faulthandler can't
+        # catch it. This daemon stays alive too and snapshots every thread's stack every
+        # 4s (overwrite) — during a freeze the latest snapshot shows what the input
+        # thread is doing; uidbg.log records the loop + key-event timeline.
+        threading.Thread(target=self._diag_snapshot_loop, daemon=True).start()
+        self._dbg('--- app start ---')
+
+    def _dbg(self, msg: str) -> None:
+        import time as _t
+        try:
+            with open(self._dbg_path, 'a', encoding='utf-8') as f:
+                f.write(f'{_t.strftime("%H:%M:%S")} p{self._pollcount} {msg}\n')
+        except Exception:
+            pass
+
+    def _diag_snapshot_loop(self) -> None:
+        import sys as _sys
+        import time as _time
+        import traceback as _tb
+        while True:
+            _time.sleep(4)
+            try:
+                names = {t.ident: t.name for t in threading.enumerate()}
+                out = [f'snapshot {_time.strftime("%H:%M:%S")} polls={self._pollcount} '
+                       f'lastkey={self._lastkey} screen={type(self.screen).__name__}\n\n']
+                for tid, frame in _sys._current_frames().items():
+                    out.append(f'--- thread {names.get(tid, tid)} (id={tid}) ---\n')
+                    out.append(''.join(_tb.format_stack(frame)))
+                    out.append('\n')
+                with open(self._snap_path, 'w', encoding='utf-8') as f:
+                    f.writelines(out)
+            except Exception:
+                pass
+
+    def on_key(self, event) -> None:
+        # Diagnostics only: record that a key reached the app (does not consume it).
+        import time as _t
+        self._lastkey = f'{event.key}@{_t.strftime("%H:%M:%S")}'
+        self._dbg(f'KEY {event.key} focus={getattr(self.focused, "id", None)} '
+                  f'screen={type(self.screen).__name__}')
 
     def _freeze_arm(self) -> None:
         """(Re)schedule the freeze dump 8s out. Called every poll tick + at boot."""
@@ -1710,6 +1754,10 @@ class YTMApp(App):
 
     def _poll_player(self) -> None:
         self._freeze_arm()               # heartbeat: pushes the freeze-dump timer out 8s
+        self._pollcount += 1
+        if self._pollcount % 3 == 0:     # diagnostics: ~every 3s, prove the loop is alive
+            self._dbg(f'POLL screen={type(self.screen).__name__} '
+                      f'focus={getattr(self.focused, "id", None)} np={bool(self.now_playing)}')
         self.position  = self._player.get_position()
         self.duration  = self._player.get_duration()
         self.is_paused = self._player.is_paused()

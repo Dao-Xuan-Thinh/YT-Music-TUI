@@ -3,6 +3,8 @@ __pycache__/
 *.pyo
 err.txt
 freeze.txt
+uidbg.log
+snapshot.txt
 config.json
 library.json
 sessions.json
