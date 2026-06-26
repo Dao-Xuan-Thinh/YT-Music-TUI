@@ -9,6 +9,7 @@ Regular YouTube search/URLs and all audio streaming stay on yt-dlp/mpv.
 """
 
 import os
+import threading
 import urllib.parse
 import yt_dlp
 
@@ -33,6 +34,41 @@ _client_id = ''
 _client_secret = ''
 _cookies_file = ''
 _authed = False              # cached auth state (avoids re-parsing cookies per call)
+
+# Serializes ALL ytmusicapi access. A YTMusic client wraps a single requests.Session
+# with mutable per-request state (SAPISIDHASH, headers, innertube context); calling it
+# from two threads at once (e.g. the boot For-You feed load AND the auth verify) can
+# corrupt a response (spurious parse errors → false "logged out") or deadlock inside
+# urllib3's connection pool — the cause of the post-sign-in hang. Reentrant so a wrapped
+# call may nest _get_ytm(). Only ever held by daemon threads, never the UI thread.
+_ytm_lock = threading.RLock()
+
+# Hard cap on every ytmusicapi HTTP request. ytmusicapi/requests default to NO timeout,
+# so a half-open / black-holed YouTube connection makes a call (client build,
+# get_account_info, get_home, search) block forever — and because those calls run under
+# _ytm_lock, one stalled call would wedge every later one. A bounded timeout turns that
+# into a normal exception the callers already handle (verify→unknown, feed→fallback,
+# cookies_auth_ok→error message), so the app can never permanently hang on the network.
+_HTTP_TIMEOUT = 20  # seconds
+
+
+class _TimeoutSession:
+    """Factory for a requests.Session whose every request carries a default timeout."""
+    def __new__(cls):
+        import requests
+
+        class _S(requests.Session):
+            def request(self, *args, **kwargs):
+                kwargs.setdefault('timeout', _HTTP_TIMEOUT)
+                return super().request(*args, **kwargs)
+
+        return _S()
+
+
+def _new_ytm(**kwargs):
+    """Build a YTMusic with a timeout-bounded session (each client gets its own)."""
+    from ytmusicapi import YTMusic
+    return YTMusic(requests_session=_TimeoutSession(), **kwargs)
 
 
 def configure_auth(method='none', client_id='', client_secret='', cookies_file=''):
@@ -129,25 +165,28 @@ def auth_status():
 
 def _get_ytm():
     """Lazily create a YTMusic client for the active auth method. Falls back to an
-    anonymous client (public data only) on any construction error."""
+    anonymous client (public data only) on any construction error. Thread-safe:
+    double-checked under _ytm_lock so concurrent callers build the client exactly once."""
     global _ytm
-    if _ytm is None:
-        from ytmusicapi import YTMusic
-        if _auth_method == 'cookies':
-            headers = _browser_headers_from_cookies(_cookies_file)
-            try:
-                _ytm = YTMusic(auth=headers) if headers else YTMusic()
-            except Exception:
-                _ytm = YTMusic()
-        elif _auth_method == 'oauth' and _oauth_ready():
-            try:
-                from ytmusicapi import OAuthCredentials
-                oc = OAuthCredentials(_client_id, _client_secret)
-                _ytm = YTMusic(_OAUTH_FILE, oauth_credentials=oc)
-            except Exception:
-                _ytm = YTMusic()    # bad/expired token → degrade to public
-        else:
-            _ytm = YTMusic()
+    if _ytm is not None:
+        return _ytm
+    with _ytm_lock:
+        if _ytm is None:
+            if _auth_method == 'cookies':
+                headers = _browser_headers_from_cookies(_cookies_file)
+                try:
+                    _ytm = _new_ytm(auth=headers) if headers else _new_ytm()
+                except Exception:
+                    _ytm = _new_ytm()
+            elif _auth_method == 'oauth' and _oauth_ready():
+                try:
+                    from ytmusicapi import OAuthCredentials
+                    oc = OAuthCredentials(_client_id, _client_secret)
+                    _ytm = _new_ytm(auth=_OAUTH_FILE, oauth_credentials=oc)
+                except Exception:
+                    _ytm = _new_ytm()   # bad/expired token → degrade to public
+            else:
+                _ytm = _new_ytm()
     return _ytm
 
 
@@ -176,14 +215,14 @@ def cookies_auth_ok(cookies_file):
     it's the reason. Uses get_account_info() (not get_library_playlists, which
     returns [] for unauthenticated sessions instead of failing).
     """
-    from ytmusicapi import YTMusic
     headers = _browser_headers_from_cookies(
         os.path.expanduser(os.path.expandvars(cookies_file or '')))
     if headers is None:
         return False, ('no logged-in YouTube cookies found in that file '
                        '(need SAPISID / __Secure-3PAPISID)')
     try:
-        info = YTMusic(auth=headers).get_account_info() or {}
+        with _ytm_lock:
+            info = _new_ytm(auth=headers).get_account_info() or {}
         name = info.get('accountName')
         if name:
             return True, name
@@ -211,7 +250,8 @@ def verify_auth_live():
     if not _authed:
         return ('unknown', '')
     try:
-        info = _get_ytm().get_account_info() or {}
+        with _ytm_lock:
+            info = _get_ytm().get_account_info() or {}
         name = info.get('accountName') or ''
         if name:
             return ('ok', name)
@@ -332,22 +372,24 @@ def ytm_home(limit=3):
     error never triggers the mobile retry — that retry rejects cookie auth with 400.
     """
     yt = _get_ytm()
-    try:
-        data = yt.get_home(limit=limit)
-    except Exception:
-        if is_authenticated() and hasattr(yt, 'as_mobile'):
-            with yt.as_mobile():
-                data = yt.get_home(limit=limit)
-        else:
-            raise
+    with _ytm_lock:
+        try:
+            data = yt.get_home(limit=limit)
+        except Exception:
+            if is_authenticated() and hasattr(yt, 'as_mobile'):
+                with yt.as_mobile():
+                    data = yt.get_home(limit=limit)
+            else:
+                raise
     return _parse_home(data)
 
 
 def ytm_home_public(limit=3):
     """The generic (anonymous) home feed — fallback when a signed-in user's
     personalized feed errors, so the For You tab still shows something."""
-    from ytmusicapi import YTMusic
-    return _parse_home(YTMusic().get_home(limit=limit))
+    with _ytm_lock:
+        data = _new_ytm().get_home(limit=limit)
+    return _parse_home(data)
 
 
 def _parse_ytm_duration(t):
@@ -411,7 +453,8 @@ def ytm_playlist(playlist_id, limit=None):
     Fetch a YouTube Music playlist's tracks via ytmusicapi.
     limit=None fetches all tracks (paginated). Returns list of track dicts.
     """
-    data = _get_ytm().get_playlist(playlist_id, limit=limit)
+    with _ytm_lock:
+        data = _get_ytm().get_playlist(playlist_id, limit=limit)
     return [
         _ytm_track_to_dict(t)
         for t in data.get('tracks', [])
@@ -421,7 +464,8 @@ def ytm_playlist(playlist_id, limit=None):
 
 def ytm_search(query, max_results=15):
     """Search YouTube Music for songs via ytmusicapi. Returns list of track dicts."""
-    results = _get_ytm().search(query, filter='songs', limit=max_results)
+    with _ytm_lock:
+        results = _get_ytm().search(query, filter='songs', limit=max_results)
     out = [_ytm_track_to_dict(t) for t in results if t.get('videoId')]
     return out[:max_results]
 

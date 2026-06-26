@@ -247,6 +247,15 @@ A transient **network** error is treated as `unknown` (not a logout): the cached
 stays and it re-checks next boot. The `g`-screen `cookies_auth_ok()` likewise reports a
 friendly "expired or logged out" message instead of a raw `KeyError`.
 
+**Concurrency + timeouts (anti-hang):** every ytmusicapi call is serialized under
+`youtube._ytm_lock` and `_get_ytm()` builds the client once (double-checked) — two boot
+threads (`_verify_account` + the For-You feed) otherwise hit the shared `YTMusic`
+/`requests.Session` at once and can corrupt a response or deadlock in urllib3. Because a
+lock makes one stalled call block all the rest, every `YTMusic` is built via
+`_new_ytm()` with a `_TimeoutSession` (`_HTTP_TIMEOUT`=20s default on every request), so
+a black-holed YouTube connection raises instead of hanging the app forever. The lock is
+only ever taken by daemon threads, never the UI thread.
+
 ### Gotcha: auth cookies must NOT reach yt-dlp (two separate cookie files)
 
 `config.auth_cookies_file` (ytmusicapi account auth, set via Account `g`) and
