@@ -131,27 +131,34 @@ mpv runs as a separate process and resolves `yt-dlp` from its own PATH. In a vir
 ### Never dismiss a modal from a worker thread (it wedges terminal input)
 
 **The "UI freezes after signing in" bug.** Symptom: after the Account (`g`) cookie
-sign-in, the UI keeps rendering (header clock ticks, the freeze watchdog never fires —
-event loop fully alive) but **every keystroke is ignored**. Cross-platform (Windows /
-macOS / Linux); a live thread snapshot showed `textual-input` healthy and parked on the
-console/TTY handle, just never receiving events.
+sign-in, the UI kept rendering (header clock ticked, event loop fully alive) but **every
+keystroke was ignored**. Cross-platform (Windows / macOS / Linux); a live thread snapshot
+showed `textual-input` healthy and parked on the console/TTY handle, just never receiving
+events.
 
-**Cause:** the cookie/OAuth flow validates in a worker thread and dismisses the modal
+**Cause:** the old cookie/OAuth flow validated in a worker thread and dismissed the modal
 *from that thread* (`AccountScreen._use_cookies` → `call_from_thread(_after_cookies)` →
 `_finish` → `dismiss`). Dismissing a `ModalScreen` from a worker-thread `call_from_thread`
 callback wedges Textual's real input driver. It's unique to this flow — every other modal
 (Settings, Update, Keybindings) dismisses on the UI thread from a button press and is
 fine. It does **not** reproduce under the headless `run_test` driver (no real input
-thread), which is why it took live thread/`uidbg.log` snapshots to find.
+thread), which is why it took live thread/`uidbg.log` snapshots to find. (False leads ruled
+out first: not a Python deadlock — a faulthandler watchdog rescheduled each poll tick never
+fired; not mpv — `--no-terminal` didn't fix it and it froze with nothing playing.)
 
-**Fix:** input is already dead by the time the sign-in result is applied, so there's no
-in-app recovery — on a successful sign-in `action_account._after` calls `_restart_app()`
-(the same clean re-exec `u`/update uses: Textual restores the terminal, then `os.execv`).
-Cookies are already persisted so the relaunched process boots signed-in with working
-input; `_restart_app` saves a resume session so a playing track survives. If you ever add
-another worker-validated modal, dismiss it on the UI thread (or restart) — don't dismiss
-from the thread. (Diagnostics that found this — the freeze watchdog + `uidbg.log` /
-`snapshot.txt` in `main.py` — are kept as a safety net for UI-only freezes.)
+**Rule: never dismiss a modal from a worker thread.** Do a fast *local* check on the UI
+thread, dismiss there, then do any network validation in the background and update the
+footer/status — never dismiss from the thread.
+
+**Fix (current design):** `AccountScreen._use_cookies` runs on the UI thread (button
+press): it does only a fast **local** sanity check — file exists +
+`youtube._browser_headers_from_cookies(path)` confirms it's a logged-in export (~2 ms) —
+then `_finish('cookies', …)` dismisses on the UI thread (proven safe). The live session is
+confirmed *after* dismiss by `action_account._after`, which calls `configure_auth` and then
+kicks off the existing background `App._verify_account` daemon (the same one boot uses):
+it runs `youtube.verify_auth_live()` and marshals the result back via `call_from_thread`
+only to set `config.account_name` / `_update_footer()` / alert on a confirmed logout —
+never to dismiss a modal. No worker-thread dismiss, no restart.
 
 Related hygiene: mpv is launched with **`--no-terminal`** + **`stdin=DEVNULL`** (ffplay
 `-nostdin` + `stdin=DEVNULL`) in `player.py` so a backend can never read terminal keys.
