@@ -128,19 +128,35 @@ The `<pid>` suffix makes the endpoint unique per run so a new launch never conne
 
 mpv runs as a separate process and resolves `yt-dlp` from its own PATH. In a virtualenv, yt-dlp is next to the venv Python and NOT on the system PATH, so YouTube won't stream. `_find_ytdlp()` locates it (next to `sys.executable`, else PATH) and passes `--script-opts=ytdl_hook-ytdl_path=<path>` to mpv.
 
-### mpv/ffplay must not touch the terminal (or it steals keyboard input)
+### Never dismiss a modal from a worker thread (it wedges terminal input)
 
-mpv is launched with **`--no-terminal`** and **`stdin=subprocess.DEVNULL`** (ffplay with
-`-nostdin` + `stdin=DEVNULL`). Without this, mpv reads the controlling terminal/TTY for
-its *own* keybindings and **steals keystrokes from the Textual input thread** — the UI
-keeps rendering (clock ticks, event loop alive) but no key is ever delivered, looking like
-a hard freeze. It's cross-platform (TTY on macOS/Linux, console on Windows) and was
-diagnosed from a live thread snapshot showing `textual-input` healthy in
-`WaitForMultipleObjects` on the console handle, never signalled. mpv is driven **only**
-over the IPC socket, so disabling its terminal access doesn't affect playback control.
-**File:** `player.py:_ensure_mpv_running` / `_play_mpv` / `_spawn_ffplay`. Never remove
-`--no-terminal` / the stdin redirect. (The boot-time freeze watchdog + `uidbg.log` /
-`snapshot.txt` diagnostics in `main.py` exist to catch UI-only freezes like this.)
+**The "UI freezes after signing in" bug.** Symptom: after the Account (`g`) cookie
+sign-in, the UI keeps rendering (header clock ticks, the freeze watchdog never fires —
+event loop fully alive) but **every keystroke is ignored**. Cross-platform (Windows /
+macOS / Linux); a live thread snapshot showed `textual-input` healthy and parked on the
+console/TTY handle, just never receiving events.
+
+**Cause:** the cookie/OAuth flow validates in a worker thread and dismisses the modal
+*from that thread* (`AccountScreen._use_cookies` → `call_from_thread(_after_cookies)` →
+`_finish` → `dismiss`). Dismissing a `ModalScreen` from a worker-thread `call_from_thread`
+callback wedges Textual's real input driver. It's unique to this flow — every other modal
+(Settings, Update, Keybindings) dismisses on the UI thread from a button press and is
+fine. It does **not** reproduce under the headless `run_test` driver (no real input
+thread), which is why it took live thread/`uidbg.log` snapshots to find.
+
+**Fix:** input is already dead by the time the sign-in result is applied, so there's no
+in-app recovery — on a successful sign-in `action_account._after` calls `_restart_app()`
+(the same clean re-exec `u`/update uses: Textual restores the terminal, then `os.execv`).
+Cookies are already persisted so the relaunched process boots signed-in with working
+input; `_restart_app` saves a resume session so a playing track survives. If you ever add
+another worker-validated modal, dismiss it on the UI thread (or restart) — don't dismiss
+from the thread. (Diagnostics that found this — the freeze watchdog + `uidbg.log` /
+`snapshot.txt` in `main.py` — are kept as a safety net for UI-only freezes.)
+
+Related hygiene: mpv is launched with **`--no-terminal`** + **`stdin=DEVNULL`** (ffplay
+`-nostdin` + `stdin=DEVNULL`) in `player.py` so a backend can never read terminal keys.
+This was *not* the cause of the freeze above (it persisted with `--no-terminal`), but it's
+correct — mpv is driven only over the IPC socket and must never touch the terminal.
 
 ### Track URLs use www.youtube.com
 
