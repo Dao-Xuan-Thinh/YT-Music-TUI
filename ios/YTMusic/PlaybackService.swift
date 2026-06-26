@@ -1,0 +1,193 @@
+import AVFoundation
+import Combine
+import Foundation
+import MediaPlayer
+import UIKit
+
+/// Owns all audio playback: AVPlayer + AVAudioSession (background mode) +
+/// MPNowPlayingInfoCenter / MPRemoteCommandCenter (lock-screen / Control-Center / AirPods).
+final class PlaybackService: ObservableObject {
+    static let shared = PlaybackService()
+
+    @Published private(set) var current: Track?
+    @Published private(set) var isPlaying = false
+    @Published private(set) var position: Double = 0   // seconds
+    @Published private(set) var duration: Double = 0   // seconds
+    @Published private(set) var ready = false          // item ready to play
+
+    private let player = AVPlayer()
+    private var timeObserver: Any?
+    private var statusObs: NSKeyValueObservation?
+    private var rateObs: NSKeyValueObservation?
+    private var artwork: MPMediaItemArtwork?
+
+    private init() {
+        configureAudioSession()
+        configureRemoteCommands()
+        observePlayer()
+    }
+
+    // MARK: - Public transport
+
+    func play(_ track: Track) {
+        guard let url = track.streamAVURL else {
+            NSLog("[playback] track has no stream URL"); return
+        }
+        current = track
+        position = 0
+        duration = Double(track.duration)
+        ready = false
+        artwork = nil
+
+        activateSession()
+        let item = AVPlayerItem(url: url)
+        player.replaceCurrentItem(with: item)
+        player.play()
+        isPlaying = true
+        loadArtwork(track)
+        updateNowPlaying()
+        NSLog("[playback] play \"%@\" (%@)", track.title, url.host ?? "?")
+    }
+
+    func togglePlayPause() { isPlaying ? pause() : resume() }
+
+    func pause() {
+        player.pause()
+        isPlaying = false
+        updateNowPlaying()
+    }
+
+    func resume() {
+        guard current != nil else { return }
+        activateSession()
+        player.play()
+        isPlaying = true
+        updateNowPlaying()
+    }
+
+    func seek(to seconds: Double) {
+        let t = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
+        player.seek(to: t) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.position = seconds
+                self.updateNowPlaying()
+            }
+        }
+    }
+
+    func skip(_ delta: Double) { seek(to: position + delta) }
+
+    // MARK: - Audio session
+
+    private func configureAudioSession() {
+        let s = AVAudioSession.sharedInstance()
+        try? s.setCategory(.playback, mode: .default)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleInterruption(_:)),
+            name: AVAudioSession.interruptionNotification, object: s)
+    }
+
+    private func activateSession() {
+        try? AVAudioSession.sharedInstance().setActive(true)
+    }
+
+    @objc private func handleInterruption(_ note: Notification) {
+        guard let info = note.userInfo,
+              let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        switch type {
+        case .began:
+            pause()
+        case .ended:
+            if let optRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt,
+               AVAudioSession.InterruptionOptions(rawValue: optRaw).contains(.shouldResume) {
+                resume()
+            }
+        @unknown default: break
+        }
+    }
+
+    // MARK: - Player observation
+
+    private func observePlayer() {
+        timeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
+            queue: .main
+        ) { [weak self] time in
+            guard let self else { return }
+            self.position = time.seconds
+            if let d = self.player.currentItem?.duration.seconds, d.isFinite, d > 0 {
+                self.duration = d
+            }
+            self.updateNowPlaying()
+        }
+
+        // KVO callbacks fire off the main thread; hop to main before touching @Published.
+        statusObs = player.observe(\.currentItem?.status, options: [.new]) { [weak self] p, _ in
+            let status = p.currentItem?.status
+            let dur = p.currentItem?.duration.seconds
+            let err = p.currentItem?.error
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if status == .readyToPlay {
+                    self.ready = true
+                    if let d = dur, d.isFinite, d > 0 { self.duration = d }
+                    self.updateNowPlaying()
+                } else if status == .failed {
+                    NSLog("[playback] item failed: %@", String(describing: err))
+                }
+            }
+        }
+
+        rateObs = player.observe(\.timeControlStatus, options: [.new]) { [weak self] p, _ in
+            let playing = (p.timeControlStatus == .playing)
+            DispatchQueue.main.async { self?.isPlaying = playing }
+        }
+    }
+
+    // MARK: - Now Playing / remote commands
+
+    private func updateNowPlaying() {
+        guard let t = current else { return }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: t.title,
+            MPMediaItemPropertyArtist: t.uploader,
+            MPMediaItemPropertyPlaybackDuration: duration > 0 ? duration : Double(t.duration),
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
+        ]
+        if let art = artwork { info[MPMediaItemPropertyArtwork] = art }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private func loadArtwork(_ track: Track) {
+        guard let url = track.thumbnailURL else { return }
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let self, let data, let img = UIImage(data: data) else { return }
+            let art = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
+            DispatchQueue.main.async {
+                guard self.current?.id == track.id else { return }
+                self.artwork = art
+                self.updateNowPlaying()
+            }
+        }.resume()
+    }
+
+    private func configureRemoteCommands() {
+        let c = MPRemoteCommandCenter.shared()
+        c.playCommand.addTarget { [weak self] _ in self?.resume(); return .success }
+        c.pauseCommand.addTarget { [weak self] _ in self?.pause(); return .success }
+        c.togglePlayPauseCommand.addTarget { [weak self] _ in self?.togglePlayPause(); return .success }
+        c.skipForwardCommand.preferredIntervals = [15]
+        c.skipBackwardCommand.preferredIntervals = [15]
+        c.skipForwardCommand.addTarget { [weak self] _ in self?.skip(15); return .success }
+        c.skipBackwardCommand.addTarget { [weak self] _ in self?.skip(-15); return .success }
+        c.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self, let e = event as? MPChangePlaybackPositionCommandEvent
+            else { return .commandFailed }
+            self.seek(to: e.positionTime)
+            return .success
+        }
+    }
+}

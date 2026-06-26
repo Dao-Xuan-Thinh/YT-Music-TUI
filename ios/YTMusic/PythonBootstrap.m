@@ -77,6 +77,10 @@ int python_init(void) {
     }
 
     g_initialized = 1;
+    // Release the GIL from this (init) thread so subsequent calls from any thread can
+    // re-acquire it via PyGILState_Ensure. Without this, calling Python from a background
+    // thread races the interpreter and crashes (e.g. a second resolve).
+    PyEval_SaveThread();
     return 0;
 }
 
@@ -85,16 +89,20 @@ char *python_resolve(const char *url) {
         return dup_cstr(@"{\"_ok\": false, \"_error\": \"python_init failed\"}");
     }
 
+    // python_resolve runs on a background thread: acquire the GIL for the whole call.
+    PyGILState_STATE gil = PyGILState_Ensure();
+    char *out;
+
     PyObject *mod = PyImport_ImportModule("resolve");
     if (!mod) {
         PyErr_Print();
+        PyGILState_Release(gil);
         return dup_cstr(@"{\"_ok\": false, \"_error\": \"import resolve failed\"}");
     }
     PyObject *func = PyObject_GetAttrString(mod, "resolve");
     PyObject *args = Py_BuildValue("(s)", url);
     PyObject *res = func ? PyObject_CallObject(func, args) : NULL;
 
-    char *out;
     if (res && PyUnicode_Check(res)) {
         const char *s = PyUnicode_AsUTF8(res);
         out = strdup(s ? s : "");
@@ -107,5 +115,6 @@ char *python_resolve(const char *url) {
     Py_XDECREF(args);
     Py_XDECREF(func);
     Py_XDECREF(mod);
+    PyGILState_Release(gil);
     return out;
 }
