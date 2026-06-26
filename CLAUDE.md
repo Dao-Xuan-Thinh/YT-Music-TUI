@@ -128,6 +128,20 @@ The `<pid>` suffix makes the endpoint unique per run so a new launch never conne
 
 mpv runs as a separate process and resolves `yt-dlp` from its own PATH. In a virtualenv, yt-dlp is next to the venv Python and NOT on the system PATH, so YouTube won't stream. `_find_ytdlp()` locates it (next to `sys.executable`, else PATH) and passes `--script-opts=ytdl_hook-ytdl_path=<path>` to mpv.
 
+### mpv/ffplay must not touch the terminal (or it steals keyboard input)
+
+mpv is launched with **`--no-terminal`** and **`stdin=subprocess.DEVNULL`** (ffplay with
+`-nostdin` + `stdin=DEVNULL`). Without this, mpv reads the controlling terminal/TTY for
+its *own* keybindings and **steals keystrokes from the Textual input thread** — the UI
+keeps rendering (clock ticks, event loop alive) but no key is ever delivered, looking like
+a hard freeze. It's cross-platform (TTY on macOS/Linux, console on Windows) and was
+diagnosed from a live thread snapshot showing `textual-input` healthy in
+`WaitForMultipleObjects` on the console handle, never signalled. mpv is driven **only**
+over the IPC socket, so disabling its terminal access doesn't affect playback control.
+**File:** `player.py:_ensure_mpv_running` / `_play_mpv` / `_spawn_ffplay`. Never remove
+`--no-terminal` / the stdin redirect. (The boot-time freeze watchdog + `uidbg.log` /
+`snapshot.txt` diagnostics in `main.py` exist to catch UI-only freezes like this.)
+
 ### Track URLs use www.youtube.com
 
 `_ytm_track_to_dict()` builds `https://www.youtube.com/watch?v=<id>` (not `music.youtube.com`). Same videoId/audio, but mpv's ytdl_hook fails to load `music.youtube.com/watch` URLs on Linux; the www form works on every OS.
