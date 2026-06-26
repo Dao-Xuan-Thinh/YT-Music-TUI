@@ -1,0 +1,54 @@
+name: YTMusic
+options:
+  bundleIdPrefix: com.ytmtui
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+targets:
+  YTMusic:
+    type: application
+    platform: iOS
+    sources:
+      - path: YTMusic
+        excludes:
+          - "**/*.py"
+      # Bundled verbatim at the .app root (PYTHONHOME staging + our code + deps).
+      - path: app
+        type: folder
+        buildPhase: resources
+      - path: app_packages
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - framework: Support/Python.xcframework
+        embed: true
+        codeSign: true
+    info:
+      path: YTMusic/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        SWIFT_OBJC_BRIDGING_HEADER: YTMusic/YTMusic-Bridging-Header.h
+        SWIFT_VERSION: "6.0"
+        PRODUCT_BUNDLE_IDENTIFIER: com.ytmtui.YTMusic
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        # Allow loading the embedded Python dylib + .so-derived frameworks.
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
+        # Single-arch builds: install_python's `lib-$ARCHS` assumes one arch.
+        ONLY_ACTIVE_ARCH: YES
+        # Device signing (Phase 3): set DEVELOPMENT_TEAM via build flag or Xcode UI.
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+    postBuildScripts:
+      - name: Install Python stdlib + extension frameworks
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          source "$PROJECT_DIR/Support/Python.xcframework/build/utils.sh"
+          install_python Support/Python.xcframework app app_packages

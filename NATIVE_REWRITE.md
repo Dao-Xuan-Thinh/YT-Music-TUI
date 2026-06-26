@@ -100,11 +100,49 @@ SwiftUI Views ─► ViewModels (ObservableObject)
   NowPlayingInfo)   ytm_home)                recent/sessions)
 ```
 
+## Milestone 1 result — go/no-go PASSED ✅ (host-validated)
+
+The riskiest unknown is now de-risked on the Mac (see `ios/spikes/phase0_jsc_spike.py`).
+Two findings reshaped the spike:
+
+- **yt-dlp 2026.06 needs a JS runtime** to solve YouTube's `signature` + `n`
+  challenges (Deno/Node/Bun/QuickJS/EJS). With none installed, solving *fails* and
+  formats are missing/throttled. iOS bans JIT → none of those binaries can run
+  on-device.
+- **JavaScriptCore solves them.** yt-dlp exposes a pluggable JSC provider system
+  (`register_provider`). The EJS base (`EJSBaseJCP`) builds a *self-contained* JS
+  program (`lib.min.js`+`core.min.js`+`console.log(JSON.stringify(jsc(data)))`) and
+  hands it to `_run_js_runtime(program)`. We subclassed it to eval that program in
+  Apple's `jsc` (the same engine as iOS `JSContext`). Verified jsc-only (deno/node
+  hidden from PATH) across 3 videos → `[jsc:JavaScriptCore] Solving JS challenges` →
+  clean `m4a / mp4a.40.2 / googlevideo` URL, no solve warnings, ~3.2s end-to-end.
+
+**On iOS the entire port is one method:** `_run_js_runtime(program)` →
+`_iosbridge.run_js(program)` where Swift evals `program` in a long-lived `JSContext`
+with a `console.log` shim. No Deno, no server, no throttling.
+
+## Milestone 1 — now PROVEN in-app on the iOS Simulator ✅
+
+The full extraction chain runs inside a real SwiftUI app on the iOS 26.5 Simulator
+runtime (see `ios/`, built via XcodeGen + python-apple-support 3.13):
+
+- **Embedded CPython boots in-app** and imports `yt-dlp` (`PythonBootstrap.m`, isolated
+  `PyConfig` mirroring the support package's testbed).
+- **JavaScriptCore solves challenges on-device, in embedded Python.** The JSC provider is
+  now **pure Python via `ctypes` → JavaScriptCore C API** (`ios/app/ios_jsc_provider.py`)
+  — no Swift bridge. Confirmed in the running app:
+  `[jsc:JavaScriptCore] Solving JS challenges using JavaScriptCore` (only provider
+  available; deno/node/bun/quickjs all unavailable on iOS).
+- **Resolves to AVPlayer-ready m4a:** `_ok=true, ext=m4a, acodec=mp4a.40.2`, direct
+  `googlevideo` URL, ~4s. In practice the default `android_vr` client returns a playable
+  m4a *without* needing JS solving; JavaScriptCore is the proven fallback.
+
+Run it: `cd ios && ./fetch-deps.sh && ./build.sh sim`. Remaining gate: a physical device.
+
 ## Milestones
 
-1. **Spike — extraction on device.** Xcode project + `python-apple-support`;
-   prove `yt-dlp` resolves a video to an `m4a` URL on a real device. (Riskiest
-   piece — do it first.)
+1. **Spike — extraction.** ✅ Host-validated **and** proven in-app on Simulator. Only the
+   physical-device run remains (Phase 3 below; needs an Apple ID for signing).
 2. **Playback.** `AVPlayer` plays that URL; `AVAudioSession` background mode;
    lock-screen controls via `MPNowPlayingInfoCenter`/`MPRemoteCommandCenter`.
 3. **Search + results UI.** SwiftUI search → bridge `search()` → results list →
@@ -123,6 +161,26 @@ SwiftUI Views ─► ViewModels (ObservableObject)
 - Public App Store only if distributing to others (full review; YouTube-audio
   apps draw content-policy scrutiny).
 
+## Phase 3 — device run: PASSED ✅ (Milestone 1 complete)
+
+Verified on a physical **iPhone 16 Pro** (iOS, free Apple ID / Personal Team):
+embedded Python + yt-dlp resolved YouTube to `_ok=true, ext=m4a, acodec=mp4a.40.2,
+itag=140, mime=audio/mp4` from a `googlevideo` URL. Cold resolve ~12s (first-launch
+Python import; warm later).
+
+Build/run that worked (`./build.sh device <TEAM> <device_id>`):
+- `-allowProvisioningUpdates` auto-created the dev cert (`Apple Development: …`) + the
+  `iOS Team Provisioning Profile` and registered the device.
+- Prereqs that needed manual phone steps: **Developer Mode** on (Settings → Privacy &
+  Security), and **trusting the developer profile** (Settings → General → VPN & Device
+  Management) before first launch.
+
+**Milestone 1 (extraction spike) is DONE** — go/no-go is green on host, Simulator, and
+device. Next: **Milestone 2** — AVPlayer playback of the m4a URL + `AVAudioSession`
+background mode + `MPNowPlayingInfoCenter`/`MPRemoteCommandCenter` lock-screen controls.
+
+Full steps + gotchas: `ios/README.md`.
+
 ## Verification (on the Mac mini)
 
 - Build & run in Xcode on a real device (extraction/audio need device, not just
@@ -132,10 +190,16 @@ SwiftUI Views ─► ViewModels (ObservableObject)
 - Background audio test: start playback, lock the screen / background the app →
   audio continues, lock-screen controls work.
 
-## Open questions to resolve on first Mac session
+## Open questions
 
-- `python-apple-support` version + `yt-dlp`/`ytmusicapi` pure-Python deps that
-  bundle cleanly (no C-extension surprises) on iOS.
+- ~~Can YouTube's JS challenges be solved on iOS (no Deno/JIT)?~~ **Resolved:** yes,
+  via a custom yt-dlp JSC provider backed by JavaScriptCore (`JSContext`). See the
+  Milestone 1 result above + `ios/spikes/phase0_jsc_spike.py`.
+- `python-apple-support` version + `yt-dlp`/`ytmusicapi`/`yt-dlp-ejs` pure-Python deps
+  that bundle cleanly (no C-extension surprises) on iOS. Note: `yt-dlp-ejs` is
+  **required** now (ships the solver `lib.min.js`/`core.min.js`); both are pure JS data.
+- Bridge mechanism: register `_iosbridge.run_js` from Swift via the CPython C-API vs.
+  PythonKit. Keep a single long-lived `JSContext` (avoid per-call setup cost).
 - AAC availability/quality across tracks; when to force HLS vs progressive.
 - Whether to reuse `library.py`/`config.py` via the Python bridge or reimplement
   in Swift (lean: reimplement — keeps the Swift side dependency-light).
