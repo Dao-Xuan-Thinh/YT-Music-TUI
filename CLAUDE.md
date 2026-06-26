@@ -236,7 +236,16 @@ You** tab and search personalize. Setup: `YOUTUBE_LOGIN.md`.
 method at boot; `youtube._get_ytm()` builds the matching `YTMusic` (cookies →
 `auth=headers`, oauth → `oauth_credentials`, else anonymous), degrading to anonymous on
 error. `auth_status()` labels the footer. `is_authenticated()` is cached (computed once in
-`configure_auth`) so the footer/status don't re-parse the cookie file each refresh.
+`configure_auth`) so the footer/status don't re-parse the cookie file each refresh — but
+that cache only reflects whether the file *contains* login cookies, not whether they still
+work. So at boot `App._verify_account` (daemon thread) calls `youtube.verify_auth_live()`,
+a single live `get_account_info()`: on a **confirmed logout** (cookie auth returns no
+account, or ytmusicapi raises a logged-out parse error — `_is_logged_out_error`), it
+downgrades `is_authenticated()` to False, clears `config.account_name`, and the UI hides
+the `♥ <name>` footer segment + shows a "sign-in expired — press g to re-export" alert.
+A transient **network** error is treated as `unknown` (not a logout): the cached name
+stays and it re-checks next boot. The `g`-screen `cookies_auth_ok()` likewise reports a
+friendly "expired or logged out" message instead of a raw `KeyError`.
 
 ### Gotcha: auth cookies must NOT reach yt-dlp (two separate cookie files)
 

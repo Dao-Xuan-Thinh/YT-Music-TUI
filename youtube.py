@@ -151,6 +151,24 @@ def _get_ytm():
     return _ytm
 
 
+def _is_logged_out_error(exc):
+    """True if `exc` indicates a confirmed logged-out/expired session (vs. a
+    transient network failure).
+
+    ytmusicapi reaches YouTube fine but raises a KeyError/IndexError/TypeError while
+    navigating the account-less "logged out" menu (no activeAccountHeaderRenderer).
+    A network failure instead raises a requests exception — that's *unknown*, not a
+    confirmed logout, so we must not treat it as one.
+    """
+    try:
+        import requests
+        if isinstance(exc, requests.exceptions.RequestException):
+            return False
+    except Exception:
+        pass
+    return isinstance(exc, (KeyError, IndexError, TypeError))
+
+
 def cookies_auth_ok(cookies_file):
     """Validate a cookies file by fetching the signed-in account.
 
@@ -169,25 +187,43 @@ def cookies_auth_ok(cookies_file):
         name = info.get('accountName')
         if name:
             return True, name
-        return False, ('cookies not accepted — re-export them while logged in to '
-                       'music.youtube.com')
+        return False, ('cookies are expired or logged out — re-export cookies.txt '
+                       'while signed in to music.youtube.com')
     except Exception as exc:
+        if _is_logged_out_error(exc):
+            return False, ('cookies are expired or logged out — re-export cookies.txt '
+                           'while signed in to music.youtube.com')
         return False, f'{type(exc).__name__}: {exc}'
 
 
-def fetch_account_name():
-    """Return the signed-in account's display name using the cached client, or ''.
+def verify_auth_live():
+    """Live-validate the active session and report the result. Network call — run
+    from a daemon thread, never the UI hot path.
 
-    Cheap-ish (one API call, no cookie re-parse) — call from a daemon thread once
-    to populate the footer when the cached name is missing. Returns '' if not
-    authenticated or on any error."""
+    Returns (status, name):
+      ('ok', name)      — signed in; `name` is the account display name.
+      ('expired', '')   — COOKIE auth confirmed logged out (empty account or a
+                          logged-out parse error); downgrades is_authenticated().
+      ('unknown', '')   — couldn't confirm (network/transient error, or any oauth
+                          failure); auth state left untouched so a blip doesn't drop it.
+    """
+    global _authed
     if not _authed:
-        return ''
+        return ('unknown', '')
     try:
         info = _get_ytm().get_account_info() or {}
-        return info.get('accountName') or ''
-    except Exception:
-        return ''
+        name = info.get('accountName') or ''
+        if name:
+            return ('ok', name)
+        if _auth_method == 'cookies':
+            _authed = False
+            return ('expired', '')
+        return ('unknown', '')
+    except Exception as exc:
+        if _auth_method == 'cookies' and _is_logged_out_error(exc):
+            _authed = False
+            return ('expired', '')
+        return ('unknown', '')
 
 
 def login(client_id, client_secret, on_code, should_cancel=None):

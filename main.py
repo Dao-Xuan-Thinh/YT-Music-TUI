@@ -1274,22 +1274,32 @@ class YTMApp(App):
         self._update_footer()
         threading.Thread(target=self._init_player, daemon=True).start()
         threading.Thread(target=self._check_for_update, daemon=True).start()
-        # If signed in but we don't have the display name yet, fetch it once.
-        if youtube.is_authenticated() and not self._config.account_name:
-            threading.Thread(target=self._init_account_name, daemon=True).start()
+        # If signed in, live-verify the session once (even with a cached name — the
+        # cached name is exactly what goes stale when cookies expire server-side).
+        if youtube.is_authenticated():
+            threading.Thread(target=self._verify_account, daemon=True).start()
         # Boot straight into the home screen.
         self.push_screen(HomeScreen(self._lib), self._on_home_result)
 
-    def _init_account_name(self) -> None:
-        name = youtube.fetch_account_name()
-        if name:
-            def _save():
+    def _verify_account(self) -> None:
+        status, name = youtube.verify_auth_live()
+
+        def _apply():
+            if status == 'ok' and name:
                 self._config.account_name = name
-                self._update_footer()
-            try:
-                self.call_from_thread(_save)
-            except Exception:
-                pass
+            elif status == 'expired':
+                # Cookies no longer authenticate → drop the stale name (is_authenticated
+                # is now False, so the footer hides the account) and alert the user.
+                self._config.account_name = ''
+                self._set_status('⚠ YouTube sign-in expired — your saved cookies no '
+                                 'longer work. Press g to re-export cookies.txt.')
+            # 'unknown' (network blip / oauth) → leave the cached name, retry next boot.
+            self._update_footer()
+
+        try:
+            self.call_from_thread(_apply)
+        except Exception:
+            pass
 
     def _init_player(self) -> None:
         if self._player.backend is None:
