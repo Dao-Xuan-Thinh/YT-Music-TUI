@@ -2169,6 +2169,20 @@ class YTMApp(App):
                                          if method != 'none' else '')
             youtube.configure_auth(method, cid, csec, cookies)
             self._update_footer()
+            # A successful sign-in validated the cookies in a worker thread and
+            # dismissed the Account modal FROM that thread. On a real terminal that
+            # wedges Textual's input delivery (the UI keeps rendering — clock ticks —
+            # but every keystroke is ignored); it's a driver-level quirk we can't undo
+            # in-process, and by here input is already dead so a confirm dialog would
+            # be unusable. So re-exec cleanly (the same path `u`/update uses: terminal
+            # restored first, then os.execv). Cookies are already persisted, so the new
+            # process boots signed-in with working input; _restart_app saves a resume
+            # session so any playing track can be picked back up from the Resume tab.
+            if method != 'none' and youtube.is_authenticated():
+                self._set_status('Signed in ✓ — restarting to finish '
+                                 '(your queue is saved to Resume)…')
+                self._restart_app()
+                return
             self._set_status('YouTube auth: ' + youtube.auth_status()
                              + (' — personalized' if youtube.is_authenticated() else ''))
 
