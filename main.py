@@ -1219,6 +1219,7 @@ class YTMApp(App):
         self._anim_frame = 0
         self._anim_timer = None          # active Timer while the wave is running
         self._playing_row = None         # displayed row index of the playing track
+        self._freeze_file = None         # set by _install_freeze_watchdog (diagnostics)
         self.search_source = self._config.search_source
         self.volume        = self._config.volume
         self.app_mode      = self._config.app_mode
@@ -1274,6 +1275,7 @@ class YTMApp(App):
         self._update_footer()
         threading.Thread(target=self._init_player, daemon=True).start()
         threading.Thread(target=self._check_for_update, daemon=True).start()
+        self._install_freeze_watchdog()
         # If signed in, live-verify the session once (even with a cached name — the
         # cached name is exactly what goes stale when cookies expire server-side).
         if youtube.is_authenticated():
@@ -1298,6 +1300,34 @@ class YTMApp(App):
 
         try:
             self.call_from_thread(_apply)
+        except Exception:
+            pass
+
+    def _install_freeze_watchdog(self) -> None:
+        """Arm a C-level faulthandler timer that dumps EVERY thread's stack to
+        freeze.txt if the UI thread stops pumping for ~8s. _poll_player (1/s)
+        reschedules it, so a healthy app keeps canceling it and it only ever fires
+        during a real freeze — even one that holds the GIL (which a Python daemon
+        watchdog could not catch). Best-effort: any failure just disables it."""
+        try:
+            import faulthandler
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'freeze.txt')
+            # Append so a dump from a prior frozen run survives a relaunch (the file
+            # only ever grows on an actual freeze; it stays empty in normal use).
+            self._freeze_file = open(path, 'a', encoding='utf-8')
+            faulthandler.enable()
+            self._freeze_arm()
+        except Exception:
+            self._freeze_file = None
+
+    def _freeze_arm(self) -> None:
+        """(Re)schedule the freeze dump 8s out. Called every poll tick + at boot."""
+        f = getattr(self, '_freeze_file', None)
+        if f is None:
+            return
+        try:
+            import faulthandler
+            faulthandler.dump_traceback_later(8, file=f, exit=False)
         except Exception:
             pass
 
@@ -1679,6 +1709,7 @@ class YTMApp(App):
     # ── Player polling ────────────────────────────────────────────────────
 
     def _poll_player(self) -> None:
+        self._freeze_arm()               # heartbeat: pushes the freeze-dump timer out 8s
         self.position  = self._player.get_position()
         self.duration  = self._player.get_duration()
         self.is_paused = self._player.is_paused()

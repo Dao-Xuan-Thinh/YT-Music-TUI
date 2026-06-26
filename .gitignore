@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 err.txt
+freeze.txt
 config.json
 library.json
 sessions.json
