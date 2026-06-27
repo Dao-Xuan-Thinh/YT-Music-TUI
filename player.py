@@ -376,6 +376,13 @@ class Player:
                 'mpv', '--no-video', '--ytdl=yes',
                 f'--input-ipc-server={_IPC_ARG}',
                 '--idle=yes', '--really-quiet',
+                # CRITICAL: without --no-terminal, mpv reads the controlling
+                # terminal/TTY for its own keybindings and STEALS keystrokes from the
+                # Textual UI — the UI renders fine (clock ticks) but no key is ever
+                # delivered. Cross-platform (TTY on macOS/Linux, console on Windows).
+                # We drive mpv only over the IPC socket, so it must never touch the
+                # terminal. stdin=DEVNULL below is the belt-and-suspenders half.
+                '--no-terminal',
             ]
             ytdlp = _find_ytdlp()
             if ytdlp:
@@ -383,7 +390,8 @@ class Player:
             if self.cookies_file and os.path.isfile(self.cookies_file):
                 cmd.append(f'--ytdl-raw-options=cookiefile={self.cookies_file}')
             self._proc = subprocess.Popen(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                cmd, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             self._ipc = _MpvIPC()
             self._ipc.on_end = self._on_end_cb
@@ -435,7 +443,8 @@ class Player:
             # get no position/seek/pause, but at least keep auto-advance working
             # by watching the process exit and firing on_end (like ffplay does).
             self._shutdown_mpv()
-            cmd = ['mpv', '--no-video', '--ytdl=yes', '--really-quiet', url]
+            cmd = ['mpv', '--no-video', '--ytdl=yes', '--really-quiet',
+                   '--no-terminal', url]
             if start and start > 0:
                 cmd.append(f'--start=+{int(start)}')
             ytdlp = _find_ytdlp()
@@ -444,7 +453,8 @@ class Player:
             if self.cookies_file and os.path.isfile(self.cookies_file):
                 cmd.append(f'--ytdl-raw-options=cookiefile={self.cookies_file}')
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                cmd, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             self._proc = proc
 
@@ -456,12 +466,14 @@ class Player:
 
     def _spawn_ffplay(self, target, start=0.0):
         """Launch ffplay on a (local path or stream) URL and watch for end."""
-        args = ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet']
+        # -nostdin + stdin=DEVNULL so ffplay never reads terminal keys either.
+        args = ['ffplay', '-nodisp', '-autoexit', '-nostdin', '-loglevel', 'quiet']
         if start and start > 0:
             args += ['-ss', str(int(start))]   # ffplay seeks before -i
         args.append(target)
         proc = subprocess.Popen(
-            args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            args, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self._proc = proc
 

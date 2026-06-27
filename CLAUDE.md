@@ -128,6 +128,43 @@ The `<pid>` suffix makes the endpoint unique per run so a new launch never conne
 
 mpv runs as a separate process and resolves `yt-dlp` from its own PATH. In a virtualenv, yt-dlp is next to the venv Python and NOT on the system PATH, so YouTube won't stream. `_find_ytdlp()` locates it (next to `sys.executable`, else PATH) and passes `--script-opts=ytdl_hook-ytdl_path=<path>` to mpv.
 
+### Never dismiss a modal from a worker thread (it wedges terminal input)
+
+**The "UI freezes after signing in" bug.** Symptom: after the Account (`g`) cookie
+sign-in, the UI kept rendering (header clock ticked, event loop fully alive) but **every
+keystroke was ignored**. Cross-platform (Windows / macOS / Linux); a live thread snapshot
+showed `textual-input` healthy and parked on the console/TTY handle, just never receiving
+events.
+
+**Cause:** the old cookie/OAuth flow validated in a worker thread and dismissed the modal
+*from that thread* (`AccountScreen._use_cookies` → `call_from_thread(_after_cookies)` →
+`_finish` → `dismiss`). Dismissing a `ModalScreen` from a worker-thread `call_from_thread`
+callback wedges Textual's real input driver. It's unique to this flow — every other modal
+(Settings, Update, Keybindings) dismisses on the UI thread from a button press and is
+fine. It does **not** reproduce under the headless `run_test` driver (no real input
+thread), which is why it took live thread/`uidbg.log` snapshots to find. (False leads ruled
+out first: not a Python deadlock — a faulthandler watchdog rescheduled each poll tick never
+fired; not mpv — `--no-terminal` didn't fix it and it froze with nothing playing.)
+
+**Rule: never dismiss a modal from a worker thread.** Do a fast *local* check on the UI
+thread, dismiss there, then do any network validation in the background and update the
+footer/status — never dismiss from the thread.
+
+**Fix (current design):** `AccountScreen._use_cookies` runs on the UI thread (button
+press): it does only a fast **local** sanity check — file exists +
+`youtube._browser_headers_from_cookies(path)` confirms it's a logged-in export (~2 ms) —
+then `_finish('cookies', …)` dismisses on the UI thread (proven safe). The live session is
+confirmed *after* dismiss by `action_account._after`, which calls `configure_auth` and then
+kicks off the existing background `App._verify_account` daemon (the same one boot uses):
+it runs `youtube.verify_auth_live()` and marshals the result back via `call_from_thread`
+only to set `config.account_name` / `_update_footer()` / alert on a confirmed logout —
+never to dismiss a modal. No worker-thread dismiss, no restart.
+
+Related hygiene: mpv is launched with **`--no-terminal`** + **`stdin=DEVNULL`** (ffplay
+`-nostdin` + `stdin=DEVNULL`) in `player.py` so a backend can never read terminal keys.
+This was *not* the cause of the freeze above (it persisted with `--no-terminal`), but it's
+correct — mpv is driven only over the IPC socket and must never touch the terminal.
+
 ### Track URLs use www.youtube.com
 
 `_ytm_track_to_dict()` builds `https://www.youtube.com/watch?v=<id>` (not `music.youtube.com`). Same videoId/audio, but mpv's ytdl_hook fails to load `music.youtube.com/watch` URLs on Linux; the www form works on every OS.
@@ -219,24 +256,58 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 
 **Switch search source:** `t` (cycles YT Music → YouTube → Both)
 
-**Sign in to YouTube:** `g` opens the Account screen with two methods (config
-`auth_method`: `none`/`oauth`/`cookies`). Once authenticated, the home screen's **For
-You** tab and search personalize. Setup: `YOUTUBE_LOGIN.md`.
-- **Cookies (works):** point it at a `cookies.txt` exported from a logged-in
-  music.youtube.com; ytmusicapi uses it as browser auth (SAPISIDHASH), which `youtubei`
-  accepts. Stored in `config.auth_cookies_file` (NOT `cookies_file` — see gotcha below).
-  Built in `youtube._browser_headers_from_cookies` / `cookies_auth_ok`. Only the ~24
-  auth-relevant cookie names are sent (`_AUTH_COOKIE_NAMES`) — a full-browser dump's
-  ~100 KB Cookie header is rejected by YouTube with an empty body.
-- **OAuth (device flow):** kept, but **YouTube Music currently rejects OAuth tokens with
-  `HTTP 400 INVALID_ARGUMENT`** (Google disabled third-party-client tokens for `youtubei`;
-  no client-side fix, 1.12.1 is the latest ytmusicapi). Token in `oauth.json` (gitignored).
+**Sign in to YouTube:** `g` opens the Account screen (config `auth_method`:
+`none`/`browser`/`cookies`/`oauth`). Once authenticated, the home screen's **For You** tab
+and search personalize. Setup: `YOUTUBE_LOGIN.md`.
+- **Browser (recommended — durable):** pick a browser *profile* in the Account screen; at
+  every launch `youtube._browser_headers_live(browser, profile)` reads the **live**
+  music.youtube.com session straight from the browser via yt-dlp's
+  `extract_cookies_from_browser` and feeds it to ytmusicapi as browser auth. Because it
+  re-reads each run, the session **never goes stale** while the browser stays logged in (no
+  manual re-export). `detect_browser_profiles()` enumerates Firefox-family profiles
+  (Firefox, **Zen**, LibreWolf, Waterfox — read via yt-dlp's `firefox` extractor + a
+  profile-dir path) plus the Chromium browser names. **Chromium on Windows (Chrome/Edge/
+  Brave) is blocked by App-Bound Encryption** (yt-dlp #10927 — `Failed to decrypt with
+  DPAPI`); Firefox-family works. Stored as `config.auth_browser` + `auth_browser_profile`.
+- **Cookies (manual, expires):** point it at a `cookies.txt` exported from a logged-in
+  music.youtube.com; same browser-auth path (SAPISIDHASH) but from a frozen file, so it
+  goes stale and must be re-exported. Stored in `config.auth_cookies_file` (NOT
+  `cookies_file` — see gotcha below). Built in `youtube._browser_headers_from_cookies`.
+  Both browser/cookies share `_headers_from_jar` and send only the ~24 auth-relevant cookie
+  names (`_AUTH_COOKIE_NAMES`) — a full-browser dump's ~100 KB Cookie header is rejected by
+  YouTube with an empty body.
+- **OAuth (device flow) — DEAD, removed from the UI.** Verified empirically against a real
+  token: the refresh exchange succeeds but **every `youtubei` call returns `HTTP 400
+  INVALID_ARGUMENT`** (6/6 across `get_account_info`/`get_home`/`search`, both WEB_REMIX and
+  ANDROID_MUSIC contexts). Google blocks third-party-client OAuth tokens; no client-side fix
+  (ytmusicapi 1.12.1 is latest). The `login`/`logout`/`OAuthCredentials` backend is kept but
+  unreachable from the Account screen; a stored `auth_method='oauth'` is migrated to `none`
+  at boot (`App.__init__`).
 
-`youtube.configure_auth(method, …, cookies_file=auth_cookies_file)` wires the active
-method at boot; `youtube._get_ytm()` builds the matching `YTMusic` (cookies →
-`auth=headers`, oauth → `oauth_credentials`, else anonymous), degrading to anonymous on
-error. `auth_status()` labels the footer. `is_authenticated()` is cached (computed once in
-`configure_auth`) so the footer/status don't re-parse the cookie file each refresh.
+`youtube.configure_auth(method, …, cookies_file=auth_cookies_file, browser=, profile=)`
+wires the active method at boot; `youtube._get_ytm()` builds the matching `YTMusic`
+(cookies/browser → `auth=headers`, oauth → `oauth_credentials`, else anonymous), degrading
+to anonymous on error. For `browser`, extraction happens **inside `_get_ytm()`** (daemon
+threads only, under `_ytm_lock`) — never on the UI thread. `auth_status()` labels the footer. `is_authenticated()` is cached (computed once in
+`configure_auth`) so the footer/status don't re-parse the cookie file each refresh — but
+that cache only reflects whether the file *contains* login cookies, not whether they still
+work. So at boot `App._verify_account` (daemon thread) calls `youtube.verify_auth_live()`,
+a single live `get_account_info()`: on a **confirmed logout** (cookie/browser auth returns
+no account, or ytmusicapi raises a logged-out parse error — `_is_logged_out_error`), it
+downgrades `is_authenticated()` to False, clears `config.account_name`, and the UI hides
+the `♥ <name>` footer segment + shows a "sign-in expired — press g to re-export" alert.
+A transient **network** error is treated as `unknown` (not a logout): the cached name
+stays and it re-checks next boot. The `g`-screen `cookies_auth_ok()` likewise reports a
+friendly "expired or logged out" message instead of a raw `KeyError`.
+
+**Concurrency + timeouts (anti-hang):** every ytmusicapi call is serialized under
+`youtube._ytm_lock` and `_get_ytm()` builds the client once (double-checked) — two boot
+threads (`_verify_account` + the For-You feed) otherwise hit the shared `YTMusic`
+/`requests.Session` at once and can corrupt a response or deadlock in urllib3. Because a
+lock makes one stalled call block all the rest, every `YTMusic` is built via
+`_new_ytm()` with a `_TimeoutSession` (`_HTTP_TIMEOUT`=20s default on every request), so
+a black-holed YouTube connection raises instead of hanging the app forever. The lock is
+only ever taken by daemon threads, never the UI thread.
 
 ### Gotcha: auth cookies must NOT reach yt-dlp (two separate cookie files)
 

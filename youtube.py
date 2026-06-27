@@ -9,6 +9,7 @@ Regular YouTube search/URLs and all audio streaming stay on yt-dlp/mpv.
 """
 
 import os
+import threading
 import urllib.parse
 import yt_dlp
 
@@ -28,29 +29,75 @@ class _SilentLogger:
 _OAUTH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oauth.json')
 
 _ytm = None
-_auth_method = 'none'        # 'none' | 'oauth' | 'cookies'
+_auth_method = 'none'        # 'none' | 'oauth' | 'cookies' | 'browser'
 _client_id = ''
 _client_secret = ''
 _cookies_file = ''
+_auth_browser = ''           # yt-dlp browser name for method='browser' (live cookies)
+_auth_browser_profile = ''   # optional profile dir/name for that browser
 _authed = False              # cached auth state (avoids re-parsing cookies per call)
 
+# Serializes ALL ytmusicapi access. A YTMusic client wraps a single requests.Session
+# with mutable per-request state (SAPISIDHASH, headers, innertube context); calling it
+# from two threads at once (e.g. the boot For-You feed load AND the auth verify) can
+# corrupt a response (spurious parse errors → false "logged out") or deadlock inside
+# urllib3's connection pool — the cause of the post-sign-in hang. Reentrant so a wrapped
+# call may nest _get_ytm(). Only ever held by daemon threads, never the UI thread.
+_ytm_lock = threading.RLock()
 
-def configure_auth(method='none', client_id='', client_secret='', cookies_file=''):
+# Hard cap on every ytmusicapi HTTP request. ytmusicapi/requests default to NO timeout,
+# so a half-open / black-holed YouTube connection makes a call (client build,
+# get_account_info, get_home, search) block forever — and because those calls run under
+# _ytm_lock, one stalled call would wedge every later one. A bounded timeout turns that
+# into a normal exception the callers already handle (verify→unknown, feed→fallback,
+# cookies_auth_ok→error message), so the app can never permanently hang on the network.
+_HTTP_TIMEOUT = 20  # seconds
+
+
+class _TimeoutSession:
+    """Factory for a requests.Session whose every request carries a default timeout."""
+    def __new__(cls):
+        import requests
+
+        class _S(requests.Session):
+            def request(self, *args, **kwargs):
+                kwargs.setdefault('timeout', _HTTP_TIMEOUT)
+                return super().request(*args, **kwargs)
+
+        return _S()
+
+
+def _new_ytm(**kwargs):
+    """Build a YTMusic with a timeout-bounded session (each client gets its own)."""
+    from ytmusicapi import YTMusic
+    return YTMusic(requests_session=_TimeoutSession(), **kwargs)
+
+
+def configure_auth(method='none', client_id='', client_secret='', cookies_file='',
+                   browser='', profile=''):
     """Set the active auth method + its inputs and drop the cached client so the
-    next _get_ytm() rebuilds. method: 'none' | 'oauth' | 'cookies'."""
+    next _get_ytm() rebuilds. method: 'none' | 'oauth' | 'cookies' | 'browser'."""
     global _auth_method, _client_id, _client_secret, _cookies_file, _ytm, _authed
-    _auth_method = method if method in ('none', 'oauth', 'cookies') else 'none'
+    global _auth_browser, _auth_browser_profile
+    _auth_method = method if method in ('none', 'oauth', 'cookies', 'browser') else 'none'
     _client_id = client_id or ''
     _client_secret = client_secret or ''
     _cookies_file = os.path.expanduser(os.path.expandvars(cookies_file or ''))
+    _auth_browser = browser or ''
+    _auth_browser_profile = profile or ''
     _ytm = None
-    # Evaluate auth validity ONCE here (parses the cookie file) and cache it; the
-    # footer/status query is_authenticated() often and a 1 MB cookie reparse per
-    # call froze the UI.
+    # Evaluate auth validity ONCE here and cache it; the footer/status query
+    # is_authenticated() often and a per-call cookie reparse / extraction would
+    # stall the UI.
     if _auth_method == 'oauth':
         _authed = _oauth_ready()
     elif _auth_method == 'cookies':
         _authed = _browser_headers_from_cookies(_cookies_file) is not None
+    elif _auth_method == 'browser':
+        # Don't extract on the UI thread (slow / may touch a locked DB) — assume valid
+        # if a browser is configured and let verify_auth_live() (daemon) confirm or
+        # downgrade, exactly like cookies.
+        _authed = bool(_auth_browser)
     else:
         _authed = False
 
@@ -74,22 +121,14 @@ _AUTH_COOKIE_NAMES = {
 }
 
 
-def _browser_headers_from_cookies(path):
-    """Build a ytmusicapi browser-auth header dict from a Netscape cookies file.
+def _headers_from_jar(jar):
+    """Build a ytmusicapi browser-auth header dict from any cookie jar.
 
     ytmusicapi authenticates as a web session: it reads the SAPISID from the cookie
     header and recomputes the SAPISIDHASH `authorization` on each request. We just
-    need a cookie header carrying a logged-in session. Returns None if the file has
-    no SAPISID/__Secure-3PAPISID (i.e. not a logged-in YouTube cookie export).
+    need a cookie header carrying a logged-in session. Returns None if the jar has
+    no SAPISID/__Secure-3PAPISID (i.e. not a logged-in YouTube session).
     """
-    import http.cookiejar
-    if not path or not os.path.isfile(path):
-        return None
-    try:
-        jar = http.cookiejar.MozillaCookieJar(path)
-        jar.load(ignore_discard=True, ignore_expires=True)
-    except Exception:
-        return None
     by_name = {}     # de-dupe by cookie name, keep insertion order (last wins)
     for ck in jar:
         if ck.name not in _AUTH_COOKIE_NAMES:
@@ -112,6 +151,104 @@ def _browser_headers_from_cookies(path):
     }
 
 
+def _browser_headers_from_cookies(path):
+    """Build a ytmusicapi browser-auth header dict from a Netscape cookies file.
+
+    Returns None if the file has no SAPISID/__Secure-3PAPISID (i.e. not a logged-in
+    YouTube cookie export).
+    """
+    import http.cookiejar
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        jar = http.cookiejar.MozillaCookieJar(path)
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except Exception:
+        return None
+    return _headers_from_jar(jar)
+
+
+def _browser_headers_live(browser, profile=''):
+    """Read the CURRENT logged-in session straight from a running browser's cookie
+    store (via yt-dlp) and build the ytmusicapi auth header. This is the durable
+    sign-in path: re-read at every launch, so the session never goes stale while the
+    browser stays logged in.
+
+    `browser` is a yt-dlp browser name (firefox/chrome/edge/brave/…). For a
+    Firefox-family browser (Firefox, Zen, LibreWolf, …) `profile` may be an absolute
+    profile-directory path — yt-dlp's firefox extractor reads its cookies.sqlite.
+    Returns None on any failure (no browser, locked/encrypted DB, not logged in).
+
+    Note: Chromium browsers (Chrome/Edge/Brave) on Windows use App-Bound Encryption,
+    which blocks external decryption (yt-dlp #10927) — Firefox-family works.
+    """
+    if not browser:
+        return None
+    try:
+        from yt_dlp.cookies import extract_cookies_from_browser
+        jar = extract_cookies_from_browser(browser, profile or None, _SilentLogger())
+    except Exception:
+        return None
+    return _headers_from_jar(jar)
+
+
+# Firefox-family browsers (read via yt-dlp's `firefox` extractor + a profile-dir path).
+# These store cookies in an unencrypted cookies.sqlite, so extraction works everywhere —
+# unlike Chromium browsers, which on Windows use App-Bound Encryption (yt-dlp #10927).
+# name → list of OS-specific roots that each hold per-profile subdirectories.
+def _firefox_family_roots():
+    home = os.path.expanduser('~')
+    appdata = os.environ.get('APPDATA', os.path.join(home, 'AppData', 'Roaming'))
+    support = os.path.join(home, 'Library', 'Application Support')
+    # (display name, [candidate profile-container roots])
+    return [
+        ('Firefox',   [os.path.join(appdata, 'Mozilla', 'Firefox', 'Profiles'),
+                       os.path.join(support, 'Firefox', 'Profiles'),
+                       os.path.join(home, '.mozilla', 'firefox')]),
+        ('Zen',       [os.path.join(appdata, 'zen', 'Profiles'),
+                       os.path.join(support, 'zen', 'Profiles'),
+                       os.path.join(home, '.zen')]),
+        ('LibreWolf', [os.path.join(appdata, 'librewolf', 'Profiles'),
+                       os.path.join(support, 'librewolf', 'Profiles'),
+                       os.path.join(home, '.librewolf')]),
+        ('Waterfox',  [os.path.join(appdata, 'Waterfox', 'Profiles'),
+                       os.path.join(support, 'Waterfox', 'Profiles'),
+                       os.path.join(home, '.waterfox')]),
+    ]
+
+
+def detect_browser_profiles():
+    """Enumerate sign-in-able browser sources for the Account screen.
+
+    Returns a list of {'label', 'browser', 'profile'} dicts:
+      - every Firefox-family profile that has a cookies.sqlite (browser='firefox',
+        profile=<absolute dir>), which is the path proven to work; plus
+      - the common Chromium/other browsers by name (profile='') for setups where they
+        aren't App-Bound-Encryption-blocked (non-Windows).
+    Best-effort: any filesystem error is skipped.
+    """
+    out = []
+    for app, roots in _firefox_family_roots():
+        for root in roots:
+            try:
+                if not os.path.isdir(root):
+                    continue
+                for entry in sorted(os.listdir(root)):
+                    pdir = os.path.join(root, entry)
+                    if os.path.isfile(os.path.join(pdir, 'cookies.sqlite')):
+                        # Firefox profile dirs look like "<id>.<name>" → show <name>.
+                        disp = entry.split('.', 1)[1] if '.' in entry else entry
+                        out.append({'label': f'{app} — {disp}',
+                                    'browser': 'firefox', 'profile': pdir})
+            except OSError:
+                continue
+    # Direct (default-profile) browser options for non-Firefox setups.
+    for name in ('chrome', 'edge', 'brave', 'chromium', 'vivaldi', 'opera'):
+        out.append({'label': f'{name.capitalize()} (default profile)',
+                    'browser': name, 'profile': ''})
+    return out
+
+
 def is_authenticated():
     """True if the active auth method has usable credentials (cached by
     configure_auth so this is O(1) — see _authed)."""
@@ -122,6 +259,8 @@ def auth_status():
     """Short label for the footer/UI describing the active auth method."""
     if _auth_method == 'cookies':
         return 'cookies' if is_authenticated() else 'cookies (not set)'
+    if _auth_method == 'browser':
+        return 'browser' if is_authenticated() else 'browser (not set)'
     if _auth_method == 'oauth':
         return 'oauth' if _oauth_ready() else 'oauth (not set)'
     return 'public'
@@ -129,26 +268,54 @@ def auth_status():
 
 def _get_ytm():
     """Lazily create a YTMusic client for the active auth method. Falls back to an
-    anonymous client (public data only) on any construction error."""
+    anonymous client (public data only) on any construction error. Thread-safe:
+    double-checked under _ytm_lock so concurrent callers build the client exactly once."""
     global _ytm
-    if _ytm is None:
-        from ytmusicapi import YTMusic
-        if _auth_method == 'cookies':
-            headers = _browser_headers_from_cookies(_cookies_file)
-            try:
-                _ytm = YTMusic(auth=headers) if headers else YTMusic()
-            except Exception:
-                _ytm = YTMusic()
-        elif _auth_method == 'oauth' and _oauth_ready():
-            try:
-                from ytmusicapi import OAuthCredentials
-                oc = OAuthCredentials(_client_id, _client_secret)
-                _ytm = YTMusic(_OAUTH_FILE, oauth_credentials=oc)
-            except Exception:
-                _ytm = YTMusic()    # bad/expired token → degrade to public
-        else:
-            _ytm = YTMusic()
+    if _ytm is not None:
+        return _ytm
+    with _ytm_lock:
+        if _ytm is None:
+            if _auth_method == 'cookies':
+                headers = _browser_headers_from_cookies(_cookies_file)
+                try:
+                    _ytm = _new_ytm(auth=headers) if headers else _new_ytm()
+                except Exception:
+                    _ytm = _new_ytm()
+            elif _auth_method == 'browser':
+                # Re-read the live session from the browser each launch (durable auth).
+                headers = _browser_headers_live(_auth_browser, _auth_browser_profile)
+                try:
+                    _ytm = _new_ytm(auth=headers) if headers else _new_ytm()
+                except Exception:
+                    _ytm = _new_ytm()
+            elif _auth_method == 'oauth' and _oauth_ready():
+                try:
+                    from ytmusicapi import OAuthCredentials
+                    oc = OAuthCredentials(_client_id, _client_secret)
+                    _ytm = _new_ytm(auth=_OAUTH_FILE, oauth_credentials=oc)
+                except Exception:
+                    _ytm = _new_ytm()   # bad/expired token → degrade to public
+            else:
+                _ytm = _new_ytm()
     return _ytm
+
+
+def _is_logged_out_error(exc):
+    """True if `exc` indicates a confirmed logged-out/expired session (vs. a
+    transient network failure).
+
+    ytmusicapi reaches YouTube fine but raises a KeyError/IndexError/TypeError while
+    navigating the account-less "logged out" menu (no activeAccountHeaderRenderer).
+    A network failure instead raises a requests exception — that's *unknown*, not a
+    confirmed logout, so we must not treat it as one.
+    """
+    try:
+        import requests
+        if isinstance(exc, requests.exceptions.RequestException):
+            return False
+    except Exception:
+        pass
+    return isinstance(exc, (KeyError, IndexError, TypeError))
 
 
 def cookies_auth_ok(cookies_file):
@@ -158,36 +325,55 @@ def cookies_auth_ok(cookies_file):
     it's the reason. Uses get_account_info() (not get_library_playlists, which
     returns [] for unauthenticated sessions instead of failing).
     """
-    from ytmusicapi import YTMusic
     headers = _browser_headers_from_cookies(
         os.path.expanduser(os.path.expandvars(cookies_file or '')))
     if headers is None:
         return False, ('no logged-in YouTube cookies found in that file '
                        '(need SAPISID / __Secure-3PAPISID)')
     try:
-        info = YTMusic(auth=headers).get_account_info() or {}
+        with _ytm_lock:
+            info = _new_ytm(auth=headers).get_account_info() or {}
         name = info.get('accountName')
         if name:
             return True, name
-        return False, ('cookies not accepted — re-export them while logged in to '
-                       'music.youtube.com')
+        return False, ('cookies are expired or logged out — re-export cookies.txt '
+                       'while signed in to music.youtube.com')
     except Exception as exc:
+        if _is_logged_out_error(exc):
+            return False, ('cookies are expired or logged out — re-export cookies.txt '
+                           'while signed in to music.youtube.com')
         return False, f'{type(exc).__name__}: {exc}'
 
 
-def fetch_account_name():
-    """Return the signed-in account's display name using the cached client, or ''.
+def verify_auth_live():
+    """Live-validate the active session and report the result. Network call — run
+    from a daemon thread, never the UI hot path.
 
-    Cheap-ish (one API call, no cookie re-parse) — call from a daemon thread once
-    to populate the footer when the cached name is missing. Returns '' if not
-    authenticated or on any error."""
+    Returns (status, name):
+      ('ok', name)      — signed in; `name` is the account display name.
+      ('expired', '')   — COOKIE auth confirmed logged out (empty account or a
+                          logged-out parse error); downgrades is_authenticated().
+      ('unknown', '')   — couldn't confirm (network/transient error, or any oauth
+                          failure); auth state left untouched so a blip doesn't drop it.
+    """
+    global _authed
     if not _authed:
-        return ''
+        return ('unknown', '')
     try:
-        info = _get_ytm().get_account_info() or {}
-        return info.get('accountName') or ''
-    except Exception:
-        return ''
+        with _ytm_lock:
+            info = _get_ytm().get_account_info() or {}
+        name = info.get('accountName') or ''
+        if name:
+            return ('ok', name)
+        if _auth_method in ('cookies', 'browser'):
+            _authed = False
+            return ('expired', '')
+        return ('unknown', '')
+    except Exception as exc:
+        if _auth_method in ('cookies', 'browser') and _is_logged_out_error(exc):
+            _authed = False
+            return ('expired', '')
+        return ('unknown', '')
 
 
 def login(client_id, client_secret, on_code, should_cancel=None):
@@ -296,22 +482,24 @@ def ytm_home(limit=3):
     error never triggers the mobile retry — that retry rejects cookie auth with 400.
     """
     yt = _get_ytm()
-    try:
-        data = yt.get_home(limit=limit)
-    except Exception:
-        if is_authenticated() and hasattr(yt, 'as_mobile'):
-            with yt.as_mobile():
-                data = yt.get_home(limit=limit)
-        else:
-            raise
+    with _ytm_lock:
+        try:
+            data = yt.get_home(limit=limit)
+        except Exception:
+            if is_authenticated() and hasattr(yt, 'as_mobile'):
+                with yt.as_mobile():
+                    data = yt.get_home(limit=limit)
+            else:
+                raise
     return _parse_home(data)
 
 
 def ytm_home_public(limit=3):
     """The generic (anonymous) home feed — fallback when a signed-in user's
     personalized feed errors, so the For You tab still shows something."""
-    from ytmusicapi import YTMusic
-    return _parse_home(YTMusic().get_home(limit=limit))
+    with _ytm_lock:
+        data = _new_ytm().get_home(limit=limit)
+    return _parse_home(data)
 
 
 def _parse_ytm_duration(t):
@@ -375,7 +563,8 @@ def ytm_playlist(playlist_id, limit=None):
     Fetch a YouTube Music playlist's tracks via ytmusicapi.
     limit=None fetches all tracks (paginated). Returns list of track dicts.
     """
-    data = _get_ytm().get_playlist(playlist_id, limit=limit)
+    with _ytm_lock:
+        data = _get_ytm().get_playlist(playlist_id, limit=limit)
     return [
         _ytm_track_to_dict(t)
         for t in data.get('tracks', [])
@@ -385,7 +574,8 @@ def ytm_playlist(playlist_id, limit=None):
 
 def ytm_search(query, max_results=15):
     """Search YouTube Music for songs via ytmusicapi. Returns list of track dicts."""
-    results = _get_ytm().search(query, filter='songs', limit=max_results)
+    with _ytm_lock:
+        results = _get_ytm().search(query, filter='songs', limit=max_results)
     out = [_ytm_track_to_dict(t) for t in results if t.get('videoId')]
     return out[:max_results]
 

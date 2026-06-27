@@ -19,7 +19,7 @@ from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import (
     Button, DataTable, Header, Input, Label, ListItem, ListView,
-    OptionList, Static, TabbedContent, TabPane,
+    OptionList, Select, Static, TabbedContent, TabPane,
 )
 from textual.widgets.option_list import Option
 from textual.screen import ModalScreen, Screen
@@ -557,12 +557,16 @@ class AccountScreen(ModalScreen):
     #account-btns { height: 3; margin-top: 1; }
     """
 
-    def __init__(self, method='none', client_id='', client_secret='', cookies_file=''):
+    def __init__(self, method='none', client_id='', client_secret='', cookies_file='',
+                 browser='', profile=''):
         super().__init__()
         self._method = method
         self._client_id = client_id
         self._client_secret = client_secret
         self._cookies_file = cookies_file
+        self._browser = browser
+        self._profile = profile
+        self._profiles = youtube.detect_browser_profiles()
         self._cancel = False     # polled by login() to abort
         self._busy = False       # a login/validate thread is running
         self._closed = False     # guards late call_from_thread callbacks
@@ -572,22 +576,38 @@ class AccountScreen(ModalScreen):
             yield Label('YouTube account', id='account-title')
             yield Static(f'Active method: {self._method}', id='account-state')
 
-            yield Label('Cookies  (recommended — works with YT Music)', classes='section')
+            yield Label('Browser  (recommended — durable, re-reads each launch)',
+                        classes='section')
+            options = [(p['label'], f"{p['browser']}\x00{p['profile']}")
+                       for p in self._profiles]
+            # Pre-select the saved browser/profile if it's still present; otherwise
+            # leave it blank (don't pass a value — the no-selection sentinel differs
+            # across Textual versions, so let the constructor default to it).
+            sel_kwargs = {}
+            if self._browser:
+                want = f'{self._browser}\x00{self._profile}'
+                if any(v == want for _, v in options):
+                    sel_kwargs['value'] = want
+            yield Select(options, id='browser-select',
+                         prompt='Pick a browser profile…', allow_blank=True,
+                         **sel_kwargs)
+            yield Static('Reads your live music.youtube.com session straight from the '
+                         "browser — never expires while you're logged in. Firefox-family "
+                         '(incl. Zen) works; Chrome/Edge are blocked by App-Bound '
+                         'Encryption on Windows.', classes='hint')
+            yield Button('Sign in from browser', id='acct-browser', variant='primary')
+
+            yield Label('Cookies  (manual export — expires, re-export to renew)',
+                        classes='section')
             yield Input(value=self._cookies_file, id='cookies-input',
                         placeholder=_EG_COOKIES)
             yield Static('', id='cookies-check')
             yield Static('Export cookies.txt from a logged-in music.youtube.com '
                          '(see YOUTUBE_LOGIN.md).', classes='hint')
-            yield Button('Use these cookies', id='acct-cookies', variant='primary')
+            yield Button('Use these cookies', id='acct-cookies')
 
-            yield Label('OAuth  (device login)', classes='section')
-            yield Input(value=self._client_id, id='cid-input',
-                        placeholder='client id .apps.googleusercontent.com')
-            yield Input(value=self._client_secret, id='csec-input',
-                        password=True, placeholder='client secret')
-            yield Static('Note: YouTube Music currently rejects OAuth tokens (HTTP 400) '
-                         '— cookies are the working method.', classes='hint')
-            yield Button('Log in with OAuth', id='acct-login')
+            yield Static('OAuth sign-in was removed — YouTube rejects those tokens '
+                         '(HTTP 400). Use Browser or Cookies above.', classes='hint')
 
             yield Static('', id='account-status')
             with Horizontal(id='account-btns'):
@@ -622,41 +642,51 @@ class AccountScreen(ModalScreen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
-        if bid == 'acct-cookies':
+        if bid == 'acct-browser':
+            self._use_browser()
+        elif bid == 'acct-cookies':
             self._use_cookies()
-        elif bid == 'acct-login':
-            self._start_login()
         elif bid == 'acct-none':
             self._finish('none')
         else:
             self.action_cancel()
 
+    # ── Browser (live cookies) ───────────────────────────────────────────
+    def _use_browser(self) -> None:
+        # UI thread (button press). Just record the chosen browser/profile and
+        # dismiss here — the live extraction + auth check runs in the background
+        # afterwards (action_account._after → _verify_account), so a slow/locked
+        # cookie store never blocks the UI and the modal never dismisses from a
+        # worker thread (CLAUDE.md gotcha).
+        # Valid option values are "browser\x00profile" strings; the no-selection
+        # sentinel is a non-str (varies by Textual version) — treat it as "nothing
+        # picked" without referencing the sentinel.
+        sel = self.query_one('#browser-select', Select).value
+        if not isinstance(sel, str) or '\x00' not in sel:
+            self._status('Pick a browser profile first.')
+            return
+        browser, _, profile = sel.partition('\x00')
+        self._finish('browser', browser=browser, profile=profile)
+
     # ── Cookies ──────────────────────────────────────────────────────────
     def _use_cookies(self) -> None:
-        if self._busy:
-            return
+        # Runs on the UI thread (button press). Do only a fast LOCAL sanity check
+        # here, then dismiss on the UI thread — NEVER validate-then-dismiss from a
+        # worker thread (that wedges Textual's input driver; see the CLAUDE.md
+        # gotcha). The live session check happens in the background afterwards
+        # (action_account._after → _verify_account), exactly like boot.
         path = self.query_one('#cookies-input', Input).value.strip()
         if not path:
             self._status('Enter a cookies.txt path first.')
             return
-        self._busy = True
-        self._status('Checking cookies…')
-
-        def run():
-            ok, msg = youtube.cookies_auth_ok(path)
-            self.app.call_from_thread(self._after_cookies, ok, msg, path)
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _after_cookies(self, ok, msg, path) -> None:
-        self._busy = False
-        if self._closed:
+        if not os.path.exists(path):
+            self._status('No file at that path.')
             return
-        if ok:
-            self._status(f'Signed in as {msg} ✓')
-            self._finish('cookies', cookies_file=path, account_name=msg)
-        else:
-            self._status(f'Cookies not accepted: {msg}')
+        if youtube._browser_headers_from_cookies(path) is None:
+            self._status("That file isn't a logged-in music.youtube.com export — "
+                         're-export with login cookies.')
+            return
+        self._finish('cookies', cookies_file=path, account_name='')
 
     # ── OAuth ────────────────────────────────────────────────────────────
     def _start_login(self) -> None:
@@ -697,18 +727,17 @@ class AccountScreen(ModalScreen):
                          else f'Login failed: {err}')
 
     # ── Finish / cancel ──────────────────────────────────────────────────
-    def _finish(self, method, cookies_file=None, account_name='') -> None:
+    def _finish(self, method, cookies_file=None, account_name='',
+                browser='', profile='') -> None:
         if self._closed:
             return
         self._closed = True
         self._cancel = True
-        cid = self.query_one('#cid-input', Input).value.strip()
-        csec = self.query_one('#csec-input', Input).value.strip()
         cookies = (cookies_file if cookies_file is not None
                    else self.query_one('#cookies-input', Input).value.strip())
-        self.dismiss({'method': method, 'client_id': cid,
-                      'client_secret': csec, 'cookies_file': cookies,
-                      'account_name': account_name})
+        self.dismiss({'method': method, 'cookies_file': cookies,
+                      'account_name': account_name,
+                      'browser': browser, 'profile': profile})
 
     def action_cancel(self) -> None:
         if self._closed:
@@ -1222,12 +1251,20 @@ class YTMApp(App):
         self.search_source = self._config.search_source
         self.volume        = self._config.volume
         self.app_mode      = self._config.app_mode
-        # Wire the saved auth method (cookies / oauth / none) so ytmusicapi calls
+        # OAuth is dead (YouTube rejects the tokens with HTTP 400 — verified) and is no
+        # longer offered in the UI, so a stored 'oauth' method would just 400 every feed
+        # call. Migrate it to 'none' once; the user re-signs-in via Browser or Cookies.
+        if self._config.auth_method == 'oauth':
+            self._config.auth_method = 'none'
+            self._config.account_name = ''
+        # Wire the saved auth method (browser / cookies / none) so ytmusicapi calls
         # run authenticated when configured (personalized search / For You feed).
         youtube.configure_auth(self._config.auth_method,
                                self._config.oauth_client_id,
                                self._config.oauth_client_secret,
-                               self._config.auth_cookies_file)
+                               self._config.auth_cookies_file,
+                               browser=self._config.auth_browser,
+                               profile=self._config.auth_browser_profile)
 
     # ── Layout ────────────────────────────────────────────────────────────
 
@@ -1274,22 +1311,32 @@ class YTMApp(App):
         self._update_footer()
         threading.Thread(target=self._init_player, daemon=True).start()
         threading.Thread(target=self._check_for_update, daemon=True).start()
-        # If signed in but we don't have the display name yet, fetch it once.
-        if youtube.is_authenticated() and not self._config.account_name:
-            threading.Thread(target=self._init_account_name, daemon=True).start()
+        # If signed in, live-verify the session once (even with a cached name — the
+        # cached name is exactly what goes stale when cookies expire server-side).
+        if youtube.is_authenticated():
+            threading.Thread(target=self._verify_account, daemon=True).start()
         # Boot straight into the home screen.
         self.push_screen(HomeScreen(self._lib), self._on_home_result)
 
-    def _init_account_name(self) -> None:
-        name = youtube.fetch_account_name()
-        if name:
-            def _save():
+    def _verify_account(self) -> None:
+        status, name = youtube.verify_auth_live()
+
+        def _apply():
+            if status == 'ok' and name:
                 self._config.account_name = name
-                self._update_footer()
-            try:
-                self.call_from_thread(_save)
-            except Exception:
-                pass
+            elif status == 'expired':
+                # Cookies no longer authenticate → drop the stale name (is_authenticated
+                # is now False, so the footer hides the account) and alert the user.
+                self._config.account_name = ''
+                self._set_status('⚠ YouTube sign-in expired — your saved cookies no '
+                                 'longer work. Press g to re-export cookies.txt.')
+            # 'unknown' (network blip / oauth) → leave the cached name, retry next boot.
+            self._update_footer()
+
+        try:
+            self.call_from_thread(_apply)
+        except Exception:
+            pass
 
     def _init_player(self) -> None:
         if self._player.backend is None:
@@ -2061,25 +2108,34 @@ class YTMApp(App):
             if result is None:
                 return
             method = result.get('method', 'none')
-            cid = result.get('client_id', self._config.oauth_client_id)
-            csec = result.get('client_secret', self._config.oauth_client_secret)
             cookies = result.get('cookies_file', self._config.auth_cookies_file)
+            browser = result.get('browser', '')
+            profile = result.get('profile', '')
             # Persist the chosen method + its inputs and re-wire the client.
             self._config.auth_method = method
-            if cid != self._config.oauth_client_id:
-                self._config.oauth_client_id = cid
-            if csec != self._config.oauth_client_secret:
-                self._config.oauth_client_secret = csec
             # Auth cookies feed ytmusicapi ONLY — deliberately NOT the player. An
             # authenticated YouTube session breaks yt-dlp streaming (SABR-only
             # formats). Streaming cookies are a separate setting (Settings, `s`).
             if cookies != self._config.auth_cookies_file:
                 self._config.auth_cookies_file = cookies
+            if method == 'browser':
+                self._config.auth_browser = browser
+                self._config.auth_browser_profile = profile
             # Persist the signed-in display name for the footer (cleared on sign-out).
             self._config.account_name = (result.get('account_name', '')
                                          if method != 'none' else '')
-            youtube.configure_auth(method, cid, csec, cookies)
+            youtube.configure_auth(method, self._config.oauth_client_id,
+                                   self._config.oauth_client_secret, cookies,
+                                   browser=browser, profile=profile)
             self._update_footer()
+            # The modal was dismissed on the UI thread (no worker-thread dismiss → input
+            # is NOT wedged). Confirm the live session in the background — same daemon
+            # path boot uses — which fills in the account name on success, or alerts on a
+            # confirmed logout. Never validate-then-dismiss from a worker thread (gotcha).
+            if method in ('cookies', 'browser'):
+                self._set_status('Signing in…')
+                threading.Thread(target=self._verify_account, daemon=True).start()
+                return
             self._set_status('YouTube auth: ' + youtube.auth_status()
                              + (' — personalized' if youtube.is_authenticated() else ''))
 
@@ -2087,7 +2143,9 @@ class YTMApp(App):
             AccountScreen(self._config.auth_method,
                           self._config.oauth_client_id,
                           self._config.oauth_client_secret,
-                          self._config.auth_cookies_file),
+                          self._config.auth_cookies_file,
+                          self._config.auth_browser,
+                          self._config.auth_browser_profile),
             _after,
         )
 
