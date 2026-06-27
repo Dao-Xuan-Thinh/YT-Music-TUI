@@ -23,6 +23,9 @@ import ios_jsc_provider  # noqa: F401  registers JavaScriptCoreJCP
 import yt_dlp
 
 _M4A_FORMAT = "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio"
+# Fast clients that return progressive m4a without the slow web-client JS challenge.
+# (JavaScriptCore JS solving still works as the fallback if 'web' is ever needed.)
+_PLAYER_CLIENTS = ["android_vr", "ios", "android"]
 
 
 def _entry_to_dict(e: dict) -> dict:
@@ -85,6 +88,7 @@ def resolve(url: str) -> str:
     opts = {
         "quiet": True, "no_warnings": True, "skip_download": True,
         "format": _M4A_FORMAT,
+        "extractor_args": {"youtube": {"player_client": _PLAYER_CLIENTS}},
     }
     t0 = time.time()
     try:
@@ -130,6 +134,129 @@ def _diag_resolve(url: str) -> None:
     print("JSC_DIAG: web-client stream host:",
           (got_url.split("/")[2] if got_url and "://" in got_url else got_url),
           flush=True)
+
+
+def _lite(vid, title, uploader, duration, thumbnail=None):
+    return {
+        "id": vid,
+        "title": title or "Unknown",
+        "uploader": uploader or "",
+        "duration": int(duration or 0),
+        "thumbnail": thumbnail or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+    }
+
+
+def _dedupe(items):
+    seen, out = set(), []
+    for it in items:
+        if it["id"] and it["id"] not in seen:
+            seen.add(it["id"])
+            out.append(it)
+    return out
+
+
+def _yt_search(query: str, n: int) -> list:
+    """YouTube keyword search via yt-dlp ytsearch (flat, fast)."""
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "extract_flat": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"ytsearch{n}:{query}", download=False)
+    out = []
+    for e in (info.get("entries") or []):
+        if e.get("id"):
+            out.append(_lite(e["id"], e.get("title"),
+                             e.get("uploader") or e.get("channel"), e.get("duration"),
+                             e.get("thumbnail")))
+    return out
+
+
+def _ytm_search(query: str, n: int) -> list:
+    """YouTube Music search via ytmusicapi (anonymous) — better music ranking."""
+    from ytmusicapi import YTMusic
+    yt = YTMusic()
+    try:
+        res = yt.search(query, filter="songs", limit=n)
+    except Exception:
+        res = yt.search(query, limit=n)
+    out = []
+    for r in res:
+        vid = r.get("videoId")
+        if not vid:
+            continue
+        arts = ", ".join(a.get("name", "") for a in (r.get("artists") or []) if a.get("name"))
+        thumbs = r.get("thumbnails") or []
+        out.append(_lite(vid, r.get("title"), arts, r.get("duration_seconds"),
+                         thumbs[-1].get("url") if thumbs else None))
+        if len(out) >= n:
+            break
+    return out
+
+
+def search(query: str, source: str = "ytm", n: int = 15) -> str:
+    """Keyword search. source: 'yt' | 'ytm' | 'both'. JSON list of lite track dicts."""
+    try:
+        if source == "yt":
+            items = _yt_search(query, n)
+        elif source == "both":
+            items = _dedupe(_ytm_search(query, n) + _yt_search(query, n))[:n]
+        else:  # 'ytm' (default), fall back to YouTube if it yields nothing
+            items = _ytm_search(query, n) or _yt_search(query, n)
+        return json.dumps(_dedupe(items))
+    except Exception as e:
+        print("SEARCH_ERROR:", type(e).__name__, e, flush=True)
+        return json.dumps([])
+
+
+def _ytm_playlist(playlist_id: str) -> list:
+    """Full playlist via ytmusicapi (paginates all tracks — no 100-ish cap)."""
+    from ytmusicapi import YTMusic
+    pid = playlist_id[2:] if playlist_id.startswith("VL") else playlist_id
+    data = YTMusic().get_playlist(pid, limit=None)
+    out = []
+    for t in (data.get("tracks") or []):
+        vid = t.get("videoId")
+        if not vid:
+            continue
+        arts = ", ".join(a.get("name", "") for a in (t.get("artists") or []) if a.get("name"))
+        thumbs = t.get("thumbnails") or []
+        out.append(_lite(vid, t.get("title"), arts, t.get("duration_seconds"),
+                         thumbs[-1].get("url") if thumbs else None))
+    return out
+
+
+def browse(url: str) -> str:
+    """Resolve a YouTube/YT-Music URL (playlist or single video) → JSON list of lite dicts
+    (flat). YT-Music playlists use ytmusicapi (full pagination); else yt-dlp flat."""
+    import urllib.parse
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+    list_id = (params.get("list") or [None])[0]
+
+    # Playlist URL → try ytmusicapi first (handles 1000+ tracks), fall back to yt-dlp.
+    if list_id:
+        try:
+            items = _ytm_playlist(list_id)
+            if items:
+                return json.dumps(_dedupe(items))
+        except Exception as e:
+            print("YTM_PLAYLIST_FALLBACK:", type(e).__name__, e, flush=True)
+
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True,
+            "extract_flat": "in_playlist"}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        entries = info.get("entries")
+        if entries is None:  # single video
+            entries = [info]
+        out = []
+        for e in entries:
+            if e and e.get("id"):
+                out.append(_lite(e["id"], e.get("title"),
+                                 e.get("uploader") or e.get("channel") or e.get("artist"),
+                                 e.get("duration"), e.get("thumbnail")))
+        return json.dumps(_dedupe(out))
+    except Exception as e:
+        print("BROWSE_ERROR:", type(e).__name__, e, flush=True)
+        return json.dumps([])
 
 
 def selftest() -> str:

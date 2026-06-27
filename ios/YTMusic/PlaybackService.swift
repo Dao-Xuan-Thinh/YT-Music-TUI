@@ -15,11 +15,22 @@ final class PlaybackService: ObservableObject {
     @Published private(set) var duration: Double = 0   // seconds
     @Published private(set) var ready = false          // item ready to play
 
+    /// Fired when the current item plays to its end (used by the VM to auto-advance).
+    var onEnded: (() -> Void)?
+    /// Lock-screen / remote next & previous (wired to the VM's queue navigation).
+    var onNext: (() -> Void)?
+    var onPrevious: (() -> Void)?
+
+    @Published var volume: Double = 1.0 {
+        didSet { player.volume = Float(max(0, min(1, volume))) }
+    }
+
     private let player = AVPlayer()
     private var timeObserver: Any?
     private var statusObs: NSKeyValueObservation?
     private var rateObs: NSKeyValueObservation?
     private var artwork: MPMediaItemArtwork?
+    private var endedFired = false   // de-dupe end detection (metadata vs AVPlayer)
 
     private init() {
         configureAudioSession()
@@ -37,6 +48,7 @@ final class PlaybackService: ObservableObject {
         position = 0
         duration = Double(track.duration)
         ready = false
+        endedFired = false
         artwork = nil
 
         activateSession()
@@ -47,6 +59,27 @@ final class PlaybackService: ObservableObject {
         loadArtwork(track)
         updateNowPlaying()
         NSLog("[playback] play \"%@\" (%@)", track.title, url.host ?? "?")
+    }
+
+    /// Immediately stop the old item and show a loading placeholder for the next selection
+    /// (so old audio never lingers while the new stream resolves over the network).
+    func beginLoading(title: String, uploader: String, thumbnail: String, duration dur: Int) {
+        player.replaceCurrentItem(with: nil)
+        isPlaying = false
+        ready = false
+        endedFired = false
+        position = 0
+        duration = Double(dur)
+        artwork = nil
+        current = Track(id: "", title: title, uploader: uploader, duration: dur,
+                        url: "", streamURL: "", thumbnail: thumbnail, ok: false, error: nil)
+        updateNowPlaying()
+    }
+
+    private func handleEnded() {
+        guard !endedFired else { return }
+        endedFired = true
+        onEnded?()
     }
 
     func togglePlayPause() { isPlaying ? pause() : resume() }
@@ -111,16 +144,29 @@ final class PlaybackService: ObservableObject {
     // MARK: - Player observation
 
     private func observePlayer() {
+        NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main
+        ) { [weak self] _ in
+            NSLog("[playback] track ended (AVPlayer)")
+            self?.handleEnded()
+        }
+
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
             queue: .main
         ) { [weak self] time in
             guard let self else { return }
-            self.position = time.seconds
-            if let d = self.player.currentItem?.duration.seconds, d.isFinite, d > 0 {
-                self.duration = d
-            }
+            // Trust metadata `duration`; some googlevideo m4a mis-report ~2× via AVPlayer.
+            let p = time.seconds
+            self.position = self.duration > 0 ? min(p, self.duration) : p
             self.updateNowPlaying()
+            // Advance at the real (metadata) end, since AVPlayer's end fires late for the 2×
+            // mis-reported items.
+            if self.duration > 0, p >= self.duration - 0.3, self.isPlaying {
+                NSLog("[playback] track ended (metadata @%.0fs)", self.duration)
+                self.player.pause()
+                self.handleEnded()
+            }
         }
 
         // KVO callbacks fire off the main thread; hop to main before touching @Published.
@@ -132,7 +178,8 @@ final class PlaybackService: ObservableObject {
                 guard let self else { return }
                 if status == .readyToPlay {
                     self.ready = true
-                    if let d = dur, d.isFinite, d > 0 { self.duration = d }
+                    // Only fall back to AVPlayer's duration when metadata had none.
+                    if self.duration <= 0, let d = dur, d.isFinite, d > 0 { self.duration = d }
                     self.updateNowPlaying()
                 } else if status == .failed {
                     NSLog("[playback] item failed: %@", String(describing: err))
@@ -164,7 +211,8 @@ final class PlaybackService: ObservableObject {
     private func loadArtwork(_ track: Track) {
         guard let url = track.thumbnailURL else { return }
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let self, let data, let img = UIImage(data: data) else { return }
+            guard let self, let data, let raw = UIImage(data: data) else { return }
+            let img = raw.squareCropped()   // YouTube thumbs are 16:9; lock screen wants 1:1
             let art = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
             DispatchQueue.main.async {
                 guard self.current?.id == track.id else { return }
@@ -179,10 +227,13 @@ final class PlaybackService: ObservableObject {
         c.playCommand.addTarget { [weak self] _ in self?.resume(); return .success }
         c.pauseCommand.addTarget { [weak self] _ in self?.pause(); return .success }
         c.togglePlayPauseCommand.addTarget { [weak self] _ in self?.togglePlayPause(); return .success }
-        c.skipForwardCommand.preferredIntervals = [15]
-        c.skipBackwardCommand.preferredIntervals = [15]
-        c.skipForwardCommand.addTarget { [weak self] _ in self?.skip(15); return .success }
-        c.skipBackwardCommand.addTarget { [weak self] _ in self?.skip(-15); return .success }
+        // Lock-screen / Control-Center / AirPods next & previous (not skip-15s).
+        c.skipForwardCommand.isEnabled = false
+        c.skipBackwardCommand.isEnabled = false
+        c.nextTrackCommand.isEnabled = true
+        c.previousTrackCommand.isEnabled = true
+        c.nextTrackCommand.addTarget { [weak self] _ in self?.onNext?(); return .success }
+        c.previousTrackCommand.addTarget { [weak self] _ in self?.onPrevious?(); return .success }
         c.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let self, let e = event as? MPChangePlaybackPositionCommandEvent
             else { return .commandFailed }

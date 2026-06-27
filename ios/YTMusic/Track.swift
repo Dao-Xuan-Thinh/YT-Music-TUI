@@ -29,3 +29,20 @@ struct Track: Codable, Identifiable, Equatable {
         return try? JSONDecoder().decode(Track.self, from: data)
     }
 }
+
+/// A lite search-result row (no resolved stream yet — resolved on tap).
+struct SearchResult: Codable, Identifiable, Equatable {
+    let id: String
+    let title: String
+    let uploader: String
+    let duration: Int
+    let thumbnail: String
+
+    var thumbnailURL: URL? { thumbnail.isEmpty ? nil : URL(string: thumbnail) }
+
+    /// Decode a `[SearchResult]` from the search JSON string (empty on failure).
+    static func decodeList(_ json: String) -> [SearchResult] {
+        guard let data = json.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([SearchResult].self, from: data)) ?? []
+    }
+}

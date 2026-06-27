@@ -84,37 +84,76 @@ int python_init(void) {
     return 0;
 }
 
-char *python_resolve(const char *url) {
+// Call resolve.<func>(arg) -> str. Runs on a background thread, so acquire the GIL for
+// the whole call. Caller owns the returned C string.
+static char *call_str_func(const char *module, const char *func, const char *arg) {
     if (!g_initialized && python_init() != 0) {
         return dup_cstr(@"{\"_ok\": false, \"_error\": \"python_init failed\"}");
     }
 
-    // python_resolve runs on a background thread: acquire the GIL for the whole call.
     PyGILState_STATE gil = PyGILState_Ensure();
     char *out;
 
-    PyObject *mod = PyImport_ImportModule("resolve");
+    PyObject *mod = PyImport_ImportModule(module);
     if (!mod) {
         PyErr_Print();
         PyGILState_Release(gil);
-        return dup_cstr(@"{\"_ok\": false, \"_error\": \"import resolve failed\"}");
+        return dup_cstr(@"{\"_ok\": false, \"_error\": \"import failed\"}");
     }
-    PyObject *func = PyObject_GetAttrString(mod, "resolve");
-    PyObject *args = Py_BuildValue("(s)", url);
-    PyObject *res = func ? PyObject_CallObject(func, args) : NULL;
+    PyObject *f = PyObject_GetAttrString(mod, func);
+    PyObject *args = Py_BuildValue("(s)", arg);
+    PyObject *res = f ? PyObject_CallObject(f, args) : NULL;
 
     if (res && PyUnicode_Check(res)) {
         const char *s = PyUnicode_AsUTF8(res);
         out = strdup(s ? s : "");
     } else {
         PyErr_Print();
-        out = dup_cstr(@"{\"_ok\": false, \"_error\": \"resolve() call failed\"}");
+        out = dup_cstr(@"{\"_ok\": false, \"_error\": \"call failed\"}");
     }
 
     Py_XDECREF(res);
     Py_XDECREF(args);
-    Py_XDECREF(func);
+    Py_XDECREF(f);
     Py_XDECREF(mod);
     PyGILState_Release(gil);
     return out;
 }
+
+// Two-argument variant (e.g. resolve.search(query, source)).
+static char *call_str_func2(const char *module, const char *func,
+                            const char *a, const char *b) {
+    if (!g_initialized && python_init() != 0) {
+        return dup_cstr(@"{\"_ok\": false, \"_error\": \"python_init failed\"}");
+    }
+    PyGILState_STATE gil = PyGILState_Ensure();
+    char *out;
+    PyObject *mod = PyImport_ImportModule(module);
+    if (!mod) {
+        PyErr_Print();
+        PyGILState_Release(gil);
+        return dup_cstr(@"[]");
+    }
+    PyObject *f = PyObject_GetAttrString(mod, func);
+    PyObject *args = Py_BuildValue("(ss)", a, b);
+    PyObject *res = f ? PyObject_CallObject(f, args) : NULL;
+    if (res && PyUnicode_Check(res)) {
+        const char *s = PyUnicode_AsUTF8(res);
+        out = strdup(s ? s : "");
+    } else {
+        PyErr_Print();
+        out = dup_cstr(@"[]");
+    }
+    Py_XDECREF(res);
+    Py_XDECREF(args);
+    Py_XDECREF(f);
+    Py_XDECREF(mod);
+    PyGILState_Release(gil);
+    return out;
+}
+
+char *python_resolve(const char *url) { return call_str_func("resolve", "resolve", url); }
+char *python_search(const char *query, const char *source) {
+    return call_str_func2("resolve", "search", query, source);
+}
+char *python_browse(const char *url) { return call_str_func("resolve", "browse", url); }
