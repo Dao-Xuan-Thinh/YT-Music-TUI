@@ -29,10 +29,12 @@ class _SilentLogger:
 _OAUTH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oauth.json')
 
 _ytm = None
-_auth_method = 'none'        # 'none' | 'oauth' | 'cookies'
+_auth_method = 'none'        # 'none' | 'oauth' | 'cookies' | 'browser'
 _client_id = ''
 _client_secret = ''
 _cookies_file = ''
+_auth_browser = ''           # yt-dlp browser name for method='browser' (live cookies)
+_auth_browser_profile = ''   # optional profile dir/name for that browser
 _authed = False              # cached auth state (avoids re-parsing cookies per call)
 
 # Serializes ALL ytmusicapi access. A YTMusic client wraps a single requests.Session
@@ -71,22 +73,31 @@ def _new_ytm(**kwargs):
     return YTMusic(requests_session=_TimeoutSession(), **kwargs)
 
 
-def configure_auth(method='none', client_id='', client_secret='', cookies_file=''):
+def configure_auth(method='none', client_id='', client_secret='', cookies_file='',
+                   browser='', profile=''):
     """Set the active auth method + its inputs and drop the cached client so the
-    next _get_ytm() rebuilds. method: 'none' | 'oauth' | 'cookies'."""
+    next _get_ytm() rebuilds. method: 'none' | 'oauth' | 'cookies' | 'browser'."""
     global _auth_method, _client_id, _client_secret, _cookies_file, _ytm, _authed
-    _auth_method = method if method in ('none', 'oauth', 'cookies') else 'none'
+    global _auth_browser, _auth_browser_profile
+    _auth_method = method if method in ('none', 'oauth', 'cookies', 'browser') else 'none'
     _client_id = client_id or ''
     _client_secret = client_secret or ''
     _cookies_file = os.path.expanduser(os.path.expandvars(cookies_file or ''))
+    _auth_browser = browser or ''
+    _auth_browser_profile = profile or ''
     _ytm = None
-    # Evaluate auth validity ONCE here (parses the cookie file) and cache it; the
-    # footer/status query is_authenticated() often and a 1 MB cookie reparse per
-    # call froze the UI.
+    # Evaluate auth validity ONCE here and cache it; the footer/status query
+    # is_authenticated() often and a per-call cookie reparse / extraction would
+    # stall the UI.
     if _auth_method == 'oauth':
         _authed = _oauth_ready()
     elif _auth_method == 'cookies':
         _authed = _browser_headers_from_cookies(_cookies_file) is not None
+    elif _auth_method == 'browser':
+        # Don't extract on the UI thread (slow / may touch a locked DB) — assume valid
+        # if a browser is configured and let verify_auth_live() (daemon) confirm or
+        # downgrade, exactly like cookies.
+        _authed = bool(_auth_browser)
     else:
         _authed = False
 
@@ -110,22 +121,14 @@ _AUTH_COOKIE_NAMES = {
 }
 
 
-def _browser_headers_from_cookies(path):
-    """Build a ytmusicapi browser-auth header dict from a Netscape cookies file.
+def _headers_from_jar(jar):
+    """Build a ytmusicapi browser-auth header dict from any cookie jar.
 
     ytmusicapi authenticates as a web session: it reads the SAPISID from the cookie
     header and recomputes the SAPISIDHASH `authorization` on each request. We just
-    need a cookie header carrying a logged-in session. Returns None if the file has
-    no SAPISID/__Secure-3PAPISID (i.e. not a logged-in YouTube cookie export).
+    need a cookie header carrying a logged-in session. Returns None if the jar has
+    no SAPISID/__Secure-3PAPISID (i.e. not a logged-in YouTube session).
     """
-    import http.cookiejar
-    if not path or not os.path.isfile(path):
-        return None
-    try:
-        jar = http.cookiejar.MozillaCookieJar(path)
-        jar.load(ignore_discard=True, ignore_expires=True)
-    except Exception:
-        return None
     by_name = {}     # de-dupe by cookie name, keep insertion order (last wins)
     for ck in jar:
         if ck.name not in _AUTH_COOKIE_NAMES:
@@ -148,6 +151,104 @@ def _browser_headers_from_cookies(path):
     }
 
 
+def _browser_headers_from_cookies(path):
+    """Build a ytmusicapi browser-auth header dict from a Netscape cookies file.
+
+    Returns None if the file has no SAPISID/__Secure-3PAPISID (i.e. not a logged-in
+    YouTube cookie export).
+    """
+    import http.cookiejar
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        jar = http.cookiejar.MozillaCookieJar(path)
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except Exception:
+        return None
+    return _headers_from_jar(jar)
+
+
+def _browser_headers_live(browser, profile=''):
+    """Read the CURRENT logged-in session straight from a running browser's cookie
+    store (via yt-dlp) and build the ytmusicapi auth header. This is the durable
+    sign-in path: re-read at every launch, so the session never goes stale while the
+    browser stays logged in.
+
+    `browser` is a yt-dlp browser name (firefox/chrome/edge/brave/…). For a
+    Firefox-family browser (Firefox, Zen, LibreWolf, …) `profile` may be an absolute
+    profile-directory path — yt-dlp's firefox extractor reads its cookies.sqlite.
+    Returns None on any failure (no browser, locked/encrypted DB, not logged in).
+
+    Note: Chromium browsers (Chrome/Edge/Brave) on Windows use App-Bound Encryption,
+    which blocks external decryption (yt-dlp #10927) — Firefox-family works.
+    """
+    if not browser:
+        return None
+    try:
+        from yt_dlp.cookies import extract_cookies_from_browser
+        jar = extract_cookies_from_browser(browser, profile or None, _SilentLogger())
+    except Exception:
+        return None
+    return _headers_from_jar(jar)
+
+
+# Firefox-family browsers (read via yt-dlp's `firefox` extractor + a profile-dir path).
+# These store cookies in an unencrypted cookies.sqlite, so extraction works everywhere —
+# unlike Chromium browsers, which on Windows use App-Bound Encryption (yt-dlp #10927).
+# name → list of OS-specific roots that each hold per-profile subdirectories.
+def _firefox_family_roots():
+    home = os.path.expanduser('~')
+    appdata = os.environ.get('APPDATA', os.path.join(home, 'AppData', 'Roaming'))
+    support = os.path.join(home, 'Library', 'Application Support')
+    # (display name, [candidate profile-container roots])
+    return [
+        ('Firefox',   [os.path.join(appdata, 'Mozilla', 'Firefox', 'Profiles'),
+                       os.path.join(support, 'Firefox', 'Profiles'),
+                       os.path.join(home, '.mozilla', 'firefox')]),
+        ('Zen',       [os.path.join(appdata, 'zen', 'Profiles'),
+                       os.path.join(support, 'zen', 'Profiles'),
+                       os.path.join(home, '.zen')]),
+        ('LibreWolf', [os.path.join(appdata, 'librewolf', 'Profiles'),
+                       os.path.join(support, 'librewolf', 'Profiles'),
+                       os.path.join(home, '.librewolf')]),
+        ('Waterfox',  [os.path.join(appdata, 'Waterfox', 'Profiles'),
+                       os.path.join(support, 'Waterfox', 'Profiles'),
+                       os.path.join(home, '.waterfox')]),
+    ]
+
+
+def detect_browser_profiles():
+    """Enumerate sign-in-able browser sources for the Account screen.
+
+    Returns a list of {'label', 'browser', 'profile'} dicts:
+      - every Firefox-family profile that has a cookies.sqlite (browser='firefox',
+        profile=<absolute dir>), which is the path proven to work; plus
+      - the common Chromium/other browsers by name (profile='') for setups where they
+        aren't App-Bound-Encryption-blocked (non-Windows).
+    Best-effort: any filesystem error is skipped.
+    """
+    out = []
+    for app, roots in _firefox_family_roots():
+        for root in roots:
+            try:
+                if not os.path.isdir(root):
+                    continue
+                for entry in sorted(os.listdir(root)):
+                    pdir = os.path.join(root, entry)
+                    if os.path.isfile(os.path.join(pdir, 'cookies.sqlite')):
+                        # Firefox profile dirs look like "<id>.<name>" → show <name>.
+                        disp = entry.split('.', 1)[1] if '.' in entry else entry
+                        out.append({'label': f'{app} — {disp}',
+                                    'browser': 'firefox', 'profile': pdir})
+            except OSError:
+                continue
+    # Direct (default-profile) browser options for non-Firefox setups.
+    for name in ('chrome', 'edge', 'brave', 'chromium', 'vivaldi', 'opera'):
+        out.append({'label': f'{name.capitalize()} (default profile)',
+                    'browser': name, 'profile': ''})
+    return out
+
+
 def is_authenticated():
     """True if the active auth method has usable credentials (cached by
     configure_auth so this is O(1) — see _authed)."""
@@ -158,6 +259,8 @@ def auth_status():
     """Short label for the footer/UI describing the active auth method."""
     if _auth_method == 'cookies':
         return 'cookies' if is_authenticated() else 'cookies (not set)'
+    if _auth_method == 'browser':
+        return 'browser' if is_authenticated() else 'browser (not set)'
     if _auth_method == 'oauth':
         return 'oauth' if _oauth_ready() else 'oauth (not set)'
     return 'public'
@@ -174,6 +277,13 @@ def _get_ytm():
         if _ytm is None:
             if _auth_method == 'cookies':
                 headers = _browser_headers_from_cookies(_cookies_file)
+                try:
+                    _ytm = _new_ytm(auth=headers) if headers else _new_ytm()
+                except Exception:
+                    _ytm = _new_ytm()
+            elif _auth_method == 'browser':
+                # Re-read the live session from the browser each launch (durable auth).
+                headers = _browser_headers_live(_auth_browser, _auth_browser_profile)
                 try:
                     _ytm = _new_ytm(auth=headers) if headers else _new_ytm()
                 except Exception:
@@ -255,12 +365,12 @@ def verify_auth_live():
         name = info.get('accountName') or ''
         if name:
             return ('ok', name)
-        if _auth_method == 'cookies':
+        if _auth_method in ('cookies', 'browser'):
             _authed = False
             return ('expired', '')
         return ('unknown', '')
     except Exception as exc:
-        if _auth_method == 'cookies' and _is_logged_out_error(exc):
+        if _auth_method in ('cookies', 'browser') and _is_logged_out_error(exc):
             _authed = False
             return ('expired', '')
         return ('unknown', '')

@@ -21,8 +21,12 @@ _DEFAULTS = {
     # client construction for token refresh. See YOUTUBE_LOGIN.md.
     'oauth_client_id':     '',
     'oauth_client_secret': '',
-    # Active auth method for ytmusicapi: 'none' | 'oauth' | 'cookies'.
+    # Active auth method for ytmusicapi: 'none' | 'oauth' | 'cookies' | 'browser'.
     'auth_method':         'none',
+    # For method='browser': yt-dlp browser name + optional profile dir (live cookies,
+    # re-read each launch so the session never goes stale). See Account (g).
+    'auth_browser':         '',
+    'auth_browser_profile': '',
     # Display name of the signed-in account (shown in the footer). Cached from
     # get_account_info() at sign-in / first boot so the footer needs no network.
     'account_name':        '',
@@ -165,13 +169,31 @@ class Config:
     @property
     def auth_method(self):
         m = self._data.get('auth_method', 'none')
-        return m if m in ('none', 'oauth', 'cookies') else 'none'
+        return m if m in ('none', 'oauth', 'cookies', 'browser') else 'none'
 
     @auth_method.setter
     def auth_method(self, value):
-        if value in ('none', 'oauth', 'cookies'):
+        if value in ('none', 'oauth', 'cookies', 'browser'):
             self._data['auth_method'] = value
             self.save()
+
+    @property
+    def auth_browser(self):
+        return self._data.get('auth_browser', '')
+
+    @auth_browser.setter
+    def auth_browser(self, value):
+        self._data['auth_browser'] = value or ''
+        self.save()
+
+    @property
+    def auth_browser_profile(self):
+        return self._data.get('auth_browser_profile', '')
+
+    @auth_browser_profile.setter
+    def auth_browser_profile(self, value):
+        self._data['auth_browser_profile'] = value or ''
+        self.save()
 
     @property
     def theme(self):

@@ -256,28 +256,44 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 
 **Switch search source:** `t` (cycles YT Music → YouTube → Both)
 
-**Sign in to YouTube:** `g` opens the Account screen with two methods (config
-`auth_method`: `none`/`oauth`/`cookies`). Once authenticated, the home screen's **For
-You** tab and search personalize. Setup: `YOUTUBE_LOGIN.md`.
-- **Cookies (works):** point it at a `cookies.txt` exported from a logged-in
-  music.youtube.com; ytmusicapi uses it as browser auth (SAPISIDHASH), which `youtubei`
-  accepts. Stored in `config.auth_cookies_file` (NOT `cookies_file` — see gotcha below).
-  Built in `youtube._browser_headers_from_cookies` / `cookies_auth_ok`. Only the ~24
-  auth-relevant cookie names are sent (`_AUTH_COOKIE_NAMES`) — a full-browser dump's
-  ~100 KB Cookie header is rejected by YouTube with an empty body.
-- **OAuth (device flow):** kept, but **YouTube Music currently rejects OAuth tokens with
-  `HTTP 400 INVALID_ARGUMENT`** (Google disabled third-party-client tokens for `youtubei`;
-  no client-side fix, 1.12.1 is the latest ytmusicapi). Token in `oauth.json` (gitignored).
+**Sign in to YouTube:** `g` opens the Account screen (config `auth_method`:
+`none`/`browser`/`cookies`/`oauth`). Once authenticated, the home screen's **For You** tab
+and search personalize. Setup: `YOUTUBE_LOGIN.md`.
+- **Browser (recommended — durable):** pick a browser *profile* in the Account screen; at
+  every launch `youtube._browser_headers_live(browser, profile)` reads the **live**
+  music.youtube.com session straight from the browser via yt-dlp's
+  `extract_cookies_from_browser` and feeds it to ytmusicapi as browser auth. Because it
+  re-reads each run, the session **never goes stale** while the browser stays logged in (no
+  manual re-export). `detect_browser_profiles()` enumerates Firefox-family profiles
+  (Firefox, **Zen**, LibreWolf, Waterfox — read via yt-dlp's `firefox` extractor + a
+  profile-dir path) plus the Chromium browser names. **Chromium on Windows (Chrome/Edge/
+  Brave) is blocked by App-Bound Encryption** (yt-dlp #10927 — `Failed to decrypt with
+  DPAPI`); Firefox-family works. Stored as `config.auth_browser` + `auth_browser_profile`.
+- **Cookies (manual, expires):** point it at a `cookies.txt` exported from a logged-in
+  music.youtube.com; same browser-auth path (SAPISIDHASH) but from a frozen file, so it
+  goes stale and must be re-exported. Stored in `config.auth_cookies_file` (NOT
+  `cookies_file` — see gotcha below). Built in `youtube._browser_headers_from_cookies`.
+  Both browser/cookies share `_headers_from_jar` and send only the ~24 auth-relevant cookie
+  names (`_AUTH_COOKIE_NAMES`) — a full-browser dump's ~100 KB Cookie header is rejected by
+  YouTube with an empty body.
+- **OAuth (device flow) — DEAD, removed from the UI.** Verified empirically against a real
+  token: the refresh exchange succeeds but **every `youtubei` call returns `HTTP 400
+  INVALID_ARGUMENT`** (6/6 across `get_account_info`/`get_home`/`search`, both WEB_REMIX and
+  ANDROID_MUSIC contexts). Google blocks third-party-client OAuth tokens; no client-side fix
+  (ytmusicapi 1.12.1 is latest). The `login`/`logout`/`OAuthCredentials` backend is kept but
+  unreachable from the Account screen; a stored `auth_method='oauth'` is migrated to `none`
+  at boot (`App.__init__`).
 
-`youtube.configure_auth(method, …, cookies_file=auth_cookies_file)` wires the active
-method at boot; `youtube._get_ytm()` builds the matching `YTMusic` (cookies →
-`auth=headers`, oauth → `oauth_credentials`, else anonymous), degrading to anonymous on
-error. `auth_status()` labels the footer. `is_authenticated()` is cached (computed once in
+`youtube.configure_auth(method, …, cookies_file=auth_cookies_file, browser=, profile=)`
+wires the active method at boot; `youtube._get_ytm()` builds the matching `YTMusic`
+(cookies/browser → `auth=headers`, oauth → `oauth_credentials`, else anonymous), degrading
+to anonymous on error. For `browser`, extraction happens **inside `_get_ytm()`** (daemon
+threads only, under `_ytm_lock`) — never on the UI thread. `auth_status()` labels the footer. `is_authenticated()` is cached (computed once in
 `configure_auth`) so the footer/status don't re-parse the cookie file each refresh — but
 that cache only reflects whether the file *contains* login cookies, not whether they still
 work. So at boot `App._verify_account` (daemon thread) calls `youtube.verify_auth_live()`,
-a single live `get_account_info()`: on a **confirmed logout** (cookie auth returns no
-account, or ytmusicapi raises a logged-out parse error — `_is_logged_out_error`), it
+a single live `get_account_info()`: on a **confirmed logout** (cookie/browser auth returns
+no account, or ytmusicapi raises a logged-out parse error — `_is_logged_out_error`), it
 downgrades `is_authenticated()` to False, clears `config.account_name`, and the UI hides
 the `♥ <name>` footer segment + shows a "sign-in expired — press g to re-export" alert.
 A transient **network** error is treated as `unknown` (not a logout): the cached name

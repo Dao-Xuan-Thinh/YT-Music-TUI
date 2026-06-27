@@ -4,36 +4,62 @@ The app can sign into your Google/YouTube account so it shows **personalized**
 content (your "For You" home feed, and personalized search ranking). Open the
 **Account** screen with the **`g`** key and pick a method.
 
-> ### ⚠️ Which method? Use **Cookies**.
-> YouTube Music's internal API currently **rejects OAuth tokens** from
-> user-created Google Cloud clients (every call returns `HTTP 400 INVALID_ARGUMENT`).
-> This is a known, Google-side limitation — not a bug in this app — and there's no
-> client-side fix. **Cookie auth is the working method.** The OAuth flow is kept for
-> when/if Google re-enables it, but expect it to fail today.
+> ### ⚠️ Which method? Use **Browser**.
+> **Browser** sign-in reads your *live* music.youtube.com session straight from your
+> browser at every launch, so it **never goes stale** while you stay logged in — no
+> manual re-export. **Cookies** (a manual `cookies.txt` export) works too but expires
+> and must be re-exported. **OAuth was removed** — YouTube rejects those tokens
+> (`HTTP 400`), verified; it can't authenticate.
 
 ---
 
-## A. Cookie auth (recommended — works today)
+## A. Browser sign-in (recommended — durable)
 
-The app authenticates as your logged-in browser session (no password stored; it uses
-your session cookies). You provide a **cookies.txt** exported while logged in to
-music.youtube.com.
+The app reads the cookies of a logged-in **browser profile** directly (via yt-dlp), each
+time it starts. No password is stored; nothing is exported by hand.
+
+### 1. Be logged in to music.youtube.com in a supported browser
+- **Firefox-family browsers work everywhere:** Firefox, **Zen**, LibreWolf, Waterfox.
+  Their cookie store is unencrypted, so the app can read it.
+- **Chromium browsers (Chrome / Edge / Brave) on Windows do NOT work:** they use
+  *App-Bound Encryption*, which blocks any external app from decrypting their cookies
+  (a known yt-dlp limitation — closing the browser doesn't help). On macOS/Linux they
+  work. If you only have Chrome/Edge on Windows, use a Firefox-family browser (e.g. Zen)
+  for the YouTube Music login, or fall back to **Cookies** (section B).
+
+### 2. Pick your profile in the app
+Press **`g`** → in the **Browser** section open the dropdown and choose your profile
+(e.g. *Zen — &lt;your profile&gt;*) → **Sign in from browser**. The app reads the live
+session in the background; on success the footer shows **♥ &lt;your name&gt;** and your
+For You feed personalizes. It re-reads on every launch, so you stay signed in as long as
+that browser profile stays logged in.
+
+> The list shows detected Firefox-family profiles plus the standard Chromium browser
+> names. If your browser isn't listed, make sure it's logged in to music.youtube.com and
+> restart the app.
+
+---
+
+## B. Cookie auth (manual — works, but expires)
+
+Authenticates as your logged-in browser session from a **cookies.txt** you export while
+logged in to music.youtube.com. Same mechanism as Browser sign-in, but from a frozen
+file — so the session eventually expires and you must re-export to renew.
 
 ### 1. Export cookies.txt
 - **Browser extension:** install "Get cookies.txt LOCALLY" (Chrome/Edge/Firefox), open
   <https://music.youtube.com> **while logged in**, click the extension → **Export** →
   save the `.txt` (Netscape format).
-- **Or via yt-dlp:** `yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download "https://music.youtube.com"`
-  (swap `chrome` for your browser).
+- **Or via yt-dlp:** `yt-dlp --cookies-from-browser firefox --cookies cookies.txt --skip-download "https://music.youtube.com"`
+  (swap `firefox` for your browser).
 
 The file must contain your `__Secure-3PAPISID` / `SAPISID` cookies (a logged-in export
 does).
 
 ### 2. Use it in the app
 Press **`g`** → put the cookies.txt path in the **Cookies** field → **Use these
-cookies**. It verifies by fetching your account; on success it shows
-**"Signed in as &lt;you&gt; ✓"**, the footer shows `cookies`, and your For You feed
-personalizes. Re-export when the cookies eventually expire (months).
+cookies**. The app signs in in the background; the footer shows **♥ &lt;you&gt;** on
+success and your For You feed personalizes. Re-export when the cookies eventually expire.
 
 > **These account cookies are used only for YouTube Music metadata/personalization —
 > never for audio streaming.** An authenticated YouTube session makes the underlying
@@ -44,79 +70,23 @@ personalizes. Re-export when the cookies eventually expire (months).
 
 ---
 
-## B. OAuth (device login) — currently rejected by YT Music
-
-Kept for completeness; **expect `HTTP 400` today**. If you still want to try it: Google
-retired the shared credentials `ytmusicapi` used to ship with, so you provide **your
-own** OAuth client (free, ~5 min).
-
----
-
-## 1. Create a Google Cloud OAuth client (one-time)
-
-1. Go to <https://console.cloud.google.com/> and sign in with the Google account
-   you want to use.
-2. **Create a project** (top bar → project dropdown → *New Project*). Name it
-   anything, e.g. `ytm-tui`. Select it once created.
-3. **Enable the API:** APIs & Services → *Library* → search **"YouTube Data API v3"**
-   → open it → **Enable**.
-4. **Configure the consent screen:** APIs & Services → *OAuth consent screen*.
-   - User type: **External** → *Create*.
-   - Fill in the required app name + your email; *Save and continue* through the
-     Scopes step (no scopes needed) to *Test users*.
-   - **Add your own Google email as a Test user.** *Save and continue.*
-   - (Leaving the app in "Testing" mode is fine — you don't need to publish it.)
-5. **Create the credential:** APIs & Services → *Credentials* → *Create Credentials*
-   → **OAuth client ID**.
-   - Application type: **TVs and Limited Input devices**.
-   - Name it anything → *Create*.
-6. Google shows a **Client ID** and **Client secret**. Keep them handy (you can
-   reopen the credential later to copy them again).
-
----
-
-## 2. Sign in from the app
-
-1. Run the app and press **`g`** (Account).
-2. Paste your **Client ID** and **Client secret** into the two fields.
-3. Press **Log in**. The app shows a URL and a short code, e.g.:
-
-   ```
-   Go to  https://www.google.com/device
-   Enter code:  ABCD-EFGH
-   ```
-
-4. Open that URL in any browser, sign in with the **same** Google account you added
-   as a Test user, and enter the code. Approve the access request.
-5. Back in the app, the screen flips to **Signed in ✓** and the footer shows
-   `signed in`. Your **For You** tab on the home screen now reflects your account.
-
-The token is saved to `oauth.json` next to the app and refreshes itself; you won't
-need to repeat this unless you **Log out** (which deletes the token) or the token is
-revoked.
-
----
-
 ## Troubleshooting
 
-- **"OAuth client failure … YouTubeData API is not enabled"** — finish step 1.3
-  (enable YouTube Data API v3) and double-check the client_id/secret match.
-- **"access_denied"** in the browser — the Google account you authorized with isn't
-  added as a **Test user** on the consent screen (step 1.4), or it's a different
-  account than the one you intend to use.
-- **Code expired** — the device code is short-lived; press **Log in** again to get a
-  fresh one.
-- Nothing personalized after signing in — the feed is fetched when the **home
+- **My Chrome/Edge profile isn't in the Browser list (or fails)** — on Windows these are
+  blocked by App-Bound Encryption. Use a Firefox-family browser (e.g. Zen) for the YT
+  Music login, or use Cookies (section B).
+- **"sign-in expired — press g"** — the session is no longer valid. For Browser sign-in,
+  re-open the browser/log back in; for Cookies, re-export cookies.txt.
+- **Nothing personalized after signing in** — the feed is fetched when the **home
   screen** opens; press `h` to return home and reload the For You tab.
 
 ---
 
 ## Privacy / security notes
 
-- Your **password is never entered into the app** — authorization happens on
-  Google's site.
-- `oauth.json` (the refresh token) and `config.json` (which stores your client
-  id/secret) are both **gitignored** and stay on your machine.
-- The client_secret for a "Limited Input device" client is low-sensitivity, but
-  treat it like any credential — don't paste it into shared logs.
-- **Log out** (press `g` → *Log out*) removes the local token.
+- Your **password is never entered into the app** — it only reads existing browser
+  session cookies.
+- `config.json` (which stores your chosen browser/profile or cookies path) is
+  **gitignored** and stays on your machine. No cookie *values* are written to it.
+- OAuth was removed from the UI because YouTube rejects the tokens; the `oauth.json`
+  cache (if any from a past attempt) is gitignored and unused.
