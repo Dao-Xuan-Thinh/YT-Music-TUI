@@ -152,7 +152,13 @@ Run it: `cd ios && ./fetch-deps.sh && ./build.sh sim`. Remaining gate: a physica
    `liked / playlists / recent / resume` sub-sections; ♥ toggle in the now-playing bar,
    `+pl` saves the queue as a named playlist, sessions auto-save on backgrounding and
    restore queue+position. Builds + runs on device.
-5. **Polish.** Now-playing screen, artwork, settings, themes.
+5. **Polish.** ✅ Full-screen Now-Playing (artwork/scrubber/transport, swipe-dismiss);
+   6 themes + animated color-wave (`ThemeManager` + `WaveText`); Settings sheet (theme
+   picker, default source/volume, clear-library, about); For You feed (`resolve.home()`
+   anonymous, personalizes when signed in); account sign-in — in-app WKWebView login
+   (desktop UA) + paste-cookies fallback → ytmusicapi browser auth (`set_auth`),
+   persisted/re-armed at launch. Plus M5-A fixes (search-clear, playlist view-not-play,
+   app icon).
 6. **Phase 2 (optional).** MPVKit backend for Opus/exact parity; offline files.
 
 ## Distribution (personal use — no App Store needed)
