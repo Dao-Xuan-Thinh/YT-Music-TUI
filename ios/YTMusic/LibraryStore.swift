@@ -116,6 +116,18 @@ final class LibraryStore: ObservableObject {
         if !recent.isEmpty { recent.removeAll(); saveLibrary() }
     }
 
+    func clearLiked() {
+        if !liked.isEmpty { liked.removeAll(); saveLibrary() }
+    }
+
+    func clearPlaylists() {
+        if !playlists.isEmpty { playlists.removeAll(); saveLibrary() }
+    }
+
+    func clearSessions() {
+        if !sessions.isEmpty { sessions.removeAll(); saveSessions() }
+    }
+
     // MARK: - Playlists
 
     func playlist(named name: String) -> Playlist? { playlists.first { $0.name == name } }

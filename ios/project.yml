@@ -31,6 +31,8 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         ITSAppUsesNonExemptEncryption: false
+        CFBundleShortVersionString: "0.5"
+        CFBundleVersion: "1"
         # Keep audio playing when the screen is locked / app backgrounded.
         UIBackgroundModes:
           - audio

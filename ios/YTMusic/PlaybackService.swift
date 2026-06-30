@@ -37,6 +37,7 @@ final class PlaybackService: ObservableObject {
         configureAudioSession()
         configureRemoteCommands()
         observePlayer()
+        volume = AppConfig.shared.defaultVolume
     }
 
     // MARK: - Public transport

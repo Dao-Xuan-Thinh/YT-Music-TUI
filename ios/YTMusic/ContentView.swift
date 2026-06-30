@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var renameTarget: String?
     @State private var renameName = ""
     @State private var showNowPlaying = false
+    @State private var showSettings = false
 
     private let rowHeight: CGFloat = 30
 
@@ -68,6 +69,9 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $showNowPlaying) {
             NowPlayingScreen(vm: vm, playback: playback)
         }
+        .sheet(isPresented: $showSettings) {
+            SettingsScreen(vm: vm)
+        }
     }
 
     // MARK: - Tab bar
@@ -78,6 +82,10 @@ struct ContentView: View {
             tabLabel("QUEUE", .queue)
             tabLabel("LIBRARY", .library)
             Spacer()
+            Image(systemName: "gearshape")
+                .font(TUI.mono(13))
+                .foregroundStyle(TUI.dim)
+                .onTapGesture { showSettings = true }
             Text("♥ \(library.liked.count)")
                 .foregroundStyle(TUI.accent)
                 .onTapGesture {

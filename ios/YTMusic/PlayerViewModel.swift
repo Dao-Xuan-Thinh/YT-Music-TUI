@@ -31,6 +31,7 @@ final class PlayerViewModel: ObservableObject {
     private var prefetched: [String: Track] = [:]
 
     init() {
+        source = AppConfig.shared.defaultSource
         playback.onEnded = { [weak self] in self?.playNext(auto: true) }
         playback.onNext = { [weak self] in self?.playNext() }
         playback.onPrevious = { [weak self] in self?.playPrevious() }
