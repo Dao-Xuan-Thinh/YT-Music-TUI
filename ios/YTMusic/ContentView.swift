@@ -52,6 +52,7 @@ struct ContentView: View {
             if phase == .background { vm.saveCurrentSession() }
         }
         .onChange(of: vm.tab) { t in if t == .foryou { vm.loadHome() } }
+        .onAppear { AccountStore.shared.restore() }
         .alert("Save playlist", isPresented: $showSavePlaylist) {
             TextField("name", text: $newPlaylistName)
             Button("Save") { vm.saveQueueAsPlaylist(name: newPlaylistName) }

@@ -22,4 +22,8 @@ char *python_browse(const char *url);
 /// "For You" home feed → JSON list of lite track dicts. Caller owns the returned C string.
 char *python_home(void);
 
+/// Set (or clear, with "") the account session from a cookie string. Returns JSON
+/// {"ok":bool,"name":string} — the signed-in account display name. Caller owns the string.
+char *python_set_auth(const char *cookie);
+
 #endif /* PythonBootstrap_h */

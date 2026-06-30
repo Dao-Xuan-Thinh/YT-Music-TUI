@@ -27,6 +27,75 @@ _M4A_FORMAT = "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio"
 # (JavaScriptCore JS solving still works as the fallback if 'web' is ever needed.)
 _PLAYER_CLIENTS = ["android_vr", "ios", "android"]
 
+# ── Account auth (ytmusicapi browser session) ─────────────────────────────────
+# Mirrors the desktop youtube.py: ytmusicapi authenticates as a web session — it reads
+# SAPISID from the cookie header and recomputes the SAPISIDHASH `authorization` per request,
+# so we only need a cookie header carrying a logged-in session. Set from the iOS app
+# (WebView capture or pasted cookies) via set_auth(); used by every YTMusic() build.
+_AUTH_COOKIE_NAMES = {
+    "SAPISID", "__Secure-1PAPISID", "__Secure-3PAPISID",
+    "SID", "__Secure-1PSID", "__Secure-3PSID",
+    "HSID", "SSID", "APISID",
+    "__Secure-1PSIDTS", "__Secure-3PSIDTS",
+    "__Secure-1PSIDCC", "__Secure-3PSIDCC", "SIDCC",
+    "LOGIN_INFO", "VISITOR_INFO1_LIVE", "VISITOR_PRIVACY_METADATA",
+    "YSC", "PREF", "CONSENT", "SOCS", "NID", "__Secure-YNID",
+}
+_auth_headers = None   # set by set_auth()
+
+
+def _headers_from_cookie_str(cookie_str):
+    """Build a ytmusicapi browser-auth header dict from a raw 'k=v; k=v' cookie string.
+    Returns None unless it carries a logged-in session (SAPISID / __Secure-3PAPISID)."""
+    by_name = {}
+    for part in (cookie_str or "").split(";"):
+        part = part.strip()
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name = name.strip()
+        if name in _AUTH_COOKIE_NAMES:
+            by_name[name] = value.strip()
+    if not ("SAPISID" in by_name or "__Secure-3PAPISID" in by_name):
+        return None
+    return {
+        "cookie": "; ".join(f"{n}={v}" for n, v in by_name.items()),
+        "authorization": "SAPISIDHASH placeholder",   # ytmusicapi recomputes the real value
+        "x-goog-authuser": "0",
+        "origin": "https://music.youtube.com",
+        "user-agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"),
+    }
+
+
+def _ytm():
+    """A YTMusic client — authenticated if a session is set, else anonymous."""
+    from ytmusicapi import YTMusic
+    if _auth_headers:
+        try:
+            return YTMusic(auth=_auth_headers)
+        except Exception:
+            pass
+    return YTMusic()
+
+
+def set_auth(cookie_str: str = "") -> str:
+    """Set (or clear, with "") the account session from a cookie string. Returns JSON
+    {ok, name} — name is the signed-in account display name (empty if not logged in)."""
+    global _auth_headers
+    h = _headers_from_cookie_str(cookie_str)
+    _auth_headers = h
+    if not h:
+        return json.dumps({"ok": False, "name": ""})
+    try:
+        from ytmusicapi import YTMusic
+        info = YTMusic(auth=h).get_account_info() or {}
+        name = info.get("accountName") or ""
+        return json.dumps({"ok": bool(name), "name": name})
+    except Exception as e:
+        print("SET_AUTH_ERROR:", type(e).__name__, e, flush=True)
+        return json.dumps({"ok": False, "name": ""})
+
 
 def _entry_to_dict(e: dict) -> dict:
     vid = e.get("id") or ""
@@ -170,9 +239,8 @@ def _yt_search(query: str, n: int) -> list:
 
 
 def _ytm_search(query: str, n: int) -> list:
-    """YouTube Music search via ytmusicapi (anonymous) — better music ranking."""
-    from ytmusicapi import YTMusic
-    yt = YTMusic()
+    """YouTube Music search via ytmusicapi (authenticated if signed in)."""
+    yt = _ytm()
     try:
         res = yt.search(query, filter="songs", limit=n)
     except Exception:
@@ -210,8 +278,7 @@ def home(_: str = "") -> str:
     """"For You" feed: the YouTube Music home feed (anonymous) flattened to a JSON list of
     lite track dicts. Mirrors the desktop `ytm_home()`. Personalizes once signed in."""
     try:
-        from ytmusicapi import YTMusic
-        sections = YTMusic().get_home(limit=6)
+        sections = _ytm().get_home(limit=6)
         out = []
         for sec in sections:
             for it in (sec.get("contents") or []):
@@ -230,9 +297,8 @@ def home(_: str = "") -> str:
 
 def _ytm_playlist(playlist_id: str) -> list:
     """Full playlist via ytmusicapi (paginates all tracks — no 100-ish cap)."""
-    from ytmusicapi import YTMusic
     pid = playlist_id[2:] if playlist_id.startswith("VL") else playlist_id
-    data = YTMusic().get_playlist(pid, limit=None)
+    data = _ytm().get_playlist(pid, limit=None)
     out = []
     for t in (data.get("tracks") or []):
         vid = t.get("videoId")

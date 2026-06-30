@@ -8,9 +8,11 @@ struct SettingsScreen: View {
     @ObservedObject private var theme = ThemeManager.shared
     @ObservedObject private var library = LibraryStore.shared
     @ObservedObject private var playback = PlaybackService.shared
+    @ObservedObject private var account = AccountStore.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var confirmClear: ClearTarget?
+    @State private var showAccount = false
 
     enum ClearTarget: String, Identifiable {
         case liked, recent, playlists, sessions
@@ -23,6 +25,7 @@ struct SettingsScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     header
+                    accountSection
                     themeSection
                     playbackSection
                     librarySection
@@ -42,6 +45,26 @@ struct SettingsScreen: View {
                 message: Text("This can't be undone."),
                 primaryButton: .destructive(Text("Clear")) { clear(target) },
                 secondaryButton: .cancel())
+        }
+        .sheet(isPresented: $showAccount) { AccountScreen(vm: vm) }
+    }
+
+    private var accountSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("ACCOUNT")
+            HStack {
+                Image(systemName: account.signedIn ? "person.crop.circle.fill" : "person.crop.circle")
+                    .foregroundStyle(account.signedIn ? TUI.accent : TUI.dim)
+                Text(account.signedIn ? (account.name.isEmpty ? "signed in" : account.name)
+                                      : "not signed in")
+                    .foregroundStyle(account.signedIn ? TUI.fg : TUI.dim)
+                Spacer()
+                Text(account.signedIn ? "manage" : "sign in").foregroundStyle(TUI.accent)
+            }
+            .font(TUI.mono(14))
+            .frame(height: 30)
+            .contentShape(Rectangle())
+            .onTapGesture { showAccount = true }
         }
     }
 
