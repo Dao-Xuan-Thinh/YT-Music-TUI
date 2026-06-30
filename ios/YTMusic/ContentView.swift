@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var newPlaylistName = ""
     @State private var renameTarget: String?
     @State private var renameName = ""
+    @State private var showNowPlaying = false
 
     private let rowHeight: CGFloat = 30
 
@@ -62,6 +63,9 @@ struct ContentView: View {
                 renameTarget = nil
             }
             Button("Cancel", role: .cancel) { renameTarget = nil }
+        }
+        .fullScreenCover(isPresented: $showNowPlaying) {
+            NowPlayingScreen(vm: vm, playback: playback)
         }
     }
 
@@ -357,19 +361,23 @@ struct ContentView: View {
     private var nowPlaying: some View {
         VStack(spacing: 6) {
             HStack(spacing: 10) {
-                AsyncImage(url: playback.current?.thumbnailURL) { phase in
-                    if case .success(let img) = phase { img.resizable().scaledToFill() }
-                    else { TUI.panel }
+                HStack(spacing: 10) {
+                    AsyncImage(url: playback.current?.thumbnailURL) { phase in
+                        if case .success(let img) = phase { img.resizable().scaledToFill() }
+                        else { TUI.panel }
+                    }
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(playback.current?.title ?? "nothing playing")
+                            .font(TUI.mono(14, .bold)).lineLimit(1)
+                        Text(playback.current?.uploader ?? " ")
+                            .font(TUI.mono(12)).foregroundStyle(TUI.dim).lineLimit(1)
+                    }
+                    Spacer()
                 }
-                .frame(width: 48, height: 48)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(playback.current?.title ?? "nothing playing")
-                        .font(TUI.mono(14, .bold)).lineLimit(1)
-                    Text(playback.current?.uploader ?? " ")
-                        .font(TUI.mono(12)).foregroundStyle(TUI.dim).lineLimit(1)
-                }
-                Spacer()
+                .contentShape(Rectangle())
+                .onTapGesture { if playback.current != nil { showNowPlaying = true } }   // expand
                 Button { vm.toggleLikeCurrent() } label: {
                     Image(systemName: likedNow ? "heart.fill" : "heart").font(.title3)
                 }
