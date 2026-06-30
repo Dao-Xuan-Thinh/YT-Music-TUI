@@ -7,6 +7,7 @@ struct NowPlayingScreen: View {
     @ObservedObject var vm: PlayerViewModel
     @ObservedObject var playback: PlaybackService
     @ObservedObject private var library = LibraryStore.shared
+    @ObservedObject private var theme = ThemeManager.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var scrub: Double = 0
@@ -75,8 +76,12 @@ struct NowPlayingScreen: View {
     private var trackInfo: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(playback.current?.title ?? "nothing playing")
-                    .font(TUI.mono(18, .bold)).lineLimit(2)
+                WaveText(text: playback.current?.title ?? "nothing playing",
+                         palette: theme.current.wave,
+                         font: TUI.mono(18, .bold),
+                         fallback: TUI.fg,
+                         active: playback.isPlaying && playback.current != nil,
+                         lineLimit: 2)
                 Text(playback.current?.uploader ?? " ")
                     .font(TUI.mono(13)).foregroundStyle(TUI.dim).lineLimit(1)
             }

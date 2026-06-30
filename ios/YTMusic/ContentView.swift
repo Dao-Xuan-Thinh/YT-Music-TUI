@@ -4,6 +4,7 @@ struct ContentView: View {
     @StateObject private var vm = PlayerViewModel()
     @ObservedObject private var playback = PlaybackService.shared
     @ObservedObject private var library = LibraryStore.shared
+    @ObservedObject private var theme = ThemeManager.shared
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var query = ""
@@ -369,8 +370,12 @@ struct ContentView: View {
                     .frame(width: 48, height: 48)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(playback.current?.title ?? "nothing playing")
-                            .font(TUI.mono(14, .bold)).lineLimit(1)
+                        WaveText(text: playback.current?.title ?? "nothing playing",
+                                 palette: theme.current.wave,
+                                 font: TUI.mono(14, .bold),
+                                 fallback: TUI.fg,
+                                 active: playback.isPlaying && playback.current != nil,
+                                 lineLimit: 1)
                         Text(playback.current?.uploader ?? " ")
                             .font(TUI.mono(12)).foregroundStyle(TUI.dim).lineLimit(1)
                     }
@@ -433,6 +438,9 @@ struct ContentView: View {
             Text("q:\(i)/\(vm.queue.count)").foregroundStyle(TUI.dim)
             sep
             Text("\(Int(playback.volume * 100))%").foregroundStyle(TUI.dim)
+            sep
+            Text(theme.current.name).foregroundStyle(TUI.accent)
+                .onTapGesture { theme.cycle() }
             Spacer()
         }
         .font(TUI.mono(11))
