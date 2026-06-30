@@ -141,14 +141,17 @@ Run it: `cd ios && ./fetch-deps.sh && ./build.sh sim`. Remaining gate: a physica
 
 ## Milestones
 
-1. **Spike — extraction.** ✅ Host-validated **and** proven in-app on Simulator. Only the
-   physical-device run remains (Phase 3 below; needs an Apple ID for signing).
-2. **Playback.** `AVPlayer` plays that URL; `AVAudioSession` background mode;
+1. **Spike — extraction.** ✅ Host-validated, in-app on Simulator, and on a physical device.
+2. **Playback.** ✅ `AVPlayer` plays that URL; `AVAudioSession` background mode;
    lock-screen controls via `MPNowPlayingInfoCenter`/`MPRemoteCommandCenter`.
-3. **Search + results UI.** SwiftUI search → bridge `search()` → results list →
-   tap to play; queue + auto-advance.
-4. **Library.** Liked / playlists / recent / sessions (`LibraryStore`), mirroring
-   the desktop home tabs; resume.
+3. **Search + results UI.** ✅ SwiftUI search → bridge `search()` → results list →
+   tap to play; queue + auto-advance (+ M3.5/M3.6 fix rounds).
+4. **Library.** ✅ Liked / playlists / recent / sessions, reimplemented in Swift as
+   `LibraryStore` (Codable JSON in Documents, mirroring desktop `library.py`'s
+   `liked`/`playlists`/`recent`/`sessions` shapes). UI is a third **LIBRARY** tab with
+   `liked / playlists / recent / resume` sub-sections; ♥ toggle in the now-playing bar,
+   `+pl` saves the queue as a named playlist, sessions auto-save on backgrounding and
+   restore queue+position. Builds + runs on device.
 5. **Polish.** Now-playing screen, artwork, settings, themes.
 6. **Phase 2 (optional).** MPVKit backend for Opus/exact parity; offline files.
 

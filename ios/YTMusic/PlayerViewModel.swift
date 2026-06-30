@@ -3,7 +3,8 @@ import Foundation
 
 enum RepeatMode: String { case off, all }
 enum SearchSource: String, CaseIterable { case ytm, yt, both }
-enum Tab { case search, queue }
+enum Tab { case search, queue, library }
+enum LibrarySection: String, CaseIterable { case liked, playlists, recent, resume }
 
 /// Owns the search results AND the play queue (kept separate so searching never disturbs
 /// what's currently playing). Search/resolution run off-main via the Python bridge.
@@ -17,11 +18,13 @@ final class PlayerViewModel: ObservableObject {
     @Published var repeatMode: RepeatMode = .off
     @Published var source: SearchSource = .ytm
     @Published var tab: Tab = .search
+    @Published var librarySection: LibrarySection = .liked
     @Published var searching = false
     @Published var resolving = false
     @Published var errorMsg: String?
 
     let playback = PlaybackService.shared
+    let library = LibraryStore.shared
 
     private var resolveToken = 0
     private var prefetched: [String: Track] = [:]
@@ -33,7 +36,27 @@ final class PlayerViewModel: ObservableObject {
     }
 
     var playingID: String? { playback.current?.id }
-    var displayed: [SearchResult] { tab == .search ? results : queue }
+
+    /// The track list under the gesture cursor. Library's `playlists`/`resume` sub-sections
+    /// render their own row types (playlist names / sessions), so they have no track list here.
+    var displayed: [SearchResult] {
+        switch tab {
+        case .search:  return results
+        case .queue:   return queue
+        case .library:
+            switch librarySection {
+            case .liked:  return library.liked
+            case .recent: return library.recent
+            case .playlists, .resume: return []
+            }
+        }
+    }
+
+    /// The lite row of whatever is playing now (the queue item at `queueIndex`).
+    var currentResult: SearchResult? {
+        guard let i = queueIndex, queue.indices.contains(i) else { return nil }
+        return queue[i]
+    }
 
     // MARK: - Search / browse (updates `results` only)
 
@@ -66,12 +89,16 @@ final class PlayerViewModel: ObservableObject {
 
     // MARK: - Play
 
-    /// Play from the SEARCH list: promote `results` to the active queue, then play.
-    func playFromResults(at idx: Int) {
-        guard results.indices.contains(idx) else { return }
-        queue = results
+    /// Promote an arbitrary list to the active queue, then play `idx`. The shared entry
+    /// point for SEARCH and every LIBRARY section.
+    func playList(_ list: [SearchResult], at idx: Int) {
+        guard list.indices.contains(idx) else { return }
+        queue = list
         play(at: idx)
     }
+
+    /// Play from the SEARCH list: promote `results` to the active queue, then play.
+    func playFromResults(at idx: Int) { playList(results, at: idx) }
 
     /// Play from the QUEUE list (queue unchanged).
     func playFromQueue(at idx: Int) {
@@ -79,17 +106,18 @@ final class PlayerViewModel: ObservableObject {
         play(at: idx)
     }
 
-    private func play(at idx: Int) {
+    private func play(at idx: Int, resumeAt: Double = 0) {
         queueIndex = idx
         let r = queue[idx]
-        if let cached = prefetched[r.id] { startPlaying(cached); return }
+        library.addRecent(r)
+        if let cached = prefetched[r.id] { startPlaying(cached, startAt: resumeAt); return }
         // Stop old audio immediately + show loading (no lingering while resolving).
         playback.beginLoading(title: r.title, uploader: r.uploader,
                               thumbnail: r.thumbnail, duration: r.duration)
-        resolveAndPlay(id: r.id)
+        resolveAndPlay(id: r.id, resumeAt: resumeAt)
     }
 
-    private func resolveAndPlay(id: String) {
+    private func resolveAndPlay(id: String, resumeAt: Double = 0) {
         resolveToken &+= 1
         let token = resolveToken
         resolving = true
@@ -105,14 +133,14 @@ final class PlayerViewModel: ObservableObject {
                 guard let t = track, t.ok, t.streamAVURL != nil else {
                     self.errorMsg = track?.error ?? "Could not resolve a playable stream"; return
                 }
-                self.startPlaying(t)
+                self.startPlaying(t, startAt: resumeAt)
             }
         }
     }
 
-    private func startPlaying(_ track: Track) {
+    private func startPlaying(_ track: Track, startAt: Double = 0) {
         prefetched[track.id] = track
-        playback.play(track)
+        playback.play(track, startAt: startAt)
         prefetchNext()
     }
 
@@ -168,6 +196,53 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func playHighlighted() {
-        tab == .search ? playFromResults(at: highlightIndex) : playFromQueue(at: highlightIndex)
+        guard displayed.indices.contains(highlightIndex) else { return }
+        switch tab {
+        case .search:  playFromResults(at: highlightIndex)
+        case .queue:   playFromQueue(at: highlightIndex)
+        case .library: playList(displayed, at: highlightIndex)
+        }
+    }
+
+    // MARK: - Library actions
+
+    /// Toggle "liked" on the track that's playing now. Returns true if now liked.
+    @discardableResult
+    func toggleLikeCurrent() -> Bool {
+        guard let r = currentResult else { return false }
+        return library.toggleLike(r)
+    }
+
+    func likeHighlighted() {
+        guard displayed.indices.contains(highlightIndex) else { return }
+        library.toggleLike(displayed[highlightIndex])
+    }
+
+    /// Save the current queue under a name (create or overwrite).
+    func saveQueueAsPlaylist(name: String) {
+        guard !queue.isEmpty else { return }
+        library.savePlaylist(name: name, tracks: queue)
+    }
+
+    /// Load a saved playlist into the queue and start it.
+    func playPlaylist(_ p: Playlist) {
+        guard !p.tracks.isEmpty else { return }
+        tab = .queue
+        playList(p.tracks, at: 0)
+    }
+
+    /// Restore a saved session: its queue, index, and playback position.
+    func restore(_ s: Session) {
+        guard s.queue.indices.contains(s.index) else { return }
+        queue = s.queue
+        tab = .queue
+        play(at: s.index, resumeAt: s.position)
+    }
+
+    /// Snapshot the current queue + position as a resume session (called on backgrounding).
+    func saveCurrentSession() {
+        guard !queue.isEmpty, let i = queueIndex else { return }
+        let title = queue.indices.contains(i) ? queue[i].title : "session"
+        library.saveSession(queue: queue, index: i, position: playback.position, title: title)
     }
 }

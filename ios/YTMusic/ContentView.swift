@@ -3,6 +3,8 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var vm = PlayerViewModel()
     @ObservedObject private var playback = PlaybackService.shared
+    @ObservedObject private var library = LibraryStore.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var query = ""
     @FocusState private var searchFocused: Bool
@@ -12,6 +14,12 @@ struct ContentView: View {
     @State private var dragStartHighlight: Int?
     @State private var navMode = false   // true while long-press-drag owns the list
 
+    // Playlist save / rename prompts.
+    @State private var showSavePlaylist = false
+    @State private var newPlaylistName = ""
+    @State private var renameTarget: String?
+    @State private var renameName = ""
+
     private let rowHeight: CGFloat = 30
 
     var body: some View {
@@ -20,6 +28,8 @@ struct ContentView: View {
             VStack(spacing: 8) {
                 tabBar
                 if vm.tab == .search { searchRow }
+                if vm.tab == .library { librarySections }
+                if vm.tab == .queue, !vm.queue.isEmpty { queueActions }
                 TUIDivider()
                 list
                 TUIDivider()
@@ -34,6 +44,25 @@ struct ContentView: View {
         .tint(TUI.accent)
         .preferredColorScheme(.dark)
         .onChange(of: playback.position) { p in if !scrubbing { scrub = p } }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background { vm.saveCurrentSession() }
+        }
+        .alert("Save playlist", isPresented: $showSavePlaylist) {
+            TextField("name", text: $newPlaylistName)
+            Button("Save") { vm.saveQueueAsPlaylist(name: newPlaylistName) }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert("Rename playlist", isPresented: Binding(
+            get: { renameTarget != nil },
+            set: { if !$0 { renameTarget = nil } })
+        ) {
+            TextField("name", text: $renameName)
+            Button("Rename") {
+                if let t = renameTarget { library.renamePlaylist(old: t, new: renameName) }
+                renameTarget = nil
+            }
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+        }
     }
 
     // MARK: - Tab bar
@@ -42,8 +71,13 @@ struct ContentView: View {
         HStack(spacing: 14) {
             tabLabel("SEARCH", .search)
             tabLabel("QUEUE", .queue)
+            tabLabel("LIBRARY", .library)
             Spacer()
-            Text("♥ —").foregroundStyle(TUI.dim)
+            Text("♥ \(library.liked.count)")
+                .foregroundStyle(TUI.accent)
+                .onTapGesture {
+                    vm.tab = .library; vm.librarySection = .liked; vm.highlightIndex = 0
+                }
         }
         .font(TUI.mono(14, .bold))
     }
@@ -52,7 +86,32 @@ struct ContentView: View {
         let active = vm.tab == t
         return Text(active ? "[ \(title) ]" : title.lowercased())
             .foregroundStyle(active ? TUI.accent : TUI.dim)
-            .onTapGesture { vm.tab = t }
+            .onTapGesture { vm.tab = t; vm.highlightIndex = 0 }
+    }
+
+    // MARK: - Library sub-sections + queue actions
+
+    private var librarySections: some View {
+        HStack(spacing: 14) {
+            ForEach(LibrarySection.allCases, id: \.self) { s in
+                let active = vm.librarySection == s
+                Text(active ? "[\(s.rawValue)]" : s.rawValue)
+                    .foregroundStyle(active ? TUI.accent : TUI.dim)
+                    .onTapGesture { vm.librarySection = s; vm.highlightIndex = 0 }
+            }
+            Spacer()
+        }
+        .font(TUI.mono(12))
+    }
+
+    private var queueActions: some View {
+        HStack {
+            Spacer()
+            Text("+pl")
+                .font(TUI.mono(12, .bold))
+                .foregroundStyle(TUI.accent)
+                .onTapGesture { newPlaylistName = ""; showSavePlaylist = true }
+        }
     }
 
     // MARK: - Search
@@ -81,18 +140,13 @@ struct ContentView: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
-    // MARK: - Results / queue list (shared) with gesture navigation
+    // MARK: - List (tracks / playlists / sessions) with gesture navigation
 
     private var list: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if let e = vm.errorMsg, vm.displayed.isEmpty {
-                        Text(e).foregroundStyle(TUI.warn).padding(.vertical, 8)
-                    }
-                    ForEach(Array(vm.displayed.enumerated()), id: \.element.id) { idx, r in
-                        row(idx, r)
-                    }
+                    listBody
                 }
             }
             .scrollDisabled(navMode)
@@ -105,6 +159,58 @@ struct ContentView: View {
             }
         }
         .frame(maxHeight: .infinity)
+    }
+
+    @ViewBuilder private var listBody: some View {
+        if vm.tab == .library && vm.librarySection == .playlists {
+            playlistRows
+        } else if vm.tab == .library && vm.librarySection == .resume {
+            sessionRows
+        } else {
+            if let e = vm.errorMsg, vm.displayed.isEmpty {
+                Text(e).foregroundStyle(TUI.warn).padding(.vertical, 8)
+            } else if vm.displayed.isEmpty {
+                Text(emptyHint).foregroundStyle(TUI.dim).padding(.vertical, 8)
+            }
+            ForEach(Array(vm.displayed.enumerated()), id: \.element.id) { idx, r in
+                trackRow(idx, r)
+            }
+        }
+    }
+
+    private var emptyHint: String {
+        switch vm.tab {
+        case .search: return ""
+        case .queue:  return "queue is empty"
+        case .library:
+            switch vm.librarySection {
+            case .liked:  return "no liked tracks yet — ♥ one while it plays"
+            case .recent: return "nothing played yet"
+            default:      return ""
+            }
+        }
+    }
+
+    // A track row, plus a library context menu (unlike / remove) when in the Library tab.
+    @ViewBuilder private func trackRow(_ idx: Int, _ r: SearchResult) -> some View {
+        if vm.tab == .library {
+            row(idx, r).contextMenu {
+                if vm.librarySection == .recent {
+                    Button { library.toggleLike(r) } label: {
+                        Label(library.isLiked(r.id) ? "Unlike" : "Like", systemImage: "heart")
+                    }
+                    Button(role: .destructive) { library.removeRecent(r.id) } label: {
+                        Label("Remove", systemImage: "trash")
+                    }
+                } else {
+                    Button(role: .destructive) { library.toggleLike(r) } label: {
+                        Label("Unlike", systemImage: "heart.slash")
+                    }
+                }
+            }
+        } else {
+            row(idx, r)
+        }
     }
 
     private func row(_ idx: Int, _ r: SearchResult) -> some View {
@@ -128,7 +234,66 @@ struct ContentView: View {
     }
 
     private func playRow(_ idx: Int) {
-        vm.tab == .search ? vm.playFromResults(at: idx) : vm.playFromQueue(at: idx)
+        switch vm.tab {
+        case .search:  vm.playFromResults(at: idx)
+        case .queue:   vm.playFromQueue(at: idx)
+        case .library: vm.playList(vm.displayed, at: idx)
+        }
+    }
+
+    // Playlist name rows (Library → playlists).
+    @ViewBuilder private var playlistRows: some View {
+        if library.playlists.isEmpty {
+            Text("no playlists — save a queue with +pl")
+                .foregroundStyle(TUI.dim).padding(.vertical, 8)
+        }
+        ForEach(library.playlists) { p in
+            HStack(spacing: 8) {
+                Text("≡").foregroundStyle(TUI.accent)
+                Text(p.name).foregroundStyle(TUI.fg).lineLimit(1)
+                Spacer(minLength: 6)
+                Text("\(p.tracks.count)").foregroundStyle(TUI.dim)
+            }
+            .font(TUI.mono(13))
+            .frame(height: rowHeight)
+            .contentShape(Rectangle())
+            .onTapGesture { vm.playPlaylist(p) }
+            .contextMenu {
+                Button { vm.playPlaylist(p) } label: { Label("Play", systemImage: "play") }
+                Button { renameTarget = p.name; renameName = p.name } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+                Button(role: .destructive) { library.deletePlaylist(name: p.name) } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
+    }
+
+    // Saved-session rows (Library → resume).
+    @ViewBuilder private var sessionRows: some View {
+        if library.sessions.isEmpty {
+            Text("no saved sessions").foregroundStyle(TUI.dim).padding(.vertical, 8)
+        }
+        ForEach(library.sessions) { s in
+            HStack(spacing: 8) {
+                Text("⏵").foregroundStyle(TUI.accent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(s.title).foregroundStyle(TUI.fg).lineLimit(1).font(TUI.mono(13))
+                    Text("\(s.queue.count) tracks · \(timeString(s.position))")
+                        .foregroundStyle(TUI.dim).font(TUI.mono(10))
+                }
+                Spacer(minLength: 6)
+            }
+            .frame(height: rowHeight + 6)
+            .contentShape(Rectangle())
+            .onTapGesture { vm.restore(s) }
+            .contextMenu {
+                Button(role: .destructive) { library.deleteSession(id: s.id) } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
     }
 
     /// Long-press-then-drag moves the highlighter; scrolling is suspended while it's active
@@ -166,6 +331,11 @@ struct ContentView: View {
                         .font(TUI.mono(12)).foregroundStyle(TUI.dim).lineLimit(1)
                 }
                 Spacer()
+                Button { vm.toggleLikeCurrent() } label: {
+                    Image(systemName: likedNow ? "heart.fill" : "heart").font(.title3)
+                }
+                .foregroundStyle(TUI.accent)
+                .disabled(vm.currentResult == nil)
             }
 
             Slider(value: $scrub, in: 0...max(playback.duration, 1), onEditingChanged: { ed in
@@ -191,6 +361,11 @@ struct ContentView: View {
             .disabled(playback.current == nil)
             .padding(.top, 2)
         }
+    }
+
+    private var likedNow: Bool {
+        guard let r = vm.currentResult else { return false }
+        return library.isLiked(r.id)
     }
 
     // MARK: - Footer

@@ -31,6 +31,7 @@ final class PlaybackService: ObservableObject {
     private var rateObs: NSKeyValueObservation?
     private var artwork: MPMediaItemArtwork?
     private var endedFired = false   // de-dupe end detection (metadata vs AVPlayer)
+    private var pendingSeek: Double?  // resume offset, applied once the item is ready
 
     private init() {
         configureAudioSession()
@@ -40,16 +41,18 @@ final class PlaybackService: ObservableObject {
 
     // MARK: - Public transport
 
-    func play(_ track: Track) {
+    func play(_ track: Track, startAt: Double = 0) {
         guard let url = track.streamAVURL else {
             NSLog("[playback] track has no stream URL"); return
         }
         current = track
-        position = 0
+        position = startAt > 0 ? startAt : 0
         duration = Double(track.duration)
         ready = false
         endedFired = false
         artwork = nil
+        // Applied once the item reaches `.readyToPlay` (seeking before then is unreliable).
+        pendingSeek = startAt > 0 ? startAt : nil
 
         activateSession()
         let item = AVPlayerItem(url: url)
@@ -180,6 +183,8 @@ final class PlaybackService: ObservableObject {
                     self.ready = true
                     // Only fall back to AVPlayer's duration when metadata had none.
                     if self.duration <= 0, let d = dur, d.isFinite, d > 0 { self.duration = d }
+                    // Apply a pending resume offset now that seeking is reliable.
+                    if let s = self.pendingSeek { self.pendingSeek = nil; self.seek(to: s) }
                     self.updateNowPlaying()
                 } else if status == .failed {
                     NSLog("[playback] item failed: %@", String(describing: err))
