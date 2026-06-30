@@ -19,4 +19,7 @@ char *python_search(const char *query, const char *source);
 /// Caller owns the returned C string (free it). Never returns NULL.
 char *python_browse(const char *url);
 
+/// "For You" home feed → JSON list of lite track dicts. Caller owns the returned C string.
+char *python_home(void);
+
 #endif /* PythonBootstrap_h */

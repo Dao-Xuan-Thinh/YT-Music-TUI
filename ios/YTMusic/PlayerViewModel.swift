@@ -3,7 +3,7 @@ import Foundation
 
 enum RepeatMode: String { case off, all }
 enum SearchSource: String, CaseIterable { case ytm, yt, both }
-enum Tab { case search, queue, library }
+enum Tab { case search, queue, library, foryou }
 enum LibrarySection: String, CaseIterable { case liked, playlists, recent, resume }
 
 /// Owns the search results AND the play queue (kept separate so searching never disturbs
@@ -23,6 +23,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var searching = false
     @Published var resolving = false
     @Published var errorMsg: String?
+    @Published var home: [SearchResult] = []       // FOR YOU feed (anonymous home)
+    @Published var homeLoading = false
 
     let playback = PlaybackService.shared
     let library = LibraryStore.shared
@@ -45,6 +47,7 @@ final class PlayerViewModel: ObservableObject {
         switch tab {
         case .search:  return results
         case .queue:   return queue
+        case .foryou:  return home
         case .library:
             switch librarySection {
             case .liked:  return library.liked
@@ -91,6 +94,22 @@ final class PlayerViewModel: ObservableObject {
     func cycleSource() {
         let all = SearchSource.allCases
         source = all[(all.firstIndex(of: source)! + 1) % all.count]
+    }
+
+    /// Load the "For You" home feed (lazy: skipped if already loaded unless `force`).
+    func loadHome(force: Bool = false) {
+        guard force || home.isEmpty, !homeLoading else { return }
+        homeLoading = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let c = python_home()
+            let json = c.map { String(cString: $0) } ?? "[]"
+            if let c { free(c) }
+            let list = SearchResult.decodeList(json)
+            DispatchQueue.main.async {
+                self.homeLoading = false
+                self.home = list
+            }
+        }
     }
 
     // MARK: - Play
@@ -204,9 +223,9 @@ final class PlayerViewModel: ObservableObject {
     func playHighlighted() {
         guard displayed.indices.contains(highlightIndex) else { return }
         switch tab {
-        case .search:  playFromResults(at: highlightIndex)
-        case .queue:   playFromQueue(at: highlightIndex)
-        case .library: playList(displayed, at: highlightIndex)
+        case .search:           playFromResults(at: highlightIndex)
+        case .queue:            playFromQueue(at: highlightIndex)
+        case .library, .foryou: playList(displayed, at: highlightIndex)
         }
     }
 

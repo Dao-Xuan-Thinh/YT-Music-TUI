@@ -32,6 +32,7 @@ struct ContentView: View {
                 tabBar
                 if vm.tab == .search { searchRow }
                 if vm.tab == .library { librarySections }
+                if vm.tab == .foryou { forYouHeader }
                 if vm.tab == .queue, !vm.queue.isEmpty { queueActions }
                 TUIDivider()
                 list
@@ -50,6 +51,7 @@ struct ContentView: View {
         .onChange(of: scenePhase) { phase in
             if phase == .background { vm.saveCurrentSession() }
         }
+        .onChange(of: vm.tab) { t in if t == .foryou { vm.loadHome() } }
         .alert("Save playlist", isPresented: $showSavePlaylist) {
             TextField("name", text: $newPlaylistName)
             Button("Save") { vm.saveQueueAsPlaylist(name: newPlaylistName) }
@@ -77,7 +79,8 @@ struct ContentView: View {
     // MARK: - Tab bar
 
     private var tabBar: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
+            tabLabel("FOR YOU", .foryou)
             tabLabel("SEARCH", .search)
             tabLabel("QUEUE", .queue)
             tabLabel("LIBRARY", .library)
@@ -93,7 +96,7 @@ struct ContentView: View {
                     vm.openedPlaylist = nil; vm.highlightIndex = 0
                 }
         }
-        .font(TUI.mono(14, .bold))
+        .font(TUI.mono(13, .bold))
     }
 
     private func tabLabel(_ title: String, _ t: Tab) -> some View {
@@ -126,6 +129,17 @@ struct ContentView: View {
                 .foregroundStyle(TUI.accent)
                 .onTapGesture { newPlaylistName = ""; showSavePlaylist = true }
         }
+    }
+
+    private var forYouHeader: some View {
+        HStack(spacing: 8) {
+            Text("for you").foregroundStyle(TUI.dim)
+            if vm.homeLoading { ProgressView().controlSize(.mini).tint(TUI.accent) }
+            Spacer()
+            Image(systemName: "arrow.clockwise").foregroundStyle(TUI.accent)
+                .onTapGesture { vm.loadHome(force: true) }
+        }
+        .font(TUI.mono(12))
     }
 
     // MARK: - Search
@@ -184,7 +198,10 @@ struct ContentView: View {
         } else if vm.tab == .library && vm.librarySection == .resume {
             sessionRows
         } else {
-            if let e = vm.errorMsg, vm.displayed.isEmpty {
+            if vm.tab == .foryou && vm.homeLoading && vm.home.isEmpty {
+                HStack { Spacer(); ProgressView().tint(TUI.accent); Spacer() }
+                    .padding(.vertical, 24)
+            } else if let e = vm.errorMsg, vm.displayed.isEmpty {
                 Text(e).foregroundStyle(TUI.warn).padding(.vertical, 8)
             } else if vm.displayed.isEmpty {
                 Text(emptyHint).foregroundStyle(TUI.dim).padding(.vertical, 8)
@@ -199,6 +216,7 @@ struct ContentView: View {
         switch vm.tab {
         case .search: return ""
         case .queue:  return "queue is empty"
+        case .foryou: return "tap ⟳ to load your feed"
         case .library:
             switch vm.librarySection {
             case .liked:  return "no liked tracks yet — ♥ one while it plays"
@@ -257,9 +275,9 @@ struct ContentView: View {
 
     private func playRow(_ idx: Int) {
         switch vm.tab {
-        case .search:  vm.playFromResults(at: idx)
-        case .queue:   vm.playFromQueue(at: idx)
-        case .library: vm.playList(vm.displayed, at: idx)
+        case .search:           vm.playFromResults(at: idx)
+        case .queue:            vm.playFromQueue(at: idx)
+        case .library, .foryou: vm.playList(vm.displayed, at: idx)
         }
     }
 

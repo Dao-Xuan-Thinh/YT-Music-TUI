@@ -206,6 +206,28 @@ def search(query: str, source: str = "ytm", n: int = 15) -> str:
         return json.dumps([])
 
 
+def home(_: str = "") -> str:
+    """"For You" feed: the YouTube Music home feed (anonymous) flattened to a JSON list of
+    lite track dicts. Mirrors the desktop `ytm_home()`. Personalizes once signed in."""
+    try:
+        from ytmusicapi import YTMusic
+        sections = YTMusic().get_home(limit=6)
+        out = []
+        for sec in sections:
+            for it in (sec.get("contents") or []):
+                vid = it.get("videoId")
+                if not vid:
+                    continue   # albums / playlists / artists have no videoId — skip
+                arts = ", ".join(a.get("name", "") for a in (it.get("artists") or []) if a.get("name"))
+                thumbs = it.get("thumbnails") or []
+                out.append(_lite(vid, it.get("title"), arts, it.get("duration_seconds"),
+                                 thumbs[-1].get("url") if thumbs else None))
+        return json.dumps(_dedupe(out))
+    except Exception as e:
+        print("HOME_ERROR:", type(e).__name__, e, flush=True)
+        return json.dumps([])
+
+
 def _ytm_playlist(playlist_id: str) -> list:
     """Full playlist via ytmusicapi (paginates all tracks — no 100-ish cap)."""
     from ytmusicapi import YTMusic
