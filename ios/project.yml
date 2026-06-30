@@ -41,6 +41,7 @@ targets:
         # MPRemoteCommandCenter callbacks for this spike.
         SWIFT_VERSION: "5.0"
         PRODUCT_BUNDLE_IDENTIFIER: com.ytmtui.YTMusic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         # Allow loading the embedded Python dylib + .so-derived frameworks.

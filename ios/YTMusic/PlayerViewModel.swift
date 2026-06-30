@@ -19,6 +19,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var source: SearchSource = .ytm
     @Published var tab: Tab = .search
     @Published var librarySection: LibrarySection = .liked
+    @Published var openedPlaylist: String?         // name of the playlist being viewed
     @Published var searching = false
     @Published var resolving = false
     @Published var errorMsg: String?
@@ -47,7 +48,11 @@ final class PlayerViewModel: ObservableObject {
             switch librarySection {
             case .liked:  return library.liked
             case .recent: return library.recent
-            case .playlists, .resume: return []
+            case .playlists:
+                // When a playlist is opened, its tracks are the displayed list.
+                if let n = openedPlaylist, let p = library.playlist(named: n) { return p.tracks }
+                return []
+            case .resume: return []
             }
         }
     }

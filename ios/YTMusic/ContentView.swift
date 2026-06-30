@@ -76,7 +76,8 @@ struct ContentView: View {
             Text("♥ \(library.liked.count)")
                 .foregroundStyle(TUI.accent)
                 .onTapGesture {
-                    vm.tab = .library; vm.librarySection = .liked; vm.highlightIndex = 0
+                    vm.tab = .library; vm.librarySection = .liked
+                    vm.openedPlaylist = nil; vm.highlightIndex = 0
                 }
         }
         .font(TUI.mono(14, .bold))
@@ -86,7 +87,7 @@ struct ContentView: View {
         let active = vm.tab == t
         return Text(active ? "[ \(title) ]" : title.lowercased())
             .foregroundStyle(active ? TUI.accent : TUI.dim)
-            .onTapGesture { vm.tab = t; vm.highlightIndex = 0 }
+            .onTapGesture { vm.tab = t; vm.openedPlaylist = nil; vm.highlightIndex = 0 }
     }
 
     // MARK: - Library sub-sections + queue actions
@@ -97,7 +98,7 @@ struct ContentView: View {
                 let active = vm.librarySection == s
                 Text(active ? "[\(s.rawValue)]" : s.rawValue)
                     .foregroundStyle(active ? TUI.accent : TUI.dim)
-                    .onTapGesture { vm.librarySection = s; vm.highlightIndex = 0 }
+                    .onTapGesture { vm.librarySection = s; vm.openedPlaylist = nil; vm.highlightIndex = 0 }
             }
             Spacer()
         }
@@ -118,7 +119,10 @@ struct ContentView: View {
 
     private var searchRow: some View {
         HStack(spacing: 6) {
-            Text("/").foregroundStyle(TUI.accent)
+            Text("/")
+                .foregroundStyle(TUI.accent)
+                .contentShape(Rectangle())
+                .onTapGesture { query = ""; searchFocused = true }   // tap to clear
             TextField("", text: $query,
                       prompt: Text("search or paste url").foregroundColor(TUI.dim))
                 .focused($searchFocused)
@@ -163,7 +167,7 @@ struct ContentView: View {
 
     @ViewBuilder private var listBody: some View {
         if vm.tab == .library && vm.librarySection == .playlists {
-            playlistRows
+            if vm.openedPlaylist != nil { playlistDetail } else { playlistRows }
         } else if vm.tab == .library && vm.librarySection == .resume {
             sessionRows
         } else {
@@ -195,16 +199,21 @@ struct ContentView: View {
     @ViewBuilder private func trackRow(_ idx: Int, _ r: SearchResult) -> some View {
         if vm.tab == .library {
             row(idx, r).contextMenu {
-                if vm.librarySection == .recent {
+                switch vm.librarySection {
+                case .recent:
                     Button { library.toggleLike(r) } label: {
                         Label(library.isLiked(r.id) ? "Unlike" : "Like", systemImage: "heart")
                     }
                     Button(role: .destructive) { library.removeRecent(r.id) } label: {
                         Label("Remove", systemImage: "trash")
                     }
-                } else {
+                case .liked:
                     Button(role: .destructive) { library.toggleLike(r) } label: {
                         Label("Unlike", systemImage: "heart.slash")
+                    }
+                default:   // playlist detail
+                    Button { library.toggleLike(r) } label: {
+                        Label(library.isLiked(r.id) ? "Unlike" : "Like", systemImage: "heart")
                     }
                 }
             }
@@ -241,7 +250,7 @@ struct ContentView: View {
         }
     }
 
-    // Playlist name rows (Library → playlists).
+    // Playlist name rows (Library → playlists). Tap opens the playlist; play is explicit.
     @ViewBuilder private var playlistRows: some View {
         if library.playlists.isEmpty {
             Text("no playlists — save a queue with +pl")
@@ -253,11 +262,15 @@ struct ContentView: View {
                 Text(p.name).foregroundStyle(TUI.fg).lineLimit(1)
                 Spacer(minLength: 6)
                 Text("\(p.tracks.count)").foregroundStyle(TUI.dim)
+                Image(systemName: "play.fill")
+                    .font(TUI.mono(11)).foregroundStyle(TUI.accent)
+                    .contentShape(Rectangle())
+                    .onTapGesture { vm.playPlaylist(p) }
             }
             .font(TUI.mono(13))
             .frame(height: rowHeight)
             .contentShape(Rectangle())
-            .onTapGesture { vm.playPlaylist(p) }
+            .onTapGesture { vm.openedPlaylist = p.name; vm.highlightIndex = 0 }   // open, don't play
             .contextMenu {
                 Button { vm.playPlaylist(p) } label: { Label("Play", systemImage: "play") }
                 Button { renameTarget = p.name; renameName = p.name } label: {
@@ -267,6 +280,32 @@ struct ContentView: View {
                     Label("Delete", systemImage: "trash")
                 }
             }
+        }
+    }
+
+    // An opened playlist's tracks, with a back row + play-all. Tapping a track plays the
+    // playlist from there.
+    @ViewBuilder private var playlistDetail: some View {
+        let name = vm.openedPlaylist ?? ""
+        HStack(spacing: 8) {
+            Text("‹ back").foregroundStyle(TUI.accent)
+                .contentShape(Rectangle())
+                .onTapGesture { vm.openedPlaylist = nil; vm.highlightIndex = 0 }
+            Spacer(minLength: 6)
+            Text(name).foregroundStyle(TUI.dim).lineLimit(1)
+            Spacer(minLength: 6)
+            Text("▶ play").foregroundStyle(TUI.accent)
+                .contentShape(Rectangle())
+                .onTapGesture { if let p = library.playlist(named: name) { vm.playPlaylist(p) } }
+        }
+        .font(TUI.mono(12, .bold))
+        .frame(height: rowHeight)
+
+        if vm.displayed.isEmpty {
+            Text("empty playlist").foregroundStyle(TUI.dim).padding(.vertical, 8)
+        }
+        ForEach(Array(vm.displayed.enumerated()), id: \.element.id) { idx, r in
+            trackRow(idx, r)
         }
     }
 
