@@ -35,4 +35,7 @@ char *python_artist(const char *channel_id);
 /// Album tracks for a browseId → JSON list of lite song dicts. Caller owns it.
 char *python_album(const char *browse_id);
 
+/// Real durations for a comma-separated videoId list → JSON {id:seconds}. Caller owns it.
+char *python_durations(const char *ids_csv);
+
 #endif /* PythonBootstrap_h */

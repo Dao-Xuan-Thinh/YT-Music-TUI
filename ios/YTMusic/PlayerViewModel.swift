@@ -127,6 +127,30 @@ final class PlayerViewModel: ObservableObject {
             DispatchQueue.main.async {
                 self.homeLoading = false
                 self.home = list
+                self.backfillDurations(\.home)   // home API omits durations → fetch real ones
+            }
+        }
+    }
+
+    /// The home feed doesn't include song durations, so fetch the real values in one
+    /// background batch and patch the rows (one UI update). Cap the batch to stay light.
+    private func backfillDurations(_ keyPath: ReferenceWritableKeyPath<PlayerViewModel, [SearchResult]>) {
+        let ids = self[keyPath: keyPath]
+            .filter { $0.kind == "song" && $0.duration == 0 }
+            .prefix(30).map { $0.id }
+        guard !ids.isEmpty else { return }
+        let csv = ids.joined(separator: ",")
+        DispatchQueue.global(qos: .utility).async {
+            let c = python_durations(csv)
+            let json = c.map { String(cString: $0) } ?? "{}"
+            if let c { free(c) }
+            let map = (try? JSONDecoder().decode([String: Int].self, from: Data(json.utf8))) ?? [:]
+            guard !map.isEmpty else { return }
+            DispatchQueue.main.async {
+                self[keyPath: keyPath] = self[keyPath: keyPath].map { r in
+                    if r.duration == 0, let s = map[r.id] { return r.with(duration: s) }
+                    return r
+                }
             }
         }
     }

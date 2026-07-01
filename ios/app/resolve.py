@@ -337,6 +337,23 @@ def _thumb(d):
     return thumbs[-1].get("url") if thumbs else ""
 
 
+def durations(ids_csv: str) -> str:
+    """Fetch real durations for a comma-separated list of videoIds → JSON {id: seconds}.
+    The home feed omits durations, so For You backfills them here. Uses ytmusicapi
+    get_song (a light player call, anonymous-ok); one bridge call for the whole batch."""
+    out = {}
+    yt = _ytm()
+    for vid in [v.strip() for v in (ids_csv or "").split(",") if v.strip()]:
+        try:
+            det = (yt.get_song(vid) or {}).get("videoDetails") or {}
+            secs = int(det.get("lengthSeconds") or 0)
+            if secs:
+                out[vid] = secs
+        except Exception:
+            continue
+    return json.dumps(out)
+
+
 def search_artist(query: str) -> str:
     """Top artist match for a query → JSON {name, channelId, thumbnail} or {} if none."""
     try:

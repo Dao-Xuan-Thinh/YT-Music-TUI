@@ -44,6 +44,12 @@ struct SearchResult: Codable, Identifiable, Equatable {
     var isPlaylist: Bool { kind == "playlist" }
     var thumbnailURL: URL? { thumbnail.isEmpty ? nil : URL(string: thumbnail) }
 
+    /// A copy with a filled-in duration (used to backfill For-You feed rows).
+    func with(duration newDuration: Int) -> SearchResult {
+        SearchResult(id: id, title: title, uploader: uploader, duration: newDuration,
+                     thumbnail: thumbnail, kind: kind, playlistId: playlistId)
+    }
+
     /// Decode a `[SearchResult]` from the search JSON string (empty on failure).
     static func decodeList(_ json: String) -> [SearchResult] {
         guard let data = json.data(using: .utf8) else { return [] }
