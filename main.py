@@ -626,6 +626,7 @@ class ArtistScreen(ModalScreen):
         tbl.focus()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        event.stop()   # don't let it bubble to the app's results-table handler
         key = event.row_key.value
         if not key or key.startswith('h'):
             return
@@ -1961,6 +1962,11 @@ class YTMApp(App):
     # ── Playback ──────────────────────────────────────────────────────────
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        # Only handle the main results table. A modal's DataTable (e.g. the artist page's
+        # 'artist-table', keyed 'r8') bubbles its RowSelected up to the app too; handling it
+        # here would int() a non-numeric key and crash.
+        if event.data_table.id != 'results-table':
+            return
         key = event.row_key.value
         if key is None:
             return
