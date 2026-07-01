@@ -392,29 +392,39 @@ class KeybindingsScreen(ModalScreen):
 # ── Lyrics screen ─────────────────────────────────────────────────────────────
 
 class LyricsScreen(ModalScreen):
-    """Scrollable lyrics for the current track."""
+    """Lyrics for the current track. Follows playback (highlights the current line +
+    auto-scrolls) when the song has synced lyrics; 't' toggles an English (or chosen-language)
+    translation under each line; 'g' changes the target language."""
     BINDINGS = [
         Binding('escape', 'dismiss_modal', 'Close'),
         Binding('q', 'dismiss_modal', 'Close'),
         Binding('L', 'dismiss_modal', 'Close'),
+        Binding('t', 'toggle_translate', 'Translate'),
+        Binding('g', 'change_lang', 'Language'),
     ]
 
     CSS = """
     LyricsScreen { align: center middle; }
     #lyrics-box {
-        width: 72; height: 30;
+        width: 76; height: 32;
         border: round $accent; padding: 1 2; background: $surface;
     }
-    #lyrics-title { text-style: bold; margin-bottom: 1; }
-    #lyrics-body { height: 1fr; }
-    #lyrics-src { color: $text-muted; margin-top: 1; }
+    #lyrics-title { text-style: bold; }
+    #lyrics-hint { color: $text-muted; margin-bottom: 1; }
+    #lyrics-scroll { height: 1fr; }
     """
 
-    def __init__(self, title, lyrics, source=''):
+    def __init__(self, title, data, video_id):
         super().__init__()
         self._title = title
-        self._lyrics = lyrics
-        self._source = source
+        self._data = data            # {'synced','lines','text','source'}
+        self._vid = video_id
+        self._lines = data.get('lines') or []
+        self._synced = bool(data.get('synced'))
+        self._translated = None      # list[str] aligned to lines, or None
+        self._show_trans = False
+        self._lang = 'en'
+        self._cur = -1
 
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
@@ -423,10 +433,130 @@ class LyricsScreen(ModalScreen):
         from textual.containers import VerticalScroll
         with Vertical(id='lyrics-box'):
             yield Label(f'♪ {self._title}', id='lyrics-title')
-            with VerticalScroll(id='lyrics-body'):
-                yield Static(self._lyrics or '(no lyrics)')
-            if self._source:
-                yield Static(f'source: {self._source}', id='lyrics-src')
+            yield Label(' ', id='lyrics-hint')
+            with VerticalScroll(id='lyrics-scroll'):
+                yield Static('…', id='lyrics-body')
+
+    def on_mount(self) -> None:
+        self._update_hint()
+        self._refresh_lyrics()
+        if self._synced:
+            self.set_interval(0.25, self._tick)
+
+    def _update_hint(self) -> None:
+        src = self._data.get('source') or ''
+        bits = []
+        if self._synced:
+            bits.append('following')
+        bits.append(f't: translate ({self._lang}) {"on" if self._show_trans else "off"}')
+        bits.append('g: language')
+        hint = '  ·  '.join(bits)
+        try:
+            self.query_one('#lyrics-hint', Label).update(f'{src}   {hint}' if src else hint)
+        except NoMatches:
+            pass
+
+    def _current_index(self) -> int:
+        if not self._synced:
+            return -1
+        pos_ms = getattr(self.app, 'position', 0.0) * 1000
+        cur = -1
+        for i, ln in enumerate(self._lines):
+            if ln['start'] <= pos_ms:
+                cur = i
+            else:
+                break
+        return cur
+
+    def _refresh_lyrics(self) -> None:
+        from rich.text import Text
+        try:
+            body = self.query_one('#lyrics-body', Static)
+        except NoMatches:
+            return
+        if not self._lines:
+            body.update('(no lyrics)')
+            return
+        # Build a Rich Text (styled per line) rather than a markup string, so lyric text
+        # containing '[' can never break parsing.
+        t = Text()
+        for i, ln in enumerate(self._lines):
+            text = ln['text'] or ' '
+            if self._synced and i == self._cur:
+                t.append('▸ ' + text + '\n', style='bold')
+            elif self._synced and i < self._cur:
+                t.append(text + '\n', style='dim')
+            else:
+                t.append(text + '\n')
+            if self._show_trans and self._translated and i < len(self._translated):
+                tr = self._translated[i]
+                if tr and tr != text:
+                    t.append('   ' + tr + '\n', style='dim italic')
+        body.update(t)
+
+    def _tick(self) -> None:
+        cur = self._current_index()
+        if cur != self._cur:
+            self._cur = cur
+            self._refresh_lyrics()
+            self._scroll_to_current()
+
+    def _scroll_to_current(self) -> None:
+        if self._cur < 0:
+            return
+        # Approximate display row: each earlier line is 1 row, +1 if it has a shown
+        # translation.
+        row = 0
+        for i in range(self._cur):
+            row += 1
+            if self._show_trans and self._translated and i < len(self._translated):
+                tr = self._translated[i]
+                if tr and tr != (self._lines[i]['text'] or ' '):
+                    row += 1
+        try:
+            self.query_one('#lyrics-scroll').scroll_to(
+                y=max(0, row - 6), animate=False)
+        except NoMatches:
+            pass
+
+    def action_toggle_translate(self) -> None:
+        self._show_trans = not self._show_trans
+        self._update_hint()
+        if self._show_trans and self._translated is None:
+            self._fetch_translation()
+        else:
+            self._refresh_lyrics()
+
+    def action_change_lang(self) -> None:
+        def _after(code):
+            if code:
+                self._lang = code.strip().lower()
+                self._translated = None
+                self._update_hint()
+                if self._show_trans:
+                    self._fetch_translation()
+        self.app.push_screen(
+            NameScreen('Translate to (language code, e.g. en, vi, ja):', self._lang), _after)
+
+    def _fetch_translation(self) -> None:
+        try:
+            self.query_one('#lyrics-hint', Label).update('[dim]translating…[/]')
+        except NoMatches:
+            pass
+        text = self._data.get('text') or ''
+        lang = self._lang
+
+        def _run():
+            translated = youtube.translate_text(text, lang)
+            lines = translated.split('\n') if translated else []
+            self.app.call_from_thread(self._apply_translation, lines)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _apply_translation(self, lines) -> None:
+        self._translated = lines
+        self._update_hint()
+        self._refresh_lyrics()
 
 
 # ── Artist screen ─────────────────────────────────────────────────────────────
@@ -2147,8 +2277,7 @@ class YTMApp(App):
                 self.call_from_thread(self._set_status, 'No lyrics available for this track.')
                 return
             self.call_from_thread(
-                self.push_screen,
-                LyricsScreen(track['title'], data['lyrics'], data.get('source', '')))
+                self.push_screen, LyricsScreen(track['title'], data, track['id']))
             self.call_from_thread(self._set_status, 'Playing' if self.now_playing else 'Ready')
 
         threading.Thread(target=_run, daemon=True).start()

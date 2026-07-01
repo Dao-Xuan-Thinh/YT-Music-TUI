@@ -693,8 +693,12 @@ def ytm_radio(video_id, limit=25):
 
 
 def ytm_lyrics(video_id):
-    """Lyrics for a video → {'lyrics': str, 'source': str} or None if unavailable.
-    Resolves the lyrics browseId via a 1-item watch playlist, then get_lyrics."""
+    """Lyrics for a video, or None if unavailable. Requests timestamps so playback can
+    follow along when the song has synced lyrics.
+
+    Returns {'synced': bool, 'lines': [{'text','start','end'}], 'text': str, 'source': str}.
+    `start`/`end` are milliseconds (0 when not synced). `text` is the joined plain lyrics.
+    """
     try:
         with _ytm_lock:
             yt = _get_ytm()
@@ -702,14 +706,48 @@ def ytm_lyrics(video_id):
             bid = wp.get('lyrics')
             if not bid:
                 return None
-            lyr = yt.get_lyrics(bid)
+            lyr = yt.get_lyrics(bid, timestamps=True)
     except Exception:
         return None
     if not lyr:
         return None
-    text = lyr.get('lyrics') if isinstance(lyr, dict) else getattr(lyr, 'lyrics', None)
-    source = (lyr.get('source') if isinstance(lyr, dict) else getattr(lyr, 'source', '')) or ''
-    return {'lyrics': text, 'source': source} if text else None
+
+    def _g(obj, k):
+        return obj.get(k) if isinstance(obj, dict) else getattr(obj, k, None)
+
+    source = _g(lyr, 'source') or ''
+    if _g(lyr, 'hasTimestamps'):
+        lines = []
+        for ln in (_g(lyr, 'lyrics') or []):
+            lines.append({'text': _g(ln, 'text') or '',
+                          'start': int(_g(ln, 'start_time') or 0),
+                          'end': int(_g(ln, 'end_time') or 0)})
+        if lines:
+            return {'synced': True, 'lines': lines,
+                    'text': '\n'.join(l['text'] for l in lines), 'source': source}
+    # Plain lyrics (no timing).
+    text = _g(lyr, 'lyrics')
+    if not isinstance(text, str) or not text:
+        return None
+    lines = [{'text': t, 'start': 0, 'end': 0} for t in text.split('\n')]
+    return {'synced': False, 'lines': lines, 'text': text, 'source': source}
+
+
+def translate_text(text, target='en'):
+    """Translate a whole block of text to `target` in ONE request (free Google endpoint).
+    Newlines are preserved, so the caller can split the result back into per-line
+    translations aligned with the original. Returns '' on failure."""
+    if not text:
+        return ''
+    try:
+        import requests
+        params = {'client': 'gtx', 'sl': 'auto', 'tl': target, 'dt': 't', 'q': text}
+        r = requests.get('https://translate.googleapis.com/translate_a/single',
+                         params=params, timeout=_HTTP_TIMEOUT)
+        data = r.json()
+        return ''.join(seg[0] for seg in data[0] if seg and seg[0])
+    except Exception:
+        return ''
 
 
 def _ydl_opts(cookies_file=None, extra=None):
