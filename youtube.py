@@ -586,29 +586,36 @@ def _thumb(d):
 
 
 def ytm_search_entities(query, max_results=15):
-    """Top artist/album/playlist matches (NO songs) — used to enrich keyword search with
-    an artist entry + a few albums. Returns {'artists': [{name, channelId, thumbnail}],
-    'albums': [{name, browseId, kind, thumbnail, artist}]}."""
+    """Top artist/album matches (NO songs) — used to enrich keyword search with an artist
+    entry + a few albums. Returns {'artists': [{name, channelId, thumbnail}],
+    'albums': [{name, browseId, kind, thumbnail, artist}]}.
+
+    Uses the *filtered* searches (filter='artists'/'albums'). The UNFILTERED search ranks
+    artists badly — e.g. "Ado" returns a malformed empty entry then a tiny 5-subscriber
+    "ADO" channel before the real 9M-subscriber Ado — so we query each type directly.
+    """
     out = {'artists': [], 'albums': []}
     try:
         with _ytm_lock:
-            res = _get_ytm().search(query, limit=max_results)
+            ares = _get_ytm().search(query, filter='artists', limit=5)
+        for r in ares:
+            if r.get('browseId'):
+                out['artists'].append({'name': r.get('artist') or r.get('title') or '',
+                                       'channelId': r['browseId'], 'thumbnail': _thumb(r)})
     except Exception:
-        res = []
-    for r in res:
-        rt = r.get('resultType')
-        if rt == 'artist' and r.get('browseId'):
-            out['artists'].append({'name': r.get('artist') or r.get('title') or '',
-                                   'channelId': r['browseId'], 'thumbnail': _thumb(r)})
-        elif rt in ('album', 'single', 'ep') and r.get('browseId'):
-            out['albums'].append({
-                'name': r.get('title') or '', 'browseId': r['browseId'], 'kind': rt,
-                'thumbnail': _thumb(r),
-                'artist': ', '.join(a.get('name', '') for a in (r.get('artists') or [])
-                                    if a.get('name'))})
-        elif rt == 'playlist' and r.get('browseId'):
-            out['albums'].append({'name': r.get('title') or '', 'browseId': r['browseId'],
-                                  'kind': 'playlist', 'thumbnail': _thumb(r), 'artist': ''})
+        pass
+    try:
+        with _ytm_lock:
+            alres = _get_ytm().search(query, filter='albums', limit=6)
+        for r in alres:
+            if r.get('browseId'):
+                out['albums'].append({
+                    'name': r.get('title') or '', 'browseId': r['browseId'],
+                    'kind': r.get('resultType') or 'album', 'thumbnail': _thumb(r),
+                    'artist': ', '.join(a.get('name', '') for a in (r.get('artists') or [])
+                                        if a.get('name'))})
+    except Exception:
+        pass
 
     def _dedupe(items, key):
         seen, o = set(), []
