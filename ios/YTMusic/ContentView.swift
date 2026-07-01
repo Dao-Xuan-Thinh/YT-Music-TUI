@@ -5,6 +5,7 @@ struct ContentView: View {
     @ObservedObject private var playback = PlaybackService.shared
     @ObservedObject private var library = LibraryStore.shared
     @ObservedObject private var theme = ThemeManager.shared
+    @ObservedObject private var account = AccountStore.shared
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var query = ""
@@ -22,6 +23,7 @@ struct ContentView: View {
     @State private var renameName = ""
     @State private var showNowPlaying = false
     @State private var showSettings = false
+    @State private var showThemePicker = false
 
     private let rowHeight: CGFloat = 30
 
@@ -46,7 +48,7 @@ struct ContentView: View {
         .foregroundStyle(TUI.fg)
         .font(TUI.mono())
         .tint(TUI.accent)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(theme.current.dark ? .dark : .light)
         .onChange(of: playback.position) { p in if !scrubbing { scrub = p } }
         .onChange(of: scenePhase) { phase in
             if phase == .background { vm.saveCurrentSession() }
@@ -75,6 +77,9 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) {
             SettingsScreen(vm: vm)
         }
+        .sheet(isPresented: $showThemePicker) {
+            ThemePickerSheet()
+        }
     }
 
     // MARK: - Tab bar
@@ -86,16 +91,18 @@ struct ContentView: View {
             tabLabel("QUEUE", .queue)
             tabLabel("LIBRARY", .library)
             Spacer()
-            Image(systemName: "gearshape")
-                .font(TUI.mono(13))
-                .foregroundStyle(TUI.dim)
-                .onTapGesture { showSettings = true }
-            Text("♥ \(library.liked.count)")
-                .foregroundStyle(TUI.accent)
-                .onTapGesture {
-                    vm.tab = .library; vm.librarySection = .liked
-                    vm.openedPlaylist = nil; vm.highlightIndex = 0
-                }
+            if account.signedIn {
+                Text("♥ \(account.name.isEmpty ? "you" : account.name)")
+                    .foregroundStyle(TUI.accent).lineLimit(1)
+                    .onTapGesture { showSettings = true }
+            } else {
+                Text("♥ \(library.liked.count)")
+                    .foregroundStyle(TUI.accent)
+                    .onTapGesture {
+                        vm.tab = .library; vm.librarySection = .liked
+                        vm.openedPlaylist = nil; vm.highlightIndex = 0
+                    }
+            }
         }
         .font(TUI.mono(13, .bold))
     }
@@ -260,9 +267,12 @@ struct ContentView: View {
         return HStack(spacing: 8) {
             Text(playing ? "▸" : (highlighted ? "›" : " ")).foregroundStyle(TUI.accent)
             Text(String(format: "%2d", idx + 1)).foregroundStyle(TUI.dim)
-            Text(r.title)
-                .foregroundStyle(playing ? TUI.accent : TUI.fg)
-                .lineLimit(1).truncationMode(.tail)
+            if playing {
+                WaveText(text: r.title, palette: theme.current.wave, font: TUI.mono(13),
+                         fallback: TUI.accent, active: playback.isPlaying, lineLimit: 1)
+            } else {
+                Text(r.title).foregroundStyle(TUI.fg).lineLimit(1).truncationMode(.tail)
+            }
             Spacer(minLength: 6)
             Text(timeString(Double(r.duration))).foregroundStyle(TUI.dim)
         }
@@ -452,8 +462,6 @@ struct ContentView: View {
     private var footer: some View {
         let i = (vm.queueIndex ?? -1) + 1
         return HStack(spacing: 6) {
-            Text(vm.source.rawValue).foregroundStyle(TUI.dim).onTapGesture { vm.cycleSource() }
-            sep
             Text("shuf:\(vm.shuffle ? "on" : "off")")
                 .foregroundStyle(vm.shuffle ? TUI.accent : TUI.dim)
                 .onTapGesture { vm.toggleShuffle() }
@@ -467,8 +475,10 @@ struct ContentView: View {
             Text("\(Int(playback.volume * 100))%").foregroundStyle(TUI.dim)
             sep
             Text(theme.current.name).foregroundStyle(TUI.accent)
-                .onTapGesture { theme.cycle() }
+                .onTapGesture { showThemePicker = true }
             Spacer()
+            Image(systemName: "gearshape").foregroundStyle(TUI.dim)
+                .onTapGesture { showSettings = true }
         }
         .font(TUI.mono(11))
         .padding(.vertical, 4)

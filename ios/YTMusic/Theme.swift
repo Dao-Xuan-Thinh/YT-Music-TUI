@@ -12,6 +12,7 @@ struct AppTheme: Identifiable, Equatable {
     let dim: Color
     let warn: Color
     let wave: [Color]?
+    let dark: Bool
     var id: String { name }
 }
 
@@ -61,78 +62,62 @@ enum TUI {
 }
 
 extension AppTheme {
-    static let builtins: [AppTheme] = [terminal, amber, synthwave, ice, matrix, mono]
+    /// Build a theme from desktop-style hex (mirrors `main.py` CUSTOM_THEMES): primary→accent,
+    /// background→bg, foreground→fg, error→warn; `dim` derived as a fg/bg blend.
+    static func make(_ name: String, dark: Bool, bg: String, panel: String, fg: String,
+                     accent: String, warn: String, wave: [String]?) -> AppTheme {
+        let bgC = Color(hex: bg), fgC = Color(hex: fg)
+        return AppTheme(name: name, bg: bgC, panel: Color(hex: panel), fg: fgC,
+                        accent: Color(hex: accent), dim: .lerp(fgC, bgC, 0.5),
+                        warn: Color(hex: warn), wave: wave?.map { Color(hex: $0) }, dark: dark)
+    }
 
-    static let terminal = AppTheme(
-        name: "terminal",
-        bg: Color(red: 0.05, green: 0.06, blue: 0.06),
-        panel: Color(red: 0.09, green: 0.11, blue: 0.10),
-        fg: Color(red: 0.86, green: 0.89, blue: 0.86),
-        accent: Color(red: 0.30, green: 0.92, blue: 0.55),
-        dim: Color(red: 0.46, green: 0.52, blue: 0.49),
-        warn: Color(red: 0.95, green: 0.45, blue: 0.45),
-        wave: [Color(red: 0.30, green: 0.92, blue: 0.55),
-               Color(red: 0.20, green: 0.80, blue: 0.80),
-               Color(red: 0.60, green: 0.95, blue: 0.45)])
+    // The default green terminal look + the desktop's 14 hand-picked themes & wave palettes.
+    static let builtins: [AppTheme] = [
+        make("terminal", dark: true, bg: "#0d0f0f", panel: "#171c19", fg: "#dbe3db",
+             accent: "#4deb8c", warn: "#f27373", wave: ["#4deb8c", "#33cccc", "#99f273"]),
+        make("synthwave", dark: true, bg: "#16111f", panel: "#2f2342", fg: "#f7f0ff",
+             accent: "#ff5fd2", warn: "#fe4450", wave: ["#ff5fd2", "#b967ff", "#36f9f6", "#b967ff"]),
+        make("vaporwave", dark: true, bg: "#1a1426", panel: "#352a4d", fg: "#fdf6ff",
+             accent: "#ff71ce", warn: "#ff6e6e", wave: ["#ff71ce", "#b967ff", "#01cdfe", "#05ffa1"]),
+        make("matrix", dark: true, bg: "#020a02", panel: "#0a2010", fg: "#c8ffc8",
+             accent: "#39ff14", warn: "#ff3b3b", wave: ["#0a3d0a", "#39ff14", "#aaff66", "#39ff14"]),
+        make("prism", dark: true, bg: "#0f0f14", panel: "#24242f", fg: "#fafafa",
+             accent: "#ff4d4d", warn: "#ff4d6d",
+             wave: ["#ff4d4d", "#ffa64d", "#ffe24d", "#4dff88", "#4dd2ff", "#7d4dff", "#ff4dd2"]),
+        make("ember", dark: true, bg: "#170d08", panel: "#331c0d", fg: "#fff1e0",
+             accent: "#ff7b29", warn: "#ff4d34", wave: ["#ff3b1f", "#ff7b29", "#ffb454", "#ffd45e"]),
+        make("deep-ocean", dark: true, bg: "#04121a", panel: "#0c3142", fg: "#e0f7ff",
+             accent: "#2bd6c6", warn: "#ff5d73", wave: ["#0a3142", "#2bd6c6", "#5ef0ff", "#3a8fff"]),
+        make("blood-moon", dark: true, bg: "#120406", panel: "#330f15", fg: "#ffe6e6",
+             accent: "#ff3b54", warn: "#ff2e4d", wave: ["#5a0010", "#ff3b54", "#ff7a45", "#ff3b54"]),
+        make("aurora", dark: true, bg: "#06121a", panel: "#123042", fg: "#ecfdf5",
+             accent: "#5eead4", warn: "#fb7185", wave: ["#34d399", "#5eead4", "#818cf8", "#c084fc"]),
+        make("sakura", dark: false, bg: "#fff0f5", panel: "#ffd0e0", fg: "#3a2230",
+             accent: "#e35d8f", warn: "#e0445d", wave: nil),
+        make("arctic", dark: false, bg: "#f0f6ff", panel: "#cfe0f5", fg: "#0d2438",
+             accent: "#2f6fed", warn: "#e0445d", wave: nil),
+        make("solar-flare", dark: true, bg: "#1a1205", panel: "#3a2a0c", fg: "#fff8e1",
+             accent: "#ffb300", warn: "#e53935", wave: ["#ff7043", "#ffb300", "#ffd54f", "#fff3c0"]),
+        make("cyberpunk", dark: true, bg: "#0a0e12", panel: "#1a2630", fg: "#f5fdff",
+             accent: "#fcee0a", warn: "#ff2a6d", wave: ["#ff2a6d", "#fcee0a", "#00f0ff", "#ff2a6d"]),
+        make("mono-amber", dark: true, bg: "#0c0a06", panel: "#1f1a0c", fg: "#ffcf7a",
+             accent: "#ffb000", warn: "#ff5e5e", wave: nil),
+        make("nebula", dark: true, bg: "#0c0818", panel: "#22183b", fg: "#f3eaff",
+             accent: "#a06bff", warn: "#ff5d8f", wave: ["#6b8bff", "#a06bff", "#ff6bd6", "#a06bff"]),
+    ]
+}
 
-    static let amber = AppTheme(
-        name: "amber",
-        bg: Color(red: 0.06, green: 0.05, blue: 0.03),
-        panel: Color(red: 0.12, green: 0.09, blue: 0.04),
-        fg: Color(red: 0.93, green: 0.84, blue: 0.66),
-        accent: Color(red: 1.00, green: 0.74, blue: 0.20),
-        dim: Color(red: 0.55, green: 0.45, blue: 0.28),
-        warn: Color(red: 0.96, green: 0.45, blue: 0.35),
-        wave: [Color(red: 1.00, green: 0.74, blue: 0.20),
-               Color(red: 0.98, green: 0.52, blue: 0.12),
-               Color(red: 1.00, green: 0.88, blue: 0.40)])
-
-    static let synthwave = AppTheme(
-        name: "synthwave",
-        bg: Color(red: 0.07, green: 0.04, blue: 0.11),
-        panel: Color(red: 0.13, green: 0.08, blue: 0.20),
-        fg: Color(red: 0.90, green: 0.85, blue: 0.98),
-        accent: Color(red: 1.00, green: 0.32, blue: 0.71),
-        dim: Color(red: 0.50, green: 0.42, blue: 0.62),
-        warn: Color(red: 1.00, green: 0.50, blue: 0.45),
-        wave: [Color(red: 1.00, green: 0.32, blue: 0.71),
-               Color(red: 0.45, green: 0.55, blue: 1.00),
-               Color(red: 0.30, green: 0.90, blue: 0.95),
-               Color(red: 0.78, green: 0.40, blue: 1.00)])
-
-    static let ice = AppTheme(
-        name: "ice",
-        bg: Color(red: 0.04, green: 0.06, blue: 0.09),
-        panel: Color(red: 0.08, green: 0.12, blue: 0.17),
-        fg: Color(red: 0.84, green: 0.92, blue: 0.98),
-        accent: Color(red: 0.40, green: 0.80, blue: 1.00),
-        dim: Color(red: 0.42, green: 0.52, blue: 0.62),
-        warn: Color(red: 0.95, green: 0.55, blue: 0.55),
-        wave: [Color(red: 0.40, green: 0.80, blue: 1.00),
-               Color(red: 0.30, green: 0.55, blue: 0.95),
-               Color(red: 0.70, green: 0.92, blue: 1.00)])
-
-    static let matrix = AppTheme(
-        name: "matrix",
-        bg: Color(red: 0.02, green: 0.04, blue: 0.02),
-        panel: Color(red: 0.04, green: 0.09, blue: 0.04),
-        fg: Color(red: 0.62, green: 0.85, blue: 0.62),
-        accent: Color(red: 0.20, green: 1.00, blue: 0.30),
-        dim: Color(red: 0.32, green: 0.50, blue: 0.32),
-        warn: Color(red: 0.90, green: 0.55, blue: 0.30),
-        wave: [Color(red: 0.20, green: 1.00, blue: 0.30),
-               Color(red: 0.10, green: 0.70, blue: 0.20),
-               Color(red: 0.55, green: 1.00, blue: 0.45)])
-
-    static let mono = AppTheme(
-        name: "mono",
-        bg: Color(red: 0.06, green: 0.06, blue: 0.06),
-        panel: Color(red: 0.12, green: 0.12, blue: 0.12),
-        fg: Color(red: 0.82, green: 0.82, blue: 0.82),
-        accent: Color(red: 0.90, green: 0.90, blue: 0.90),
-        dim: Color(red: 0.48, green: 0.48, blue: 0.48),
-        warn: Color(red: 0.90, green: 0.55, blue: 0.55),
-        wave: nil)
+extension Color {
+    /// Init from a "#rrggbb" hex string.
+    init(hex: String) {
+        let h = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        var v: UInt64 = 0
+        Scanner(string: h).scanHexInt64(&v)
+        self.init(red: Double((v >> 16) & 0xff) / 255,
+                  green: Double((v >> 8) & 0xff) / 255,
+                  blue: Double(v & 0xff) / 255)
+    }
 }
 
 extension Color {
@@ -162,29 +147,33 @@ struct WaveText: View {
     var lineLimit: Int = 2
 
     var body: some View {
-        if active, let pal = palette, pal.count >= 2 {
-            TimelineView(.periodic(from: .now, by: 0.08)) { tl in
-                let phase = tl.date.timeIntervalSinceReferenceDate * 3.0
-                HStack(spacing: 0) {
-                    ForEach(Array(text.enumerated()), id: \.offset) { i, ch in
-                        Text(String(ch)).foregroundStyle(color(pal, Double(i), phase))
-                    }
+        Group {
+            if active, let pal = palette, pal.count >= 2 {
+                TimelineView(.periodic(from: .now, by: 0.08)) { tl in
+                    let t = tl.date.timeIntervalSinceReferenceDate * 0.3
+                    let phase = CGFloat(t - t.rounded(.down))   // 0..<1, loops
+                    Text(text).foregroundStyle(waveGradient(pal, phase))
                 }
-                .font(font)
-                .lineLimit(1)
+            } else {
+                Text(text).foregroundStyle(fallback)
             }
-        } else {
-            Text(text).font(font).foregroundStyle(fallback).lineLimit(lineLimit)
         }
+        .font(font)
+        .lineLimit(lineLimit)
+        .truncationMode(.tail)
     }
 
-    private func color(_ pal: [Color], _ index: Double, _ phase: Double) -> Color {
-        let n = Double(pal.count)
-        var pos = (index * 0.5 + phase).truncatingRemainder(dividingBy: n)
-        if pos < 0 { pos += n }
-        let i0 = Int(pos) % pal.count
-        let i1 = (i0 + 1) % pal.count
-        return .lerp(pal[i0], pal[i1], pos - Double(Int(pos)))
+    /// A horizontally-scrolling gradient that fills the text glyphs — a flowing wave that
+    /// (unlike per-character coloring) never changes the text's layout, so long titles
+    /// truncate instead of overlapping.
+    private func waveGradient(_ pal: [Color], _ phase: CGFloat) -> LinearGradient {
+        let colors = pal + pal + pal + [pal[0]]   // repeated for a seamless scroll
+        let span: CGFloat = 3
+        let shift = phase * span
+        return LinearGradient(
+            gradient: Gradient(colors: colors),
+            startPoint: UnitPoint(x: -span + shift, y: 0.5),
+            endPoint: UnitPoint(x: shift, y: 0.5))
     }
 }
 
