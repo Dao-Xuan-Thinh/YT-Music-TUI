@@ -256,6 +256,26 @@ final class PlayerViewModel: ObservableObject {
         playList(p.tracks, at: 0)
     }
 
+    /// Open a YT-Music playlist/album by id (from a For-You playlist row): fetch its tracks
+    /// via the browse bridge, load them into the queue, and start playing.
+    func openPlaylist(id: String) {
+        let url = "https://music.youtube.com/playlist?list=\(id)"
+        searching = true
+        errorMsg = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let c = python_browse(url)
+            let json = c.map { String(cString: $0) } ?? "[]"
+            if let c { free(c) }
+            let list = SearchResult.decodeList(json)
+            DispatchQueue.main.async {
+                self.searching = false
+                guard !list.isEmpty else { self.errorMsg = "Empty playlist"; return }
+                self.tab = .queue
+                self.playList(list, at: 0)
+            }
+        }
+    }
+
     /// Restore a saved session: its queue, index, and playback position.
     func restore(_ s: Session) {
         guard s.queue.indices.contains(s.index) else { return }

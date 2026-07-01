@@ -205,6 +205,23 @@ def _diag_resolve(url: str) -> None:
           flush=True)
 
 
+def _parse_ytm_duration(t):
+    """ytmusicapi gives duration_seconds, or 'duration' as 'M:SS'/'H:MM:SS' — home/search
+    items often carry only the text form, so fall back to parsing it (fixes 0:00)."""
+    ds = t.get("duration_seconds")
+    if ds:
+        return int(ds)
+    parts = (t.get("duration") or "").split(":")
+    try:
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+    except ValueError:
+        pass
+    return 0
+
+
 def _lite(vid, title, uploader, duration, thumbnail=None):
     return {
         "id": vid,
@@ -212,6 +229,21 @@ def _lite(vid, title, uploader, duration, thumbnail=None):
         "uploader": uploader or "",
         "duration": int(duration or 0),
         "thumbnail": thumbnail or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+        "kind": "song",
+    }
+
+
+def _lite_playlist(pid, title, thumbnail=None):
+    """A lite row for a playlist/album item (opened, not resolved). `id` is the playlistId
+    so the list de-dupes and SwiftUI has a stable identity."""
+    return {
+        "id": pid,
+        "title": title or "Playlist",
+        "uploader": "",
+        "duration": 0,
+        "thumbnail": thumbnail or "",
+        "kind": "playlist",
+        "playlistId": pid,
     }
 
 
@@ -252,7 +284,7 @@ def _ytm_search(query: str, n: int) -> list:
             continue
         arts = ", ".join(a.get("name", "") for a in (r.get("artists") or []) if a.get("name"))
         thumbs = r.get("thumbnails") or []
-        out.append(_lite(vid, r.get("title"), arts, r.get("duration_seconds"),
+        out.append(_lite(vid, r.get("title"), arts, _parse_ytm_duration(r),
                          thumbs[-1].get("url") if thumbs else None))
         if len(out) >= n:
             break
@@ -275,20 +307,25 @@ def search(query: str, source: str = "ytm", n: int = 15) -> str:
 
 
 def home(_: str = "") -> str:
-    """"For You" feed: the YouTube Music home feed (anonymous) flattened to a JSON list of
-    lite track dicts. Mirrors the desktop `ytm_home()`. Personalizes once signed in."""
+    """"For You" feed: the YouTube Music home feed flattened to a JSON list of lite items —
+    songs (kind='song', playable) AND playlists/albums (kind='playlist', opened). Mirrors the
+    desktop `ytm_home()`/`_parse_home`. Personalizes once signed in."""
     try:
         sections = _ytm().get_home(limit=6)
         out = []
         for sec in sections:
             for it in (sec.get("contents") or []):
-                vid = it.get("videoId")
-                if not vid:
-                    continue   # albums / playlists / artists have no videoId — skip
-                arts = ", ".join(a.get("name", "") for a in (it.get("artists") or []) if a.get("name"))
+                if not isinstance(it, dict):
+                    continue   # YTM occasionally returns a null entry
                 thumbs = it.get("thumbnails") or []
-                out.append(_lite(vid, it.get("title"), arts, it.get("duration_seconds"),
-                                 thumbs[-1].get("url") if thumbs else None))
+                thumb = thumbs[-1].get("url") if thumbs else None
+                if it.get("videoId"):
+                    arts = ", ".join(a.get("name", "") for a in (it.get("artists") or [])
+                                     if a.get("name"))
+                    out.append(_lite(it["videoId"], it.get("title"), arts,
+                                     _parse_ytm_duration(it), thumb))
+                elif it.get("playlistId"):
+                    out.append(_lite_playlist(it["playlistId"], it.get("title"), thumb))
         return json.dumps(_dedupe(out))
     except Exception as e:
         print("HOME_ERROR:", type(e).__name__, e, flush=True)
@@ -306,7 +343,7 @@ def _ytm_playlist(playlist_id: str) -> list:
             continue
         arts = ", ".join(a.get("name", "") for a in (t.get("artists") or []) if a.get("name"))
         thumbs = t.get("thumbnails") or []
-        out.append(_lite(vid, t.get("title"), arts, t.get("duration_seconds"),
+        out.append(_lite(vid, t.get("title"), arts, _parse_ytm_duration(t),
                          thumbs[-1].get("url") if thumbs else None))
     return out
 

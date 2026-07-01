@@ -265,7 +265,8 @@ struct ContentView: View {
         let playing = (r.id == vm.playingID)
         let highlighted = (idx == vm.highlightIndex)
         return HStack(spacing: 8) {
-            Text(playing ? "▸" : (highlighted ? "›" : " ")).foregroundStyle(TUI.accent)
+            Text(playing ? "▸" : (r.isPlaylist ? "≡" : (highlighted ? "›" : " ")))
+                .foregroundStyle(TUI.accent)
             Text(String(format: "%2d", idx + 1)).foregroundStyle(TUI.dim)
             if playing {
                 WaveText(text: r.title, palette: theme.current.wave, font: TUI.mono(13),
@@ -274,7 +275,8 @@ struct ContentView: View {
                 Text(r.title).foregroundStyle(TUI.fg).lineLimit(1).truncationMode(.tail)
             }
             Spacer(minLength: 6)
-            Text(timeString(Double(r.duration))).foregroundStyle(TUI.dim)
+            Text(r.isPlaylist ? "playlist" : timeString(Double(r.duration)))
+                .foregroundStyle(TUI.dim)
         }
         .font(TUI.mono(13))
         .frame(height: rowHeight)
@@ -285,6 +287,11 @@ struct ContentView: View {
     }
 
     private func playRow(_ idx: Int) {
+        // A playlist/album row (e.g. in For You) opens rather than plays.
+        if vm.displayed.indices.contains(idx), vm.displayed[idx].isPlaylist {
+            vm.openPlaylist(id: vm.displayed[idx].playlistId ?? vm.displayed[idx].id)
+            return
+        }
         switch vm.tab {
         case .search:           vm.playFromResults(at: idx)
         case .queue:            vm.playFromQueue(at: idx)
