@@ -166,6 +166,15 @@ struct SettingsScreen: View {
             Text("YouTube Music — native iOS").foregroundStyle(TUI.fg).font(TUI.mono(13))
             Text("version \(appVersion)").foregroundStyle(TUI.dim).font(TUI.mono(12))
             Text("mobile-fork · SwiftUI + embedded yt-dlp").foregroundStyle(TUI.dim).font(TUI.mono(11))
+            HStack(spacing: 4) {
+                Text("created by").foregroundStyle(TUI.dim)
+                Text("Spider In Bathroom").foregroundStyle(TUI.accent)
+            }
+            .font(TUI.mono(12)).padding(.top, 2)
+            Link(destination: URL(string: "https://github.com/Dao-Xuan-Thinh/YT-Music-TUI")!) {
+                Text("github.com/Dao-Xuan-Thinh/YT-Music-TUI")
+                    .foregroundStyle(TUI.accent).font(TUI.mono(11)).underline()
+            }
         }
     }
 

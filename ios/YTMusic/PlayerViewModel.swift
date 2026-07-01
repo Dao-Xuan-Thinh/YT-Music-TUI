@@ -147,6 +147,9 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func play(at idx: Int, resumeAt: Double = 0) {
+        // Invalidate any in-flight resolve up front — even when this selection is served from
+        // the prefetch cache — so a slow earlier resolve can't complete and hijack playback.
+        resolveToken &+= 1
         queueIndex = idx
         let r = queue[idx]
         library.addRecent(r)
@@ -158,8 +161,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func resolveAndPlay(id: String, resumeAt: Double = 0) {
-        resolveToken &+= 1
-        let token = resolveToken
+        let token = resolveToken   // already bumped by play(at:)
         resolving = true
         errorMsg = nil
         DispatchQueue.global(qos: .userInitiated).async {
@@ -289,6 +291,24 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func closeArtist() { artistPage = nil }
+
+    /// Open the artist page for a plain artist name (from the now-playing artist label):
+    /// look up the top artist match, then open it.
+    func openArtistByName(_ name: String) {
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !n.isEmpty else { return }
+        artistLoading = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let c = python_search_artist(n)
+            let json = c.map { String(cString: $0) } ?? "{}"
+            if let c { free(c) }
+            let hit = ArtistHit.decode(json)
+            DispatchQueue.main.async {
+                self.artistLoading = false
+                if let hit { self.openArtist(hit) }
+            }
+        }
+    }
 
     /// Open an album (browseId, from an artist album row): fetch tracks via album() → queue.
     func openAlbum(id: String) {

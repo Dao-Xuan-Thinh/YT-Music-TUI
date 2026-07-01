@@ -87,6 +87,7 @@ struct ContentView: View {
 
     /// The tab bar + per-tab sub-header rows (shared by both orientations).
     @ViewBuilder private var browseHeader: some View {
+        accountLine
         tabBar
         if vm.tab == .search { searchRow }
         if vm.tab == .search, let hit = vm.artistHit { artistCard(hit) }
@@ -106,22 +107,67 @@ struct ContentView: View {
         }
     }
 
-    /// Landscape: browse list on the left, now-playing (cover + controls) on the right.
+    /// Landscape: now-playing (large cover + controls) on the LEFT, browse list on the RIGHT.
     private var landscapeStack: some View {
         VStack(spacing: 6) {
-            HStack(alignment: .top, spacing: 14) {
+            HStack(alignment: .top, spacing: 16) {
+                nowPlayingLandscape
+                    .frame(maxWidth: .infinity)
                 VStack(spacing: 6) {
                     browseHeader
                     TUIDivider()
                     list
                 }
                 .frame(maxWidth: .infinity)
-                VStack(spacing: 6) {
-                    nowPlaying
-                }
-                .frame(maxWidth: .infinity)
             }
             footer
+        }
+    }
+
+    /// Landscape now-playing: a big square cover fills the empty left side, then title,
+    /// scrubber, and transport.
+    private var nowPlayingLandscape: some View {
+        VStack(spacing: 10) {
+            AsyncImage(url: playback.current?.thumbnailURL) { phase in
+                if case .success(let img) = phase { img.resizable().scaledToFill() }
+                else { TUI.panel.overlay(Text("♪").font(.system(size: 56)).foregroundStyle(TUI.dim)) }
+            }
+            .aspectRatio(1, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(TUI.dim.opacity(0.3)))
+            .contentShape(Rectangle())
+            .onTapGesture { if playback.current != nil { showNowPlaying = true } }
+
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    WaveText(text: playback.current?.title ?? "nothing playing",
+                             palette: theme.current.wave, font: TUI.mono(15, .bold),
+                             fallback: TUI.fg,
+                             active: playback.isPlaying && playback.current != nil, lineLimit: 1)
+                    artistLabel(font: TUI.mono(12))
+                }
+                Spacer()
+                Button { vm.toggleLikeCurrent() } label: {
+                    Image(systemName: likedNow ? "heart.fill" : "heart").font(.title3)
+                }
+                .foregroundStyle(TUI.accent).disabled(vm.currentResult == nil)
+            }
+
+            Slider(value: $scrub, in: 0...max(playback.duration, 1), onEditingChanged: { ed in
+                scrubbing = ed
+                if !ed { playback.seek(to: scrub) }
+            })
+            .disabled(playback.current == nil)
+
+            HStack(spacing: 44) {
+                Button { vm.playPrevious() } label: { Image(systemName: "backward.end.fill").font(.title3) }
+                Button { playback.togglePlayPause() } label: {
+                    Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill").font(.largeTitle)
+                }
+                Button { vm.playNext() } label: { Image(systemName: "forward.end.fill").font(.title3) }
+            }
+            .foregroundStyle(TUI.accent).disabled(playback.current == nil)
         }
     }
 
@@ -153,6 +199,21 @@ struct ContentView: View {
 
     // MARK: - Tab bar
 
+    /// A slim line above the tabs showing the signed-in account (kept off the tab row so a
+    /// long name can't squeeze the tabs into wrapping). Only present when signed in.
+    @ViewBuilder private var accountLine: some View {
+        if account.signedIn {
+            HStack(spacing: 6) {
+                Text("♥ \(account.name.isEmpty ? "you" : account.name)")
+                    .font(TUI.mono(11, .bold)).foregroundStyle(TUI.accent)
+                    .lineLimit(1).truncationMode(.tail)
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { showSettings = true }
+        }
+    }
+
     private var tabBar: some View {
         HStack(spacing: 12) {
             tabLabel("FOR YOU", .foryou)
@@ -160,18 +221,12 @@ struct ContentView: View {
             tabLabel("QUEUE", .queue)
             tabLabel("LIBRARY", .library)
             Spacer()
-            if account.signedIn {
-                Text("♥ \(account.name.isEmpty ? "you" : account.name)")
-                    .foregroundStyle(TUI.accent).lineLimit(1)
-                    .onTapGesture { showSettings = true }
-            } else {
-                Text("♥ \(library.liked.count)")
-                    .foregroundStyle(TUI.accent)
-                    .onTapGesture {
-                        vm.tab = .library; vm.librarySection = .liked
-                        vm.openedPlaylist = nil; vm.highlightIndex = 0
-                    }
-            }
+            Text("♥ \(library.liked.count)")
+                .foregroundStyle(TUI.accent)
+                .onTapGesture {
+                    vm.tab = .library; vm.librarySection = .liked
+                    vm.openedPlaylist = nil; vm.highlightIndex = 0
+                }
         }
         .font(TUI.mono(13, .bold))
     }
@@ -472,6 +527,16 @@ struct ContentView: View {
 
     // MARK: - Now playing
 
+    /// The artist/uploader label under the title — tappable → that artist's page.
+    @ViewBuilder private func artistLabel(font: Font) -> some View {
+        let name = playback.current?.uploader ?? " "
+        Text(name)
+            .font(font).foregroundStyle(TUI.dim).lineLimit(1)
+            .contentShape(Rectangle())
+            .onTapGesture { if !name.trimmingCharacters(in: .whitespaces).isEmpty {
+                vm.openArtistByName(name) } }
+    }
+
     private var nowPlaying: some View {
         VStack(spacing: 6) {
             HStack(spacing: 10) {
@@ -482,6 +547,8 @@ struct ContentView: View {
                     }
                     .frame(width: 48, height: 48)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .contentShape(Rectangle())
+                    .onTapGesture { if playback.current != nil { showNowPlaying = true } } // expand
                     VStack(alignment: .leading, spacing: 2) {
                         WaveText(text: playback.current?.title ?? "nothing playing",
                                  palette: theme.current.wave,
@@ -489,13 +556,12 @@ struct ContentView: View {
                                  fallback: TUI.fg,
                                  active: playback.isPlaying && playback.current != nil,
                                  lineLimit: 1)
-                        Text(playback.current?.uploader ?? " ")
-                            .font(TUI.mono(12)).foregroundStyle(TUI.dim).lineLimit(1)
+                            .contentShape(Rectangle())
+                            .onTapGesture { if playback.current != nil { showNowPlaying = true } } // expand
+                        artistLabel(font: TUI.mono(12))   // tap → artist page
                     }
                     Spacer()
                 }
-                .contentShape(Rectangle())
-                .onTapGesture { if playback.current != nil { showNowPlaying = true } }   // expand
                 Button { vm.toggleLikeCurrent() } label: {
                     Image(systemName: likedNow ? "heart.fill" : "heart").font(.title3)
                 }
