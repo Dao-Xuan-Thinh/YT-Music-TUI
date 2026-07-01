@@ -150,6 +150,9 @@ KEYS_HELP = [
     ('z',        'Shuffle queue'),
     ('r',        'Cycle repeat (off / one / all)'),
     ('l',        'Like / unlike track'),
+    ('L',        'Lyrics for the current track'),
+    ('A',        'Open the artist page (search or current track)'),
+    ('R',        'Start radio (endless mix) from the track'),
     ('w',        'Save current list as a playlist'),
     ('h',        'Home screen'),
     ('t',        'Cycle search source (online)'),
@@ -384,6 +387,121 @@ class KeybindingsScreen(ModalScreen):
             yield Label('Keyboard shortcuts  (Esc to close)', id='keys-title')
             lines = '\n'.join(f'  [bold]{k:<9}[/]  {desc}' for k, desc in KEYS_HELP)
             yield Static(lines)
+
+
+# ── Lyrics screen ─────────────────────────────────────────────────────────────
+
+class LyricsScreen(ModalScreen):
+    """Scrollable lyrics for the current track."""
+    BINDINGS = [
+        Binding('escape', 'dismiss_modal', 'Close'),
+        Binding('q', 'dismiss_modal', 'Close'),
+        Binding('L', 'dismiss_modal', 'Close'),
+    ]
+
+    CSS = """
+    LyricsScreen { align: center middle; }
+    #lyrics-box {
+        width: 72; height: 30;
+        border: round $accent; padding: 1 2; background: $surface;
+    }
+    #lyrics-title { text-style: bold; margin-bottom: 1; }
+    #lyrics-body { height: 1fr; }
+    #lyrics-src { color: $text-muted; margin-top: 1; }
+    """
+
+    def __init__(self, title, lyrics, source=''):
+        super().__init__()
+        self._title = title
+        self._lyrics = lyrics
+        self._source = source
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import VerticalScroll
+        with Vertical(id='lyrics-box'):
+            yield Label(f'♪ {self._title}', id='lyrics-title')
+            with VerticalScroll(id='lyrics-body'):
+                yield Static(self._lyrics or '(no lyrics)')
+            if self._source:
+                yield Static(f'source: {self._source}', id='lyrics-src')
+
+
+# ── Artist screen ─────────────────────────────────────────────────────────────
+
+class ArtistScreen(ModalScreen):
+    """An artist page: header + sections (songs / albums / singles / videos). Selecting a
+    song dismisses with ('play', section_tracks, index); an album with ('album', browseId,
+    name). The app acts on the result."""
+    BINDINGS = [
+        Binding('escape', 'cancel', 'Close'),
+        Binding('q', 'cancel', 'Close'),
+    ]
+
+    CSS = """
+    ArtistScreen { align: center middle; }
+    #artist-box {
+        width: 84; height: 34;
+        border: round $accent; padding: 1 2; background: $surface;
+    }
+    #artist-title { text-style: bold; }
+    #artist-sub { color: $text-muted; margin-bottom: 1; }
+    #artist-table { height: 1fr; }
+    """
+
+    def __init__(self, page):
+        super().__init__()
+        self._page = page
+        # Flat row model: list of (kind, payload) parallel to the table rows.
+        # kind 'song' → (tracks_list, index); kind 'album' → item dict; 'header' → None.
+        self._rows = []
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id='artist-box'):
+            yield Label(self._page.get('name') or 'Artist', id='artist-title')
+            subs = self._page.get('subscribers') or ''
+            yield Label(f'{subs} subscribers' if subs else ' ', id='artist-sub')
+            yield DataTable(id='artist-table', cursor_type='row', zebra_stripes=True)
+
+    def on_mount(self) -> None:
+        tbl = self.query_one('#artist-table', DataTable)
+        tbl.add_columns(' ', 'Title', 'Info')
+        for sec in self._page.get('sections') or []:
+            items = sec.get('items') or []
+            # Section header row (non-selectable).
+            self._rows.append(('header', None))
+            tbl.add_row(f'[bold]— {sec["title"]} —[/]', '', '', key=f'h{len(self._rows)}')
+            songs = [it for it in items if not (isinstance(it, dict) and it.get('kind') == 'album')]
+            for it in items:
+                if isinstance(it, dict) and it.get('kind') == 'album':
+                    self._rows.append(('album', it))
+                    yr = it.get('year') or ''
+                    tbl.add_row('💿', it.get('name') or '', yr, key=f'r{len(self._rows)}')
+                else:
+                    idx = songs.index(it)
+                    self._rows.append(('song', (songs, idx)))
+                    dur = _fmt(it.get('duration')) if it.get('duration') else ''
+                    tbl.add_row('♪', it.get('title') or '', dur, key=f'r{len(self._rows)}')
+        tbl.focus()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        key = event.row_key.value
+        if not key or key.startswith('h'):
+            return
+        i = int(key[1:]) - 1
+        if not (0 <= i < len(self._rows)):
+            return
+        kind, payload = self._rows[i]
+        if kind == 'song':
+            tracks, idx = payload
+            self.dismiss(('play', tracks, idx))
+        elif kind == 'album':
+            self.dismiss(('album', payload.get('browseId'), payload.get('name') or 'Album'))
 
 
 # ── Confirm screen ──────────────────────────────────────────────────────────────
@@ -1178,6 +1296,9 @@ class YTMApp(App):
         Binding('z', 'shuffle', 'Shuffle', show=False),
         Binding('r', 'cycle_repeat', 'Repeat', show=False),
         Binding('l', 'like', 'Like', show=False),
+        Binding('L', 'lyrics', 'Lyrics', show=False),
+        Binding('A', 'artist', 'Artist', show=False),
+        Binding('R', 'radio', 'Radio', show=False),
         Binding('w', 'save_playlist', 'Save playlist', show=False),
         Binding('h', 'home', 'Home', show=False),
         Binding('t', 'cycle_source', 'Source', show=False),
@@ -1236,6 +1357,9 @@ class YTMApp(App):
         self._queue     = []   # list of track dicts to play
         self._queue_idx = -1
         self._filter_text = ''
+        self._search_artists = []   # top artist matches from the last keyword search
+        self._search_albums  = []   # top album/playlist matches from the last search
+        self._last_query = ''
         self._cfg_timer = None
         self._update_available = False   # set by the boot-time update check
         self._restart_requested = False  # set when an update asks for a relaunch
@@ -1450,6 +1574,9 @@ class YTMApp(App):
 
         self._set_status(f'Searching "{query}"…')
         self._results = []
+        self._last_query = query
+        self._search_artists = []
+        self._search_albums = []
 
         def _run():
             try:
@@ -1464,6 +1591,26 @@ class YTMApp(App):
                 self.call_from_thread(self._set_status, f'Search error: {exc}')
 
         threading.Thread(target=_run, daemon=True).start()
+
+        # In parallel, look up the top artist/album matches (online YTM only) so 'A' can
+        # open the artist page. Best-effort; never blocks the song results.
+        if self.app_mode != 'offline' and not youtube._is_url(query):
+            def _entities():
+                try:
+                    ent = youtube.ytm_search_entities(query)
+                    self.call_from_thread(self._set_search_entities,
+                                          ent.get('artists') or [], ent.get('albums') or [])
+                except Exception:
+                    pass
+            threading.Thread(target=_entities, daemon=True).start()
+
+    def _set_search_entities(self, artists, albums) -> None:
+        self._search_artists = artists
+        self._search_albums = albums
+        if artists:
+            self._set_status(
+                f'{len(self._results)} result(s) — Enter to play · '
+                f'[bold]A[/] artist: {artists[0]["name"]}')
 
     def _do_load_playlist(self, playlist_id: str) -> None:
         """Load a large playlist: show first page fast (ytmusicapi), then all.
@@ -1977,6 +2124,129 @@ class YTMApp(App):
             return
         now_liked = self._lib.toggle_like(track)
         self._set_status(('♥ Liked: ' if now_liked else '♡ Unliked: ') + track['title'])
+
+    def _target_track(self):
+        """The track the L/R/A actions operate on: highlighted row, else now-playing."""
+        hit = self._highlighted_track()
+        if hit:
+            return hit[2]
+        if 0 <= self._queue_idx < len(self._queue):
+            return self._queue[self._queue_idx]
+        return None
+
+    def action_lyrics(self) -> None:
+        track = self._target_track()
+        if not track or not track.get('id'):
+            self._set_status('No track for lyrics.')
+            return
+        self._set_status(f'Fetching lyrics for "{track["title"]}"…')
+
+        def _run():
+            data = youtube.ytm_lyrics(track['id'])
+            if not data:
+                self.call_from_thread(self._set_status, 'No lyrics available for this track.')
+                return
+            self.call_from_thread(
+                self.push_screen,
+                LyricsScreen(track['title'], data['lyrics'], data.get('source', '')))
+            self.call_from_thread(self._set_status, 'Playing' if self.now_playing else 'Ready')
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def action_radio(self) -> None:
+        track = self._target_track()
+        if not track or not track.get('id'):
+            self._set_status('No track to start radio from.')
+            return
+        self._set_status(f'📻 Building radio from "{track["title"]}"…')
+
+        def _run():
+            try:
+                tracks = youtube.ytm_radio(track['id'])
+            except Exception as exc:
+                self.call_from_thread(self._set_status, f'Radio error: {exc}')
+                return
+            if not tracks:
+                self.call_from_thread(self._set_status, 'No radio available for this track.')
+                return
+            self.call_from_thread(self._start_track_list, tracks, 0,
+                                  f'📻 Radio: {track["title"]}')
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def action_artist(self) -> None:
+        # Prefer the top artist from the last search; else the current/highlighted track's
+        # uploader (looked up by name).
+        if self._search_artists:
+            self._open_artist_channel(self._search_artists[0]['channelId'])
+            return
+        track = self._target_track()
+        name = (track or {}).get('uploader') or ''
+        name = name.split(',')[0].strip()
+        if not name:
+            self._set_status('No artist to open.')
+            return
+        self._set_status(f'Finding artist "{name}"…')
+
+        def _run():
+            try:
+                ent = youtube.ytm_search_entities(name)
+                arts = ent.get('artists') or []
+            except Exception:
+                arts = []
+            if not arts:
+                self.call_from_thread(self._set_status, f'No artist page for "{name}".')
+                return
+            self.call_from_thread(self._open_artist_channel, arts[0]['channelId'])
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _open_artist_channel(self, channel_id: str) -> None:
+        self._set_status('Loading artist…')
+
+        def _run():
+            try:
+                page = youtube.ytm_artist(channel_id)
+            except Exception as exc:
+                self.call_from_thread(self._set_status, f'Artist error: {exc}')
+                return
+            self.call_from_thread(self.push_screen, ArtistScreen(page), self._on_artist_result)
+            self.call_from_thread(self._set_status, page.get('name') or 'Artist')
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_artist_result(self, result) -> None:
+        if not result:
+            return
+        kind = result[0]
+        if kind == 'play':
+            _, tracks, idx = result
+            self._start_track_list(tracks, idx, 'Artist')
+        elif kind == 'album':
+            _, browse_id, name = result
+            self._set_status(f'Loading album "{name}"…')
+
+            def _run():
+                try:
+                    tracks = youtube.ytm_album(browse_id)
+                except Exception as exc:
+                    self.call_from_thread(self._set_status, f'Album error: {exc}')
+                    return
+                if tracks:
+                    self.call_from_thread(self._start_track_list, tracks, 0, name)
+                else:
+                    self.call_from_thread(self._set_status, 'Empty album.')
+
+            threading.Thread(target=_run, daemon=True).start()
+
+    def _start_track_list(self, tracks, idx=0, label='') -> None:
+        """Load a track list into results+queue and start playing at idx."""
+        self._populate_results(tracks)
+        self._queue = list(tracks)
+        self._queue_idx = idx
+        self._play_queue_item(idx)
+        if label:
+            self._set_status(label)
 
     def action_save_playlist(self) -> None:
         if self.view_mode == 'queue':
