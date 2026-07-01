@@ -478,12 +478,15 @@ class LyricsScreen(ModalScreen):
             body.update('(no lyrics)')
             return
         # Build a Rich Text (styled per line) rather than a markup string, so lyric text
-        # containing '[' can never break parsing.
+        # containing '[' can never break parsing. The current line is bold + the theme accent
+        # (like mobile); already-sung lines dim; upcoming lines normal.
+        accent = self.app._accent()
         t = Text()
         for i, ln in enumerate(self._lines):
             text = ln['text'] or ' '
-            if self._synced and i == self._cur:
-                t.append('▸ ' + text + '\n', style='bold')
+            current = self._synced and i == self._cur
+            if current:
+                t.append('▸ ' + text + '\n', style=f'bold {accent}')
             elif self._synced and i < self._cur:
                 t.append(text + '\n', style='dim')
             else:
@@ -491,7 +494,8 @@ class LyricsScreen(ModalScreen):
             if self._show_trans and self._translated and i < len(self._translated):
                 tr = self._translated[i]
                 if tr and tr != text:
-                    t.append('   ' + tr + '\n', style='dim italic')
+                    # Keep the current line's translation readable; dim the rest.
+                    t.append('   ' + tr + '\n', style='italic' if current else 'dim italic')
         body.update(t)
 
     def _tick(self) -> None:
@@ -514,8 +518,10 @@ class LyricsScreen(ModalScreen):
                 if tr and tr != (self._lines[i]['text'] or ' '):
                     row += 1
         try:
-            self.query_one('#lyrics-scroll').scroll_to(
-                y=max(0, row - 6), animate=False)
+            scroll = self.query_one('#lyrics-scroll')
+            # Center the current line in the viewport and glide to it (smooth follow).
+            visible = scroll.size.height or 20
+            scroll.scroll_to(y=max(0, row - visible // 2), animate=True, duration=0.45)
         except NoMatches:
             pass
 
