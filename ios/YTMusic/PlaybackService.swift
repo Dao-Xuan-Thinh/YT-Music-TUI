@@ -2,6 +2,7 @@ import AVFoundation
 import Combine
 import Foundation
 import MediaPlayer
+import QuartzCore
 import UIKit
 
 /// Owns all audio playback: AVPlayer + AVAudioSession (background mode) +
@@ -33,6 +34,14 @@ final class PlaybackService: ObservableObject {
     private var endedFired = false   // de-dupe end detection (metadata vs AVPlayer)
     private var pendingSeek: Double?  // resume offset, applied once the item is ready
 
+    // Real-time audio spectrum for the now-playing equalizer (MTAudioProcessingTap → FFT).
+    let levelProcessor = AudioLevelProcessor(bands: 16)
+    /// Latest band levels (0…1). Empty/ stale when the tap isn't feeding (→ UI falls back).
+    var audioLevels: [Float] {
+        let s = levelProcessor.snapshot()
+        return (CACurrentMediaTime() - s.time < 0.4) ? s.levels : []
+    }
+
     private init() {
         configureAudioSession()
         configureRemoteCommands()
@@ -57,12 +66,27 @@ final class PlaybackService: ObservableObject {
 
         activateSession()
         let item = AVPlayerItem(url: url)
+        installLevelTap(on: item)
         player.replaceCurrentItem(with: item)
         player.play()
         isPlaying = true
         loadArtwork(track)
         updateNowPlaying()
         NSLog("[playback] play \"%@\" (%@)", track.title, url.host ?? "?")
+    }
+
+    /// Attach the FFT audio tap to the item's audio track (async load) so the equalizer gets
+    /// real levels. Best-effort: on any failure the equalizer falls back to decorative motion.
+    private func installLevelTap(on item: AVPlayerItem) {
+        let asset = item.asset
+        Task { [weak self, weak item] in
+            guard let tracks = try? await asset.loadTracks(withMediaType: .audio),
+                  let audio = tracks.first,
+                  let self, let item else { return }
+            if let mix = makeLevelAudioMix(track: audio, processor: self.levelProcessor) {
+                await MainActor.run { item.audioMix = mix }
+            }
+        }
     }
 
     /// Immediately stop the old item and show a loading placeholder for the next selection

@@ -74,7 +74,8 @@ struct NowPlayingScreen: View {
                 }
                 .frame(width: 128, height: 128)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
-                Equalizer(active: playback.isPlaying, palette: theme.current.wave ?? [TUI.accent])
+                Equalizer(playback: playback, active: playback.isPlaying,
+                          palette: theme.current.wave ?? [TUI.accent])
                     .frame(maxWidth: .infinity, minHeight: 128, maxHeight: 128)
                 Text("│").foregroundStyle(TUI.accent).font(TUI.mono(12))
             }
@@ -182,20 +183,23 @@ struct NowPlayingScreen: View {
     }
 }
 
-/// A decorative block-char spectrum. Bars rise/fall from a smooth per-bar sine mix while
-/// `active`, and settle to a low flat line when paused. Colored from the theme wave palette.
+/// A block-char spectrum. Prefers the **real** audio levels from the MTAudioProcessingTap
+/// (`playback.audioLevels`); when those aren't feeding (paused, or a stream where the tap
+/// doesn't fire) it falls back to a decorative per-bar sine mix. Colored from the theme wave.
 private struct Equalizer: View {
+    @ObservedObject var playback: PlaybackService
     let active: Bool
     let palette: [Color]
     private let bars = 16
-    private let levels = "▁▂▃▄▅▆▇█"
+    private let glyphs = Array("▁▂▃▄▅▆▇█")
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: active ? 0.09 : 0.5)) { tl in
+        TimelineView(.periodic(from: .now, by: active ? 0.06 : 0.5)) { tl in
             let t = tl.date.timeIntervalSinceReferenceDate
+            let real = playback.audioLevels            // [] when stale/not feeding
             HStack(alignment: .bottom, spacing: 3) {
                 ForEach(0..<bars, id: \.self) { i in
-                    Text(String(glyph(i, t)))
+                    Text(String(glyph(i, t, real)))
                         .font(TUI.mono(22))
                         .foregroundStyle(palette[i % palette.count])
                 }
@@ -204,15 +208,19 @@ private struct Equalizer: View {
         }
     }
 
-    private func glyph(_ i: Int, _ t: Double) -> Character {
-        guard active else { return levels.first! }
-        // Mix a few sines at different rates/phases per bar → organic-looking motion.
-        let x = Double(i)
-        let v = sin(t * 6 + x * 0.7) * 0.5
-              + sin(t * 3.3 + x * 1.9) * 0.3
-              + sin(t * 9.1 + x * 0.4) * 0.2
-        let n = (v + 1) / 2   // 0..1
-        let idx = min(levels.count - 1, max(0, Int(n * Double(levels.count))))
-        return Array(levels)[idx]
+    private func glyph(_ i: Int, _ t: Double, _ real: [Float]) -> Character {
+        guard active else { return glyphs[0] }
+        let n: Double
+        if real.count == bars {
+            n = Double(real[i])                        // real audio level
+        } else {
+            // Decorative fallback: a few sines at different rates/phases per bar.
+            let x = Double(i)
+            let v = sin(t * 6 + x * 0.7) * 0.5 + sin(t * 3.3 + x * 1.9) * 0.3
+                  + sin(t * 9.1 + x * 0.4) * 0.2
+            n = (v + 1) / 2
+        }
+        let idx = min(glyphs.count - 1, max(0, Int(n * Double(glyphs.count))))
+        return glyphs[idx]
     }
 }
