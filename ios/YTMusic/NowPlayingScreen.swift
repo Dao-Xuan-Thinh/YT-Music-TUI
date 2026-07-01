@@ -92,8 +92,15 @@ struct NowPlayingScreen: View {
                          palette: theme.current.wave, font: TUI.mono(18, .bold),
                          fallback: TUI.fg,
                          active: playback.isPlaying && playback.current != nil, lineLimit: 2)
-                Text(playback.current?.uploader ?? " ")
+                let artist = playback.current?.uploader ?? " "
+                Text(artist)
                     .font(TUI.mono(13)).foregroundStyle(TUI.dim).lineLimit(1)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        guard !artist.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+                        dismiss()                       // close the player first
+                        vm.openArtistByName(artist)     // then present the artist page
+                    }
             }
             Spacer(minLength: 8)
             Button { vm.toggleLikeCurrent() } label: {

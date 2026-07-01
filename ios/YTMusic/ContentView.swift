@@ -81,6 +81,9 @@ struct ContentView: View {
         ) {
             if let page = vm.artistPage { ArtistScreen(vm: vm, page: page) }
         }
+        .fullScreenCover(isPresented: $vm.openedCollection) {
+            CollectionScreen(vm: vm, title: vm.collectionTitle, tracks: vm.collectionTracks)
+        }
     }
 
     // MARK: - Orientation layouts
@@ -411,9 +414,10 @@ struct ContentView: View {
     }
 
     private func playRow(_ idx: Int) {
-        // A playlist/album row (e.g. in For You) opens rather than plays.
+        // A playlist/album row (e.g. in For You) opens to a view-first list rather than plays.
         if vm.displayed.indices.contains(idx), vm.displayed[idx].isPlaylist {
-            vm.openPlaylist(id: vm.displayed[idx].playlistId ?? vm.displayed[idx].id)
+            let r = vm.displayed[idx]
+            vm.openPlaylist(id: r.playlistId ?? r.id, title: r.title)
             return
         }
         switch vm.tab {

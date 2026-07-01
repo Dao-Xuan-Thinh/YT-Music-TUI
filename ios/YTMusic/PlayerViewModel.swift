@@ -28,6 +28,10 @@ final class PlayerViewModel: ObservableObject {
     @Published var artistHit: ArtistHit?           // top artist card above search results
     @Published var artistPage: ArtistPage?         // loaded artist page (nil = not open)
     @Published var artistLoading = false
+    @Published var openedCollection: Bool = false  // a playlist/album is open (view-first)
+    @Published var collectionTitle = ""
+    @Published var collectionTracks: [SearchResult] = []
+    @Published var collectionLoading = false
 
     let playback = PlaybackService.shared
     let library = LibraryStore.shared
@@ -310,43 +314,48 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    /// Open an album (browseId, from an artist album row): fetch tracks via album() → queue.
-    func openAlbum(id: String) {
-        searching = true
-        errorMsg = nil
+    // MARK: - View-first collections (playlists / albums)
+
+    /// Open an album (browseId, from an artist album row) — view first, don't auto-play.
+    func openAlbum(id: String, title: String) {
+        loadCollection(title: title) { python_album(id) }
+    }
+
+    /// Open a YT-Music playlist by id (from a For-You playlist row) — view first.
+    func openPlaylist(id: String, title: String) {
+        let url = "https://music.youtube.com/playlist?list=\(id)"
+        loadCollection(title: title) { python_browse(url) }
+    }
+
+    /// Shared loader: present the collection sheet with a spinner, fetch its tracks off-main,
+    /// then fill them. Playing is explicit (`playCollection`).
+    private func loadCollection(title: String, _ fetch: @escaping () -> UnsafeMutablePointer<CChar>?) {
+        collectionTitle = title
+        collectionTracks = []
+        collectionLoading = true
+        openedCollection = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let c = python_album(id)
+            let c = fetch()
             let json = c.map { String(cString: $0) } ?? "[]"
             if let c { free(c) }
             let list = SearchResult.decodeList(json)
             DispatchQueue.main.async {
-                self.searching = false
-                guard !list.isEmpty else { self.errorMsg = "Empty album"; return }
-                self.artistPage = nil
-                self.tab = .queue
-                self.playList(list, at: 0)
+                self.collectionLoading = false
+                self.collectionTracks = list
             }
         }
     }
 
-    /// Open a YT-Music playlist/album by id (from a For-You playlist row): fetch its tracks
-    /// via the browse bridge, load them into the queue, and start playing.
-    func openPlaylist(id: String) {
-        let url = "https://music.youtube.com/playlist?list=\(id)"
-        searching = true
-        errorMsg = nil
-        DispatchQueue.global(qos: .userInitiated).async {
-            let c = python_browse(url)
-            let json = c.map { String(cString: $0) } ?? "[]"
-            if let c { free(c) }
-            let list = SearchResult.decodeList(json)
-            DispatchQueue.main.async {
-                self.searching = false
-                guard !list.isEmpty else { self.errorMsg = "Empty playlist"; return }
-                self.tab = .queue
-                self.playList(list, at: 0)
-            }
-        }
+    func closeCollection() { openedCollection = false }
+
+    /// Play the opened collection (optionally from a given index), closing the sheet.
+    func playCollection(at idx: Int = 0) {
+        guard !collectionTracks.isEmpty else { return }
+        let tracks = collectionTracks
+        openedCollection = false
+        artistPage = nil
+        tab = .queue
+        playList(tracks, at: min(max(idx, 0), tracks.count - 1))
     }
 
     /// Restore a saved session: its queue, index, and playback position.

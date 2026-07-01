@@ -80,7 +80,7 @@ struct ArtistScreen: View {
         .frame(height: 46)
         .contentShape(Rectangle())
         .onTapGesture {
-            if isOpenable { vm.openAlbum(id: it.playlistId ?? it.id) }
+            if isOpenable { vm.openAlbum(id: it.playlistId ?? it.id, title: it.title) }
             else {
                 // Play this section's songs as a queue, starting here.
                 let songs = section.items.filter { $0.kind == "song" }
