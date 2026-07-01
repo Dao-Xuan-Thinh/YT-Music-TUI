@@ -617,7 +617,7 @@ class ArtistScreen(ModalScreen):
                 if isinstance(it, dict) and it.get('kind') == 'album':
                     self._rows.append(('album', it))
                     yr = it.get('year') or ''
-                    tbl.add_row('💿', it.get('name') or '', yr, key=f'r{len(self._rows)}')
+                    tbl.add_row('◇', it.get('name') or '', yr, key=f'r{len(self._rows)}')
                 else:
                     idx = songs.index(it)
                     self._rows.append(('song', (songs, idx)))
@@ -1743,10 +1743,16 @@ class YTMApp(App):
     def _set_search_entities(self, artists, albums) -> None:
         self._search_artists = artists
         self._search_albums = albums
+        # Show the artist/album rows atop the current search results.
+        if (artists or albums) and self.view_mode == 'library' and not self._filter_text:
+            try:
+                self._render_table()
+            except NoMatches:
+                pass
         if artists:
             self._set_status(
-                f'{len(self._results)} result(s) — Enter to play · '
-                f'[bold]A[/] artist: {artists[0]["name"]}')
+                f'{len(self._results)} result(s) — ◆ artist / ◇ album at top · '
+                f'Enter to open')
 
     def _do_load_playlist(self, playlist_id: str) -> None:
         """Load a large playlist: show first page fast (ytmusicapi), then all.
@@ -1890,6 +1896,7 @@ class YTMApp(App):
                     self._playing_row = count
                 count += 1
         else:
+            count += self._render_entity_rows(tbl)   # artist/album rows atop search results
             for master_idx, r in self._visible_results():
                 playing = playing_key is not None and _track_key(r) == playing_key
                 marker = '▸' if playing else str(master_idx + 1)
@@ -1901,6 +1908,33 @@ class YTMApp(App):
                 count += 1
         if count:
             tbl.move_cursor(row=min(saved, count - 1))
+
+    def _render_entity_rows(self, tbl) -> int:
+        """Prepend the top artist(s) + a few albums to the search results so an artist is
+        reachable straight from search. Only in the library view with no active filter
+        (online). Rows are keyed 'A:<channelId>' / 'B:<browseId>'; returns rows added."""
+        if self.view_mode != 'library' or self._filter_text or self.app_mode == 'offline':
+            return 0
+        accent = self._accent()
+        added = 0
+        for a in self._search_artists[:3]:
+            cid = a.get('channelId')
+            if not cid:
+                continue
+            tbl.add_row(Text('◆', style=f'bold {accent}'),
+                        Text(a.get('name') or '', style=f'bold {accent}'),
+                        Text('artist', style=accent), Text('↵', style=accent),
+                        key=f'A:{cid}')
+            added += 1
+        for al in self._search_albums[:4]:
+            bid = al.get('browseId')
+            if not bid:
+                continue
+            sub = al.get('artist') or (al.get('kind') or 'album')
+            tbl.add_row(Text('◇', style=accent), Text(al.get('name') or '', style=accent),
+                        Text(sub, style='dim'), Text('↵', style='dim'), key=f'B:{bid}')
+            added += 1
+        return added
 
     def _highlighted_track(self):
         """Return (kind, index, track) for the row under the cursor, or None."""
@@ -1917,6 +1951,8 @@ class YTMApp(App):
             if 0 <= qi < len(self._queue):
                 return ('queue', qi, self._queue[qi])
         else:
+            if key[:2] in ('A:', 'B:'):
+                return None   # artist / album entity row, not a track
             mi = int(key)
             if 0 <= mi < len(self._results):
                 return ('library', mi, self._results[mi])
@@ -1933,6 +1969,12 @@ class YTMApp(App):
             if 0 <= qi < len(self._queue):
                 self._play_queue_item(qi)
         else:
+            if key.startswith('A:'):        # artist entity row → open the artist page
+                self._open_artist_channel(key[2:])
+                return
+            if key.startswith('B:'):        # album entity row → load the album
+                self._open_album(key[2:])
+                return
             idx = int(key)
             if idx < len(self._results):
                 # Keep the whole loaded list as the queue and point the index at
@@ -1941,6 +1983,25 @@ class YTMApp(App):
                 self._queue = list(self._results)
                 self._queue_idx = idx
                 self._play_queue_item(idx)
+
+    def _open_album(self, browse_id: str) -> None:
+        """Load an album (browseId) into results+queue and play it."""
+        name = next((a['name'] for a in self._search_albums
+                     if a.get('browseId') == browse_id), 'Album')
+        self._set_status(f'Loading album "{name}"…')
+
+        def _run():
+            try:
+                tracks = youtube.ytm_album(browse_id)
+            except Exception as exc:
+                self.call_from_thread(self._set_status, f'Album error: {exc}')
+                return
+            if tracks:
+                self.call_from_thread(self._start_track_list, tracks, 0, name)
+            else:
+                self.call_from_thread(self._set_status, 'Empty album.')
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _play_queue_item(self, idx: int, start: float = 0.0) -> None:
         if idx < 0 or idx >= len(self._queue):
@@ -2293,7 +2354,7 @@ class YTMApp(App):
         if not track or not track.get('id'):
             self._set_status('No track to start radio from.')
             return
-        self._set_status(f'📻 Building radio from "{track["title"]}"…')
+        self._set_status(f'∞ Building radio from "{track["title"]}"…')
 
         def _run():
             try:
@@ -2305,7 +2366,7 @@ class YTMApp(App):
                 self.call_from_thread(self._set_status, 'No radio available for this track.')
                 return
             self.call_from_thread(self._start_track_list, tracks, 0,
-                                  f'📻 Radio: {track["title"]}')
+                                  f'∞ Radio: {track["title"]}')
 
         threading.Thread(target=_run, daemon=True).start()
 
