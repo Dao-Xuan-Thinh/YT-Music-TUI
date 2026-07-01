@@ -167,7 +167,16 @@ Run it: `cd ios && ./fetch-deps.sh && ./build.sh sim`. Remaining gate: a physica
    redesigned to a **"terminal boombox"** (ASCII frame + block-char equalizer); **Artist page**
    (`search_artist`/`artist`/`album` bridges → artist card → `ArtistScreen` sections);
    **landscape** layout (list left, now-playing right).
-7. **Phase 2 (optional).** MPVKit backend for Opus/exact parity; offline files. Also
+7. **Polish round 3 (device feedback).** ✅ Top bar de-crowded (account name on its own
+   slim line above full-width tabs); fixed a stale-fetch hijack (cached-play path now
+   invalidates in-flight resolves); landscape swapped to **cover-left (large) / list-right**;
+   About "created by Spider In Bathroom" + repo link; **open-first** playlists/albums
+   everywhere (`CollectionScreen` with ▶ play-all); artist name clickable in the mini bar +
+   full-screen player → artist page; **real For-You durations** (`resolve.durations` via
+   `get_song`, background backfill — the home API omits them); **real audio-reactive
+   equalizer** (`AudioLevelTap`: MTAudioProcessingTap + vDSP FFT → 16 bands, graceful
+   fallback).
+8. **Phase 2 (optional).** MPVKit backend for Opus/exact parity; offline files. Also
    deferred: an artist page on the desktop `master`/`test` branch (user asked "maybe later").
 
 ## Distribution (personal use — no App Store needed)
