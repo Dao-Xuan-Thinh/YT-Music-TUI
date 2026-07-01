@@ -5,7 +5,7 @@ mpv runs in --idle mode; URLs loaded via IPC 'loadfile'. A single event-loop
 thread owns all I/O to avoid lock contention. The byte channel to mpv is
 platform-specific (a transport):
   - Windows : named pipe  \\.\pipe\<name>   (PeekNamedPipe + readline)
-  - Unix    : AF_UNIX socket  /tmp/<name>.sock  (select + recv)
+  - Unix    : AF_UNIX socket  <tmpdir>/<name>.sock  (select + recv)
 The mpv daemon / loadfile / observe-property model is identical on every OS.
 """
 
@@ -33,9 +33,36 @@ if _IS_WINDOWS:
 else:
     import socket
     import select
-    # Short path under /tmp avoids the AF_UNIX ~104-char path limit (macOS $TMPDIR
-    # can be long). mpv creates this socket file on launch.
-    _IPC_ARG = f'/tmp/ytm-tui-{_PID}.sock'
+    import tempfile
+
+    def _unix_socket_path():
+        """Pick a writable, short dir for the AF_UNIX socket.
+
+        Prefer /tmp — it's short, so it stays under the AF_UNIX ~104-char path
+        limit (macOS $TMPDIR can be long). But /tmp isn't writable everywhere:
+        on **Termux/Android** there is no writable /tmp at all, only $TMPDIR
+        under the app's private prefix. Fall back to $TMPDIR /
+        tempfile.gettempdir() so mpv IPC (and thus transport controls) works on
+        the phone instead of failing to create the socket.
+        """
+        name = f'ytm-tui-{_PID}.sock'
+        candidates = []
+        if os.path.isdir('/tmp') and os.access('/tmp', os.W_OK):
+            candidates.append('/tmp')
+        env_tmp = os.environ.get('TMPDIR')
+        if env_tmp:
+            candidates.append(env_tmp)
+        candidates.append(tempfile.gettempdir())
+        for d in candidates:
+            try:
+                if d and os.path.isdir(d) and os.access(d, os.W_OK):
+                    return os.path.join(d, name)
+            except OSError:
+                continue
+        return os.path.join(tempfile.gettempdir(), name)
+
+    # mpv creates this socket file on launch; Python connects to the same path.
+    _IPC_ARG = _unix_socket_path()
     _CONNECT_TARGET = _IPC_ARG
 
 

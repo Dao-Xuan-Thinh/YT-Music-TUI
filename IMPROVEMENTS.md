@@ -168,21 +168,20 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
   installed, `shutil.which` may miss it until terminal restart — mention in the
   no-backend status message. (`player.py:42`, `main.py:343`)
 
-- [ ] **Avoid `/tmp` hard-code on Unix where unsuitable.** `/tmp` is correct for
-  the AF_UNIX path-length limit, but on locked-down systems consider
-  `$XDG_RUNTIME_DIR` when it's short enough. (`player.py:38`)
+- [x] **Avoid `/tmp` hard-code on Unix where unsuitable.** `player._unix_socket_path()`
+  now prefers `/tmp` (short → under the AF_UNIX ~104-char limit) but falls back to
+  `$TMPDIR` / `tempfile.gettempdir()` when `/tmp` isn't writable — fixes Termux/Android
+  (no writable `/tmp`) so mpv IPC + transport controls work there. (`player.py`)
 
 - [ ] **Mobile / "host it on the phone itself" (research, 2026-06-25).**
   - **Android via Termux is the viable native path.** `pkg install python mpv
     ffmpeg` → `pip install -r requirements.txt` → `python main.py`. The real
     Textual TUI runs in the Termux terminal with audio out the phone speakers;
     `_find_ytdlp()` finds Termux's yt-dlp on `$PREFIX/bin` automatically.
-  - **Blocker to fix when pursued:** the mpv IPC socket is hard-coded to
-    `/tmp/ytm-tui-<pid>.sock` (`player.py:38`), but `/tmp` doesn't exist on Termux
-    (`$TMPDIR` = `…/com.termux/files/usr/tmp`). Use `$TMPDIR` /
-    `tempfile.gettempdir()` while keeping the path short for the AF_UNIX limit.
-    May also need an mpv `--ao` fallback (opensles/pulse). Pairs with the `/tmp`
-    item above.
+  - **Socket-path blocker: FIXED.** `player._unix_socket_path()` now falls back
+    to `$TMPDIR`/`tempfile.gettempdir()` when `/tmp` isn't writable, so mpv IPC +
+    transport controls work on Termux. (May still want an mpv `--ao` nudge —
+    opensles/pulse — if a given device has no default audio out.)
   - **iOS:** not viable natively (no mpv, restricted audio/background; iSH/a-Shell
     can't run the mpv streaming path). Only a thin client to a remote box.
   - **`textual serve`** (browser/touch UI) is a possible later phase, but the

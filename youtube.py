@@ -594,6 +594,183 @@ def ytm_search(query, max_results=15):
     return out[:max_results]
 
 
+def _thumb(d):
+    thumbs = d.get('thumbnails') or []
+    return thumbs[-1]['url'] if thumbs else ''
+
+
+def ytm_search_entities(query, max_results=15):
+    """Top artist/album matches (NO songs) — used to enrich keyword search with an artist
+    entry + a few albums. Returns {'artists': [{name, channelId, thumbnail}],
+    'albums': [{name, browseId, kind, thumbnail, artist}]}.
+
+    Uses the *filtered* searches (filter='artists'/'albums'). The UNFILTERED search ranks
+    artists badly — e.g. "Ado" returns a malformed empty entry then a tiny 5-subscriber
+    "ADO" channel before the real 9M-subscriber Ado — so we query each type directly.
+    """
+    out = {'artists': [], 'albums': []}
+    try:
+        with _ytm_lock:
+            ares = _get_ytm().search(query, filter='artists', limit=5)
+        for r in ares:
+            if r.get('browseId'):
+                out['artists'].append({'name': r.get('artist') or r.get('title') or '',
+                                       'channelId': r['browseId'], 'thumbnail': _thumb(r)})
+    except Exception:
+        pass
+    try:
+        with _ytm_lock:
+            alres = _get_ytm().search(query, filter='albums', limit=6)
+        for r in alres:
+            if r.get('browseId'):
+                out['albums'].append({
+                    'name': r.get('title') or '', 'browseId': r['browseId'],
+                    'kind': r.get('resultType') or 'album', 'thumbnail': _thumb(r),
+                    'artist': ', '.join(a.get('name', '') for a in (r.get('artists') or [])
+                                        if a.get('name'))})
+    except Exception:
+        pass
+
+    def _dedupe(items, key):
+        seen, o = set(), []
+        for it in items:
+            k = it.get(key)
+            if k and k not in seen:
+                seen.add(k)
+                o.append(it)
+        return o
+    out['artists'] = _dedupe(out['artists'], 'channelId')[:3]
+    out['albums'] = _dedupe(out['albums'], 'browseId')[:6]
+    return out
+
+
+def ytm_search_all(query, max_results=15):
+    """Richer search: songs (via the songs filter) + artist/album entities. Returns
+    {'songs': [track], 'artists': [...], 'albums': [...]}."""
+    out = {'songs': []}
+    try:
+        out['songs'] = ytm_search(query, max_results=max_results)
+    except Exception:
+        pass
+    out.update(ytm_search_entities(query, max_results=max_results))
+    return out
+
+
+def ytm_artist(channel_id):
+    """Artist page → {name, subscribers, thumbnail, sections}. Each section is
+    {title, kind, items}; song/video items are track dicts, album/single items are
+    {'kind':'album','name','browseId','thumbnail','year'} (opened via ytm_album)."""
+    with _ytm_lock:
+        a = _get_ytm().get_artist(channel_id)
+    sections = []
+    for key, title in (('songs', 'Songs'), ('albums', 'Albums'),
+                       ('singles', 'Singles'), ('videos', 'Videos')):
+        block = a.get(key)
+        if not isinstance(block, dict):
+            continue
+        items = []
+        for r in (block.get('results') or []):
+            if not isinstance(r, dict):
+                continue
+            if r.get('videoId'):
+                items.append(_ytm_track_to_dict(r))
+            elif r.get('browseId'):
+                items.append({'kind': 'album', 'name': r.get('title') or '',
+                              'browseId': r['browseId'], 'thumbnail': _thumb(r),
+                              'year': r.get('year') or ''})
+        if items:
+            sections.append({'title': title, 'kind': key, 'items': items})
+    return {'name': a.get('name') or '', 'subscribers': a.get('subscribers') or '',
+            'thumbnail': _thumb(a), 'sections': sections}
+
+
+def ytm_album(browse_id):
+    """Album tracks (via get_album) → list of track dicts."""
+    with _ytm_lock:
+        data = _get_ytm().get_album(browse_id)
+    return [_ytm_track_to_dict(t) for t in (data.get('tracks') or []) if t.get('videoId')]
+
+
+def ytm_radio(video_id, limit=25):
+    """Endless mix seeded from a track (get_watch_playlist radio) → list of track dicts."""
+    with _ytm_lock:
+        data = _get_ytm().get_watch_playlist(videoId=video_id, radio=True, limit=limit)
+    out = []
+    for t in (data.get('tracks') or []):
+        if not t.get('videoId'):
+            continue
+        if 'duration' not in t and t.get('length'):
+            t = dict(t)
+            t['duration'] = t['length']   # watch-playlist tracks carry 'length' (M:SS)
+        out.append(_ytm_track_to_dict(t))
+    return out
+
+
+def ytm_lyrics(video_id):
+    """Lyrics for a video, or None if unavailable. Requests timestamps so playback can
+    follow along when the song has synced lyrics.
+
+    Returns {'synced': bool, 'lines': [{'text','start','end'}], 'text': str, 'source': str}.
+    `start`/`end` are milliseconds (0 when not synced). `text` is the joined plain lyrics.
+    """
+    # Use an ANONYMOUS client: get_lyrics(timestamps=True) runs inside as_mobile()
+    # (ANDROID_MUSIC context), which rejects cookie/browser auth with HTTP 400. Lyrics are
+    # public, so a signed-out client works for everyone. Fall back to plain if timestamped
+    # lyrics can't be fetched.
+    try:
+        with _ytm_lock:
+            yt = _new_ytm()
+            wp = yt.get_watch_playlist(videoId=video_id, limit=1)
+            bid = wp.get('lyrics')
+            if not bid:
+                return None
+            try:
+                lyr = yt.get_lyrics(bid, timestamps=True)
+            except Exception:
+                lyr = yt.get_lyrics(bid, timestamps=False)
+    except Exception:
+        return None
+    if not lyr:
+        return None
+
+    def _g(obj, k):
+        return obj.get(k) if isinstance(obj, dict) else getattr(obj, k, None)
+
+    source = _g(lyr, 'source') or ''
+    if _g(lyr, 'hasTimestamps'):
+        lines = []
+        for ln in (_g(lyr, 'lyrics') or []):
+            lines.append({'text': _g(ln, 'text') or '',
+                          'start': int(_g(ln, 'start_time') or 0),
+                          'end': int(_g(ln, 'end_time') or 0)})
+        if lines:
+            return {'synced': True, 'lines': lines,
+                    'text': '\n'.join(l['text'] for l in lines), 'source': source}
+    # Plain lyrics (no timing).
+    text = _g(lyr, 'lyrics')
+    if not isinstance(text, str) or not text:
+        return None
+    lines = [{'text': t, 'start': 0, 'end': 0} for t in text.split('\n')]
+    return {'synced': False, 'lines': lines, 'text': text, 'source': source}
+
+
+def translate_text(text, target='en'):
+    """Translate a whole block of text to `target` in ONE request (free Google endpoint).
+    Newlines are preserved, so the caller can split the result back into per-line
+    translations aligned with the original. Returns '' on failure."""
+    if not text:
+        return ''
+    try:
+        import requests
+        params = {'client': 'gtx', 'sl': 'auto', 'tl': target, 'dt': 't', 'q': text}
+        r = requests.get('https://translate.googleapis.com/translate_a/single',
+                         params=params, timeout=_HTTP_TIMEOUT)
+        data = r.json()
+        return ''.join(seg[0] for seg in data[0] if seg and seg[0])
+    except Exception:
+        return ''
+
+
 def _ydl_opts(cookies_file=None, extra=None):
     opts = {
         'quiet': True,
