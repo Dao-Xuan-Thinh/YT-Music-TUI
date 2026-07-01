@@ -30,18 +30,12 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             TUI.bg.ignoresSafeArea()
-            VStack(spacing: 8) {
-                tabBar
-                if vm.tab == .search { searchRow }
-                if vm.tab == .search, let hit = vm.artistHit { artistCard(hit) }
-                if vm.tab == .library { librarySections }
-                if vm.tab == .foryou { forYouHeader }
-                if vm.tab == .queue, !vm.queue.isEmpty { queueActions }
-                TUIDivider()
-                list
-                TUIDivider()
-                nowPlaying
-                footer
+            GeometryReader { geo in
+                if geo.size.width > geo.size.height {
+                    landscapeStack
+                } else {
+                    portraitStack
+                }
             }
             .padding(.horizontal, 12)
             .padding(.top, 6)
@@ -86,6 +80,48 @@ struct ContentView: View {
             set: { if !$0 { vm.artistPage = nil } })
         ) {
             if let page = vm.artistPage { ArtistScreen(vm: vm, page: page) }
+        }
+    }
+
+    // MARK: - Orientation layouts
+
+    /// The tab bar + per-tab sub-header rows (shared by both orientations).
+    @ViewBuilder private var browseHeader: some View {
+        tabBar
+        if vm.tab == .search { searchRow }
+        if vm.tab == .search, let hit = vm.artistHit { artistCard(hit) }
+        if vm.tab == .library { librarySections }
+        if vm.tab == .foryou { forYouHeader }
+        if vm.tab == .queue, !vm.queue.isEmpty { queueActions }
+    }
+
+    private var portraitStack: some View {
+        VStack(spacing: 8) {
+            browseHeader
+            TUIDivider()
+            list
+            TUIDivider()
+            nowPlaying
+            footer
+        }
+    }
+
+    /// Landscape: browse list on the left, now-playing (cover + controls) on the right.
+    private var landscapeStack: some View {
+        VStack(spacing: 6) {
+            HStack(alignment: .top, spacing: 14) {
+                VStack(spacing: 6) {
+                    browseHeader
+                    TUIDivider()
+                    list
+                }
+                .frame(maxWidth: .infinity)
+                VStack(spacing: 6) {
+                    nowPlaying
+                }
+                .frame(maxWidth: .infinity)
+            }
+            footer
         }
     }
 
