@@ -164,3 +164,6 @@ char *python_artist(const char *channel_id) { return call_str_func("resolve", "a
 char *python_album(const char *browse_id) { return call_str_func("resolve", "album", browse_id); }
 char *python_durations(const char *ids_csv) { return call_str_func("resolve", "durations", ids_csv); }
 char *python_lyrics(const char *video_id) { return call_str_func("resolve", "lyrics", video_id); }
+char *python_translate(const char *text, const char *target) {
+    return call_str_func2("resolve", "translate", text, target);
+}

@@ -423,25 +423,58 @@ def album(browse_id: str) -> str:
 
 
 def lyrics(video_id: str) -> str:
-    """Lyrics for a videoId → JSON {ok, lyrics, source}. Resolves the lyrics browseId via a
-    1-item watch playlist, then get_lyrics. ok=False when unavailable."""
+    """Lyrics for a videoId → JSON {ok, synced, lines:[{text,start,end}], text, source}.
+    Requests timestamps so the player can follow along; falls back to plain when a song has
+    no timing. start/end are milliseconds (0 when not synced). ok=False when unavailable."""
     try:
         yt = _ytm()
         wp = yt.get_watch_playlist(videoId=video_id, limit=1)
         bid = wp.get("lyrics")
         if not bid:
             return json.dumps({"ok": False})
-        lyr = yt.get_lyrics(bid)
+        lyr = yt.get_lyrics(bid, timestamps=True)
     except Exception as e:
         print("LYRICS_ERROR:", type(e).__name__, e, flush=True)
         return json.dumps({"ok": False})
     if not lyr:
         return json.dumps({"ok": False})
-    text = lyr.get("lyrics") if isinstance(lyr, dict) else getattr(lyr, "lyrics", None)
-    source = (lyr.get("source") if isinstance(lyr, dict) else getattr(lyr, "source", "")) or ""
-    if not text:
+
+    def _g(obj, k):
+        return obj.get(k) if isinstance(obj, dict) else getattr(obj, k, None)
+
+    source = _g(lyr, "source") or ""
+    if _g(lyr, "hasTimestamps"):
+        lines = [{"text": _g(ln, "text") or "",
+                  "start": int(_g(ln, "start_time") or 0),
+                  "end": int(_g(ln, "end_time") or 0)} for ln in (_g(lyr, "lyrics") or [])]
+        if lines:
+            return json.dumps({"ok": True, "synced": True, "lines": lines,
+                               "text": "\n".join(l["text"] for l in lines), "source": source})
+    text = _g(lyr, "lyrics")
+    if not isinstance(text, str) or not text:
         return json.dumps({"ok": False})
-    return json.dumps({"ok": True, "lyrics": text, "source": source})
+    lines = [{"text": t, "start": 0, "end": 0} for t in text.split("\n")]
+    return json.dumps({"ok": True, "synced": False, "lines": lines,
+                       "text": text, "source": source})
+
+
+def translate(text: str, target: str = "en") -> str:
+    """Translate a whole text block to `target` in ONE request (free Google endpoint).
+    Newlines preserved → the caller splits back into per-line translations. Returns
+    JSON {ok, text}."""
+    if not text:
+        return json.dumps({"ok": False, "text": ""})
+    try:
+        import requests
+        params = {"client": "gtx", "sl": "auto", "tl": target, "dt": "t", "q": text}
+        r = requests.get("https://translate.googleapis.com/translate_a/single",
+                         params=params, timeout=20)
+        data = r.json()
+        out = "".join(seg[0] for seg in data[0] if seg and seg[0])
+        return json.dumps({"ok": bool(out), "text": out})
+    except Exception as e:
+        print("TRANSLATE_ERROR:", type(e).__name__, e, flush=True)
+        return json.dumps({"ok": False, "text": ""})
 
 
 def _ytm_playlist(playlist_id: str) -> list:

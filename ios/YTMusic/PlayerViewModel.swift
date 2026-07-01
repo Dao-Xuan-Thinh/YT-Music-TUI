@@ -32,10 +32,18 @@ final class PlayerViewModel: ObservableObject {
     @Published var collectionTitle = ""
     @Published var collectionTracks: [SearchResult] = []
     @Published var collectionLoading = false
-    @Published var lyrics: String?                 // lyrics for the current track (nil = none)
+    @Published var lyricLines: [LyricLine] = []    // current track's lyrics (empty = none)
+    @Published var lyricsSynced = false
     @Published var lyricsSource = ""
     @Published var lyricsLoading = false
+    @Published var lyricsAvailable = false
+    // Translation (off until the user toggles it).
+    @Published var translateOn = false
+    @Published var translateLang = "en"
+    @Published var lyricsTranslated: [String] = []  // aligned to lyricLines
+    @Published var translating = false
     private var lyricsForID: String?
+    private var lyricsFullText = ""
 
     let playback = PlaybackService.shared
     let library = LibraryStore.shared
@@ -324,24 +332,79 @@ final class PlayerViewModel: ObservableObject {
 
     func closeArtist() { artistPage = nil }
 
-    /// Fetch lyrics for a videoId (once per id) → publishes `lyrics`/`lyricsSource`.
+    /// Fetch lyrics for a videoId (once per id) → publishes structured lines + source.
+    /// Resets any active translation (re-fetched on demand for the new track).
     func loadLyrics(for id: String) {
         guard !id.isEmpty, lyricsForID != id else { return }
         lyricsForID = id
-        lyrics = nil
+        lyricLines = []
+        lyricsTranslated = []
+        lyricsSynced = false
+        lyricsAvailable = false
         lyricsSource = ""
+        lyricsFullText = ""
         lyricsLoading = true
         DispatchQueue.global(qos: .utility).async {
             let c = python_lyrics(id)
             let json = c.map { String(cString: $0) } ?? "{}"
             if let c { free(c) }
-            let obj = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
-            let ok = (obj?["ok"] as? Bool) ?? false
+            let resp = LyricsResponse.decode(json)
             DispatchQueue.main.async {
                 guard self.lyricsForID == id else { return }   // a newer track won
                 self.lyricsLoading = false
-                self.lyrics = ok ? (obj?["lyrics"] as? String) : nil
-                self.lyricsSource = (obj?["source"] as? String) ?? ""
+                if let r = resp {
+                    self.lyricLines = r.lines
+                    self.lyricsSynced = r.synced
+                    self.lyricsSource = r.source
+                    self.lyricsFullText = r.text
+                    self.lyricsAvailable = !r.lines.isEmpty
+                    if self.translateOn { self.fetchTranslation() }   // keep translation on
+                }
+            }
+        }
+    }
+
+    /// The index of the lyric line for the current playback position (synced only).
+    func currentLyricIndex(positionSeconds: Double) -> Int {
+        guard lyricsSynced else { return -1 }
+        let ms = Int(positionSeconds * 1000)
+        var cur = -1
+        for (i, ln) in lyricLines.enumerated() {
+            if ln.start <= ms { cur = i } else { break }
+        }
+        return cur
+    }
+
+    func toggleTranslate() {
+        translateOn.toggle()
+        if translateOn && lyricsTranslated.isEmpty { fetchTranslation() }
+    }
+
+    func setTranslateLang(_ code: String) {
+        let c = code.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !c.isEmpty, c != translateLang else { return }
+        translateLang = c
+        lyricsTranslated = []
+        if translateOn { fetchTranslation() }
+    }
+
+    private func fetchTranslation() {
+        let text = lyricsFullText
+        guard !text.isEmpty, !translating else { return }
+        let lang = translateLang
+        let id = lyricsForID
+        translating = true
+        DispatchQueue.global(qos: .utility).async {
+            let c = python_translate(text, lang)
+            let json = c.map { String(cString: $0) } ?? "{}"
+            if let c { free(c) }
+            let obj = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+            let ok = (obj?["ok"] as? Bool) ?? false
+            let translated = (obj?["text"] as? String) ?? ""
+            DispatchQueue.main.async {
+                guard self.lyricsForID == id else { return }
+                self.translating = false
+                self.lyricsTranslated = ok ? translated.components(separatedBy: "\n") : []
             }
         }
     }

@@ -56,3 +56,27 @@ struct SearchResult: Codable, Identifiable, Equatable {
         return (try? JSONDecoder().decode([SearchResult].self, from: data)) ?? []
     }
 }
+
+/// One lyric line, with millisecond timing (0 when the song isn't synced).
+struct LyricLine: Decodable, Equatable, Identifiable {
+    let text: String
+    let start: Int
+    let end: Int
+    var id: Int { start }
+}
+
+/// Decoded `python_lyrics` response.
+struct LyricsResponse: Decodable {
+    let ok: Bool
+    var synced: Bool = false
+    var lines: [LyricLine] = []
+    var text: String = ""
+    var source: String = ""
+
+    static func decode(_ json: String) -> LyricsResponse? {
+        guard let data = json.data(using: .utf8),
+              let r = try? JSONDecoder().decode(LyricsResponse.self, from: data),
+              r.ok else { return nil }
+        return r
+    }
+}
