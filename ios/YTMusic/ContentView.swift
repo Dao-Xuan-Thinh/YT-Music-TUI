@@ -110,37 +110,42 @@ struct ContentView: View {
         }
     }
 
-    /// Landscape: now-playing (large cover + controls) on the LEFT, browse list on the RIGHT.
+    /// Landscape: now-playing (square cover + controls) on the LEFT, browse list on the RIGHT.
+    /// The left column is intentionally narrower (~38%) so the right column keeps enough width
+    /// for the 4 tabs; the cover is sized to fit both the column width and the visible height.
     private var landscapeStack: some View {
-        VStack(spacing: 6) {
-            HStack(alignment: .top, spacing: 16) {
-                nowPlayingLandscape
+        GeometryReader { geo in
+            let leftW = geo.size.width * 0.38
+            let coverSide = min(leftW - 8, geo.size.height * 0.5)
+            VStack(spacing: 6) {
+                HStack(alignment: .top, spacing: 16) {
+                    nowPlayingLandscape(coverSide: coverSide)
+                        .frame(width: leftW)
+                    VStack(spacing: 6) {
+                        browseHeader
+                        TUIDivider()
+                        list
+                    }
                     .frame(maxWidth: .infinity)
-                VStack(spacing: 6) {
-                    browseHeader
-                    TUIDivider()
-                    list
                 }
-                .frame(maxWidth: .infinity)
+                footer
             }
-            footer
         }
     }
 
-    /// Landscape now-playing: a big square cover fills the empty left side, then title,
-    /// scrubber, and transport.
-    private var nowPlayingLandscape: some View {
+    /// Landscape now-playing: a square (1:1) cover, then title, scrubber, and transport.
+    private func nowPlayingLandscape(coverSide: CGFloat) -> some View {
         VStack(spacing: 10) {
             AsyncImage(url: playback.current?.thumbnailURL) { phase in
                 if case .success(let img) = phase { img.resizable().scaledToFill() }
                 else { TUI.panel.overlay(Text("♪").font(.system(size: 56)).foregroundStyle(TUI.dim)) }
             }
-            .aspectRatio(1, contentMode: .fit)
-            .frame(maxWidth: .infinity)
+            .frame(width: coverSide, height: coverSide)   // fixed square → fills, no letterbox
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(TUI.dim.opacity(0.3)))
             .contentShape(Rectangle())
             .onTapGesture { if playback.current != nil { showNowPlaying = true } }
+            .frame(maxWidth: .infinity)   // center the cover in the column
 
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -238,6 +243,7 @@ struct ContentView: View {
         let active = vm.tab == t
         return Text(active ? "[ \(title) ]" : title.lowercased())
             .foregroundStyle(active ? TUI.accent : TUI.dim)
+            .lineLimit(1).fixedSize(horizontal: true, vertical: false)   // never wrap
             .onTapGesture { vm.tab = t; vm.openedPlaylist = nil; vm.highlightIndex = 0 }
     }
 
