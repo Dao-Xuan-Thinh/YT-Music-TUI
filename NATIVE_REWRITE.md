@@ -159,7 +159,16 @@ Run it: `cd ios && ./fetch-deps.sh && ./build.sh sim`. Remaining gate: a physica
    (desktop UA) + paste-cookies fallback → ytmusicapi browser auth (`set_auth`),
    persisted/re-armed at launch. Plus M5-A fixes (search-clear, playlist view-not-play,
    app icon).
-6. **Phase 2 (optional).** MPVKit backend for Opus/exact parity; offline files.
+6. **Polish round 2 (device feedback).** ✅ `WaveText` rewritten as an animated gradient
+   (fixes long-title overlap) + applied to the playing list row; **15 themes** ported from
+   desktop (`AppTheme.make`/`Color(hex:)`, light+dark) with a footer **theme-picker popup**;
+   footer drops the source chip + gains the gear, tab bar shows the account name; **For You**
+   real durations (`_parse_ytm_duration`) + playlists/albums (mixed `kind` items); Now-Playing
+   redesigned to a **"terminal boombox"** (ASCII frame + block-char equalizer); **Artist page**
+   (`search_artist`/`artist`/`album` bridges → artist card → `ArtistScreen` sections);
+   **landscape** layout (list left, now-playing right).
+7. **Phase 2 (optional).** MPVKit backend for Opus/exact parity; offline files. Also
+   deferred: an artist page on the desktop `master`/`test` branch (user asked "maybe later").
 
 ## Distribution (personal use — no App Store needed)
 
