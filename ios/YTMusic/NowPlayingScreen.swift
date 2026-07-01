@@ -230,7 +230,7 @@ struct NowPlayingScreen: View {
             Text("repeat:\(vm.repeatMode.rawValue)")
                 .foregroundStyle(vm.repeatMode == .off ? TUI.dim : TUI.accent)
                 .onTapGesture { vm.cycleRepeat() }
-            Text("📻 radio")
+            Text("∞ radio")
                 .foregroundStyle(vm.currentResult == nil ? TUI.dim : TUI.accent)
                 .onTapGesture { vm.startRadio() }
         }
