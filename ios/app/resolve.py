@@ -426,13 +426,21 @@ def lyrics(video_id: str) -> str:
     """Lyrics for a videoId → JSON {ok, synced, lines:[{text,start,end}], text, source}.
     Requests timestamps so the player can follow along; falls back to plain when a song has
     no timing. start/end are milliseconds (0 when not synced). ok=False when unavailable."""
+    # Use an ANONYMOUS client: get_lyrics(timestamps=True) runs inside as_mobile()
+    # (ANDROID_MUSIC context), which rejects cookie/browser auth with HTTP 400 — so once
+    # signed in, every timestamped lyrics call fails. Lyrics are public, so a signed-out
+    # client works for everyone. Fall back to plain if the timestamped call can't be fetched.
     try:
-        yt = _ytm()
+        from ytmusicapi import YTMusic
+        yt = YTMusic()
         wp = yt.get_watch_playlist(videoId=video_id, limit=1)
         bid = wp.get("lyrics")
         if not bid:
             return json.dumps({"ok": False})
-        lyr = yt.get_lyrics(bid, timestamps=True)
+        try:
+            lyr = yt.get_lyrics(bid, timestamps=True)
+        except Exception:
+            lyr = yt.get_lyrics(bid, timestamps=False)
     except Exception as e:
         print("LYRICS_ERROR:", type(e).__name__, e, flush=True)
         return json.dumps({"ok": False})

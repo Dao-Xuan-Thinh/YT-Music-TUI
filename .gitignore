@@ -16,6 +16,7 @@ oauth.json
 # iOS native rewrite: generated / downloaded / vendored (reproduce via ios/fetch-deps.sh + xcodegen)
 ios/build/
 ios/YTMusic.xcodeproj/
+ios/YTMusic/Info.plist
 ios/Support/Python.xcframework/
 ios/app_packages/
 ios/Support/*.tar.gz
