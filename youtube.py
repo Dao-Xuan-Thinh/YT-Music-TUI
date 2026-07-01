@@ -713,14 +713,21 @@ def ytm_lyrics(video_id):
     Returns {'synced': bool, 'lines': [{'text','start','end'}], 'text': str, 'source': str}.
     `start`/`end` are milliseconds (0 when not synced). `text` is the joined plain lyrics.
     """
+    # Use an ANONYMOUS client: get_lyrics(timestamps=True) runs inside as_mobile()
+    # (ANDROID_MUSIC context), which rejects cookie/browser auth with HTTP 400. Lyrics are
+    # public, so a signed-out client works for everyone. Fall back to plain if timestamped
+    # lyrics can't be fetched.
     try:
         with _ytm_lock:
-            yt = _get_ytm()
+            yt = _new_ytm()
             wp = yt.get_watch_playlist(videoId=video_id, limit=1)
             bid = wp.get('lyrics')
             if not bid:
                 return None
-            lyr = yt.get_lyrics(bid, timestamps=True)
+            try:
+                lyr = yt.get_lyrics(bid, timestamps=True)
+            except Exception:
+                lyr = yt.get_lyrics(bid, timestamps=False)
     except Exception:
         return None
     if not lyr:
