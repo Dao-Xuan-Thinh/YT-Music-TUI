@@ -200,20 +200,34 @@ def _firefox_family_roots():
     home = os.path.expanduser('~')
     appdata = os.environ.get('APPDATA', os.path.join(home, 'AppData', 'Roaming'))
     support = os.path.join(home, 'Library', 'Application Support')
-    # (display name, [candidate profile-container roots])
+    # On Linux a Firefox-family browser may be native, Flatpak (sandboxed under
+    # ~/.var/app/<app-id>/) or Snap (~/snap/<name>/common/), each with its own profile
+    # root — so we probe all of them. (display name, [candidate profile-container roots])
     return [
         ('Firefox',   [os.path.join(appdata, 'Mozilla', 'Firefox', 'Profiles'),
                        os.path.join(support, 'Firefox', 'Profiles'),
-                       os.path.join(home, '.mozilla', 'firefox')]),
+                       os.path.join(home, '.mozilla', 'firefox'),
+                       os.path.join(home, '.var', 'app', 'org.mozilla.firefox',
+                                    '.mozilla', 'firefox'),
+                       os.path.join(home, 'snap', 'firefox', 'common',
+                                    '.mozilla', 'firefox')]),
         ('Zen',       [os.path.join(appdata, 'zen', 'Profiles'),
                        os.path.join(support, 'zen', 'Profiles'),
-                       os.path.join(home, '.zen')]),
+                       os.path.join(home, '.zen'),
+                       os.path.join(home, '.var', 'app', 'app.zen_browser.zen', '.zen'),
+                       os.path.join(home, 'snap', 'zen-browser', 'common', '.zen'),
+                       os.path.join(home, 'snap', 'zen', 'common', '.zen')]),
         ('LibreWolf', [os.path.join(appdata, 'librewolf', 'Profiles'),
                        os.path.join(support, 'librewolf', 'Profiles'),
-                       os.path.join(home, '.librewolf')]),
+                       os.path.join(home, '.librewolf'),
+                       os.path.join(home, '.var', 'app',
+                                    'io.gitlab.librewolf-community', '.librewolf'),
+                       os.path.join(home, 'snap', 'librewolf', 'common', '.librewolf')]),
         ('Waterfox',  [os.path.join(appdata, 'Waterfox', 'Profiles'),
                        os.path.join(support, 'Waterfox', 'Profiles'),
-                       os.path.join(home, '.waterfox')]),
+                       os.path.join(home, '.waterfox'),
+                       os.path.join(home, '.var', 'app', 'net.waterfox.waterfox',
+                                    '.waterfox')]),
     ]
 
 
