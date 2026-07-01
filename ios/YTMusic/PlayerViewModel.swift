@@ -32,6 +32,10 @@ final class PlayerViewModel: ObservableObject {
     @Published var collectionTitle = ""
     @Published var collectionTracks: [SearchResult] = []
     @Published var collectionLoading = false
+    @Published var lyrics: String?                 // lyrics for the current track (nil = none)
+    @Published var lyricsSource = ""
+    @Published var lyricsLoading = false
+    private var lyricsForID: String?
 
     let playback = PlaybackService.shared
     let library = LibraryStore.shared
@@ -319,6 +323,28 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func closeArtist() { artistPage = nil }
+
+    /// Fetch lyrics for a videoId (once per id) → publishes `lyrics`/`lyricsSource`.
+    func loadLyrics(for id: String) {
+        guard !id.isEmpty, lyricsForID != id else { return }
+        lyricsForID = id
+        lyrics = nil
+        lyricsSource = ""
+        lyricsLoading = true
+        DispatchQueue.global(qos: .utility).async {
+            let c = python_lyrics(id)
+            let json = c.map { String(cString: $0) } ?? "{}"
+            if let c { free(c) }
+            let obj = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+            let ok = (obj?["ok"] as? Bool) ?? false
+            DispatchQueue.main.async {
+                guard self.lyricsForID == id else { return }   // a newer track won
+                self.lyricsLoading = false
+                self.lyrics = ok ? (obj?["lyrics"] as? String) : nil
+                self.lyricsSource = (obj?["source"] as? String) ?? ""
+            }
+        }
+    }
 
     /// Open the artist page for a plain artist name (from the now-playing artist label):
     /// look up the top artist match, then open it.

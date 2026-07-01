@@ -422,6 +422,28 @@ def album(browse_id: str) -> str:
         return json.dumps([])
 
 
+def lyrics(video_id: str) -> str:
+    """Lyrics for a videoId → JSON {ok, lyrics, source}. Resolves the lyrics browseId via a
+    1-item watch playlist, then get_lyrics. ok=False when unavailable."""
+    try:
+        yt = _ytm()
+        wp = yt.get_watch_playlist(videoId=video_id, limit=1)
+        bid = wp.get("lyrics")
+        if not bid:
+            return json.dumps({"ok": False})
+        lyr = yt.get_lyrics(bid)
+    except Exception as e:
+        print("LYRICS_ERROR:", type(e).__name__, e, flush=True)
+        return json.dumps({"ok": False})
+    if not lyr:
+        return json.dumps({"ok": False})
+    text = lyr.get("lyrics") if isinstance(lyr, dict) else getattr(lyr, "lyrics", None)
+    source = (lyr.get("source") if isinstance(lyr, dict) else getattr(lyr, "source", "")) or ""
+    if not text:
+        return json.dumps({"ok": False})
+    return json.dumps({"ok": True, "lyrics": text, "source": source})
+
+
 def _ytm_playlist(playlist_id: str) -> list:
     """Full playlist via ytmusicapi (paginates all tracks — no 100-ish cap)."""
     pid = playlist_id[2:] if playlist_id.startswith("VL") else playlist_id

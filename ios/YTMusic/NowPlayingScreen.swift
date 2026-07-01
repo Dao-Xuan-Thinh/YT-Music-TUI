@@ -26,7 +26,7 @@ struct NowPlayingScreen: View {
                 transport
                 toggles
                 volume
-                Spacer(minLength: 0)
+                lyricsSection
             }
             .padding(.horizontal, 22)
             .padding(.top, 8)
@@ -42,7 +42,38 @@ struct NowPlayingScreen: View {
                 .onEnded { v in if v.translation.height > 120 { dismiss() } else { dragY = 0 } }
         )
         .onChange(of: playback.position) { p in if !scrubbing { scrub = p } }
-        .onAppear { scrub = playback.position }
+        .onAppear { scrub = playback.position; loadLyricsForCurrent() }
+        .onChange(of: vm.currentResult?.id) { _ in loadLyricsForCurrent() }
+    }
+
+    private func loadLyricsForCurrent() {
+        if let id = vm.currentResult?.id, !id.isEmpty { vm.loadLyrics(for: id) }
+    }
+
+    /// Lyrics at the bottom of the player — scrollable, fills the remaining space.
+    private var lyricsSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("lyrics").font(TUI.mono(11, .bold)).foregroundStyle(TUI.dim)
+                if vm.lyricsLoading { ProgressView().controlSize(.mini).tint(TUI.accent) }
+                Spacer()
+                if !vm.lyricsSource.isEmpty {
+                    Text(vm.lyricsSource).font(TUI.mono(10)).foregroundStyle(TUI.dim).lineLimit(1)
+                }
+            }
+            ScrollView {
+                if let text = vm.lyrics {
+                    Text(text).font(TUI.mono(13)).foregroundStyle(TUI.fg)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else if !vm.lyricsLoading {
+                    Text("no lyrics for this track")
+                        .font(TUI.mono(12)).foregroundStyle(TUI.dim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     // MARK: - Pieces

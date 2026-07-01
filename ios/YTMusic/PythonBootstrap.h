@@ -38,4 +38,7 @@ char *python_album(const char *browse_id);
 /// Real durations for a comma-separated videoId list → JSON {id:seconds}. Caller owns it.
 char *python_durations(const char *ids_csv);
 
+/// Lyrics for a videoId → JSON {ok,lyrics,source}. Caller owns the returned string.
+char *python_lyrics(const char *video_id);
+
 #endif /* PythonBootstrap_h */
