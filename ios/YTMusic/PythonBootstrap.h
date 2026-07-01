@@ -44,4 +44,7 @@ char *python_lyrics(const char *video_id);
 /// Translate `text` to language `target` → JSON {ok,text}. Caller owns the returned string.
 char *python_translate(const char *text, const char *target);
 
+/// Endless mix seeded from a videoId → JSON list of lite track dicts. Caller owns it.
+char *python_radio(const char *video_id);
+
 #endif /* PythonBootstrap_h */

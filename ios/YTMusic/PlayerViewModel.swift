@@ -313,6 +313,28 @@ final class PlayerViewModel: ObservableObject {
         playList(p.tracks, at: 0)
     }
 
+    /// Start an endless mix (radio) seeded from the currently-playing track: replaces the
+    /// queue with the mix and plays from the top.
+    func startRadio() {
+        guard let seed = currentResult?.id, !seed.isEmpty else {
+            errorMsg = "Play a song first to start radio"; return
+        }
+        searching = true
+        errorMsg = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let c = python_radio(seed)
+            let json = c.map { String(cString: $0) } ?? "[]"
+            if let c { free(c) }
+            let list = SearchResult.decodeList(json)
+            DispatchQueue.main.async {
+                self.searching = false
+                guard !list.isEmpty else { self.errorMsg = "No radio for this track"; return }
+                self.tab = .queue
+                self.playList(list, at: 0)
+            }
+        }
+    }
+
     /// Open the artist page for a channelId (from the artist card).
     func openArtist(_ hit: ArtistHit) {
         artistLoading = true

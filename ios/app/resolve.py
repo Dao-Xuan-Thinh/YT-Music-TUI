@@ -422,6 +422,26 @@ def album(browse_id: str) -> str:
         return json.dumps([])
 
 
+def radio(video_id: str) -> str:
+    """Endless mix seeded from a track (get_watch_playlist radio) → JSON list of lite dicts."""
+    try:
+        data = _ytm().get_watch_playlist(videoId=video_id, radio=True, limit=25)
+    except Exception as e:
+        print("RADIO_ERROR:", type(e).__name__, e, flush=True)
+        return json.dumps([])
+    out = []
+    for t in (data.get("tracks") or []):
+        vid = t.get("videoId")
+        if not vid:
+            continue
+        arts = ", ".join(x.get("name", "") for x in (t.get("artists") or []) if x.get("name"))
+        dur = _parse_ytm_duration(t)
+        if not dur and t.get("length"):   # watch-playlist tracks carry 'length' (M:SS)
+            dur = _parse_ytm_duration({"duration": t.get("length")})
+        out.append(_lite(vid, t.get("title"), arts, dur, _thumb(t)))
+    return json.dumps(_dedupe(out))
+
+
 def lyrics(video_id: str) -> str:
     """Lyrics for a videoId → JSON {ok, synced, lines:[{text,start,end}], text, source}.
     Requests timestamps so the player can follow along; falls back to plain when a song has

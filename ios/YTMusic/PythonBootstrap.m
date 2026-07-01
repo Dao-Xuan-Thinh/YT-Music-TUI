@@ -167,3 +167,4 @@ char *python_lyrics(const char *video_id) { return call_str_func("resolve", "lyr
 char *python_translate(const char *text, const char *target) {
     return call_str_func2("resolve", "translate", text, target);
 }
+char *python_radio(const char *video_id) { return call_str_func("resolve", "radio", video_id); }

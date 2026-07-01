@@ -223,13 +223,16 @@ struct NowPlayingScreen: View {
     }
 
     private var toggles: some View {
-        HStack(spacing: 40) {
+        HStack(spacing: 30) {
             Text("shuffle")
                 .foregroundStyle(vm.shuffle ? TUI.accent : TUI.dim)
                 .onTapGesture { vm.toggleShuffle() }
             Text("repeat:\(vm.repeatMode.rawValue)")
                 .foregroundStyle(vm.repeatMode == .off ? TUI.dim : TUI.accent)
                 .onTapGesture { vm.cycleRepeat() }
+            Text("📻 radio")
+                .foregroundStyle(vm.currentResult == nil ? TUI.dim : TUI.accent)
+                .onTapGesture { vm.startRadio() }
         }
         .font(TUI.mono(13, .bold))
     }
