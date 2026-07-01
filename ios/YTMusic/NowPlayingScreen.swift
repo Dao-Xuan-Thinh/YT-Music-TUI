@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Full-screen "now playing": large artwork, scrubber, transport, shuffle/repeat/like,
-/// volume. Presented from the mini bar; swipe down (or ▾) to dismiss. Keeps the Hybrid-TUI
-/// monospace/green look.
+/// Full-screen "now playing" — a "terminal boombox": ASCII-framed artwork beside a live
+/// block-char equalizer, a color-wave title, and monospace transport. Swipe down (or ▾) to
+/// dismiss. The equalizer is decorative (AVPlayer exposes no FFT) — it animates while
+/// playing and settles flat when paused.
 struct NowPlayingScreen: View {
     @ObservedObject var vm: PlayerViewModel
     @ObservedObject var playback: PlaybackService
@@ -17,9 +18,9 @@ struct NowPlayingScreen: View {
     var body: some View {
         ZStack {
             TUI.bg.ignoresSafeArea()
-            VStack(spacing: 18) {
+            VStack(spacing: 16) {
                 grabber
-                artwork
+                boombox
                 trackInfo
                 scrubber
                 transport
@@ -27,20 +28,18 @@ struct NowPlayingScreen: View {
                 volume
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, 22)
             .padding(.top, 8)
         }
         .foregroundStyle(TUI.fg)
         .font(TUI.mono())
         .tint(TUI.accent)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(theme.current.dark ? .dark : .light)
         .offset(y: max(dragY, 0))
         .gesture(
             DragGesture()
                 .onChanged { v in if v.translation.height > 0 { dragY = v.translation.height } }
-                .onEnded { v in
-                    if v.translation.height > 120 { dismiss() } else { dragY = 0 }
-                }
+                .onEnded { v in if v.translation.height > 120 { dismiss() } else { dragY = 0 } }
         )
         .onChange(of: playback.position) { p in if !scrubbing { scrub = p } }
         .onAppear { scrub = playback.position }
@@ -61,27 +60,38 @@ struct NowPlayingScreen: View {
         }
     }
 
-    private var artwork: some View {
-        AsyncImage(url: playback.current?.thumbnailURL) { phase in
-            if case .success(let img) = phase { img.resizable().scaledToFill() }
-            else { TUI.panel.overlay(Text("♪").font(.system(size: 64)).foregroundStyle(TUI.dim)) }
+    /// The boombox panel: ┌─[ ♪ NOW PLAYING ]─┐ frame around square art + the equalizer.
+    private var boombox: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("┌─[ ♪ NOW PLAYING ]" + String(repeating: "─", count: 40) + "┐")
+                .lineLimit(1).clipped()
+                .foregroundStyle(TUI.accent).font(TUI.mono(12))
+            HStack(spacing: 14) {
+                Text("│").foregroundStyle(TUI.accent).font(TUI.mono(12))
+                AsyncImage(url: playback.current?.thumbnailURL) { phase in
+                    if case .success(let img) = phase { img.resizable().scaledToFill() }
+                    else { TUI.panel.overlay(Text("♪").font(.system(size: 40)).foregroundStyle(TUI.dim)) }
+                }
+                .frame(width: 128, height: 128)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                Equalizer(active: playback.isPlaying, palette: theme.current.wave ?? [TUI.accent])
+                    .frame(maxWidth: .infinity, minHeight: 128, maxHeight: 128)
+                Text("│").foregroundStyle(TUI.accent).font(TUI.mono(12))
+            }
+            .padding(.vertical, 10)
+            Text("└" + String(repeating: "─", count: 60) + "┘")
+                .lineLimit(1).clipped()
+                .foregroundStyle(TUI.accent).font(TUI.mono(12))
         }
-        .aspectRatio(1, contentMode: .fit)
-        .frame(maxWidth: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(TUI.dim.opacity(0.3)))
-        .padding(.horizontal, 8)
     }
 
     private var trackInfo: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 WaveText(text: playback.current?.title ?? "nothing playing",
-                         palette: theme.current.wave,
-                         font: TUI.mono(18, .bold),
+                         palette: theme.current.wave, font: TUI.mono(18, .bold),
                          fallback: TUI.fg,
-                         active: playback.isPlaying && playback.current != nil,
-                         lineLimit: 2)
+                         active: playback.isPlaying && playback.current != nil, lineLimit: 2)
                 Text(playback.current?.uploader ?? " ")
                     .font(TUI.mono(13)).foregroundStyle(TUI.dim).lineLimit(1)
             }
@@ -89,8 +99,7 @@ struct NowPlayingScreen: View {
             Button { vm.toggleLikeCurrent() } label: {
                 Image(systemName: likedNow ? "heart.fill" : "heart").font(.title2)
             }
-            .foregroundStyle(TUI.accent)
-            .disabled(vm.currentResult == nil)
+            .foregroundStyle(TUI.accent).disabled(vm.currentResult == nil)
         }
     }
 
@@ -110,16 +119,25 @@ struct NowPlayingScreen: View {
     }
 
     private var transport: some View {
-        HStack(spacing: 44) {
-            Button { vm.playPrevious() } label: { Image(systemName: "backward.end.fill").font(.title) }
-            Button { playback.togglePlayPause() } label: {
-                Image(systemName: playback.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 64))
+        HStack(spacing: 18) {
+            boxButton("◀◀") { vm.playPrevious() }
+            boxButton(playback.isPlaying ? "❚❚ PAUSE" : "▶ PLAY", wide: true) {
+                playback.togglePlayPause()
             }
-            Button { vm.playNext() } label: { Image(systemName: "forward.end.fill").font(.title) }
+            boxButton("▶▶") { vm.playNext() }
         }
-        .foregroundStyle(TUI.accent)
         .disabled(playback.current == nil)
+    }
+
+    private func boxButton(_ label: String, wide: Bool = false, _ action: @escaping () -> Void) -> some View {
+        Text("[ \(label) ]")
+            .font(TUI.mono(wide ? 16 : 14, .bold))
+            .foregroundStyle(TUI.accent)
+            .frame(maxWidth: wide ? .infinity : nil)
+            .padding(.vertical, 8)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(TUI.accent.opacity(0.5)))
+            .contentShape(Rectangle())
+            .onTapGesture(perform: action)
     }
 
     private var toggles: some View {
@@ -154,5 +172,40 @@ struct NowPlayingScreen: View {
         guard s.isFinite, s >= 0 else { return "0:00" }
         let t = Int(s)
         return String(format: "%d:%02d", t / 60, t % 60)
+    }
+}
+
+/// A decorative block-char spectrum. Bars rise/fall from a smooth per-bar sine mix while
+/// `active`, and settle to a low flat line when paused. Colored from the theme wave palette.
+private struct Equalizer: View {
+    let active: Bool
+    let palette: [Color]
+    private let bars = 16
+    private let levels = "▁▂▃▄▅▆▇█"
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: active ? 0.09 : 0.5)) { tl in
+            let t = tl.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .bottom, spacing: 3) {
+                ForEach(0..<bars, id: \.self) { i in
+                    Text(String(glyph(i, t)))
+                        .font(TUI.mono(22))
+                        .foregroundStyle(palette[i % palette.count])
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func glyph(_ i: Int, _ t: Double) -> Character {
+        guard active else { return levels.first! }
+        // Mix a few sines at different rates/phases per bar → organic-looking motion.
+        let x = Double(i)
+        let v = sin(t * 6 + x * 0.7) * 0.5
+              + sin(t * 3.3 + x * 1.9) * 0.3
+              + sin(t * 9.1 + x * 0.4) * 0.2
+        let n = (v + 1) / 2   // 0..1
+        let idx = min(levels.count - 1, max(0, Int(n * Double(levels.count))))
+        return Array(levels)[idx]
     }
 }
