@@ -159,3 +159,6 @@ char *python_search(const char *query, const char *source) {
 char *python_browse(const char *url) { return call_str_func("resolve", "browse", url); }
 char *python_home(void) { return call_str_func("resolve", "home", ""); }
 char *python_set_auth(const char *cookie) { return call_str_func("resolve", "set_auth", cookie); }
+char *python_search_artist(const char *query) { return call_str_func("resolve", "search_artist", query); }
+char *python_artist(const char *channel_id) { return call_str_func("resolve", "artist", channel_id); }
+char *python_album(const char *browse_id) { return call_str_func("resolve", "album", browse_id); }

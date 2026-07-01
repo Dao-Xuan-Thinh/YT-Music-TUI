@@ -25,6 +25,9 @@ final class PlayerViewModel: ObservableObject {
     @Published var errorMsg: String?
     @Published var home: [SearchResult] = []       // FOR YOU feed (anonymous home)
     @Published var homeLoading = false
+    @Published var artistHit: ArtistHit?           // top artist card above search results
+    @Published var artistPage: ArtistPage?         // loaded artist page (nil = not open)
+    @Published var artistLoading = false
 
     let playback = PlaybackService.shared
     let library = LibraryStore.shared
@@ -75,6 +78,8 @@ final class PlayerViewModel: ObservableObject {
         let isURL = q.hasPrefix("http://") || q.hasPrefix("https://")
         searching = true
         errorMsg = nil
+        artistHit = nil
+        artistPage = nil
         let src = source.rawValue
         DispatchQueue.global(qos: .userInitiated).async {
             let c = isURL ? python_browse(q) : python_search(q, src)
@@ -87,6 +92,16 @@ final class PlayerViewModel: ObservableObject {
                 self.highlightIndex = 0
                 if list.isEmpty { self.errorMsg = "No results" }
                 else if isURL { self.playFromResults(at: 0) }   // paste-and-play url/playlist
+            }
+        }
+        // In parallel, look up the top artist for a keyword query (not a URL) → card.
+        if !isURL {
+            DispatchQueue.global(qos: .utility).async {
+                let c = python_search_artist(q)
+                let json = c.map { String(cString: $0) } ?? "{}"
+                if let c { free(c) }
+                let hit = ArtistHit.decode(json)
+                DispatchQueue.main.async { self.artistHit = hit }
             }
         }
     }
@@ -254,6 +269,44 @@ final class PlayerViewModel: ObservableObject {
         guard !p.tracks.isEmpty else { return }
         tab = .queue
         playList(p.tracks, at: 0)
+    }
+
+    /// Open the artist page for a channelId (from the artist card).
+    func openArtist(_ hit: ArtistHit) {
+        artistLoading = true
+        artistPage = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let c = python_artist(hit.channelId)
+            let json = c.map { String(cString: $0) } ?? "{}"
+            if let c { free(c) }
+            let page = ArtistPage.decode(json)
+            DispatchQueue.main.async {
+                self.artistLoading = false
+                self.artistPage = page ?? ArtistPage(name: hit.name, thumbnail: hit.thumbnail,
+                                                     subscribers: "", sections: [])
+            }
+        }
+    }
+
+    func closeArtist() { artistPage = nil }
+
+    /// Open an album (browseId, from an artist album row): fetch tracks via album() → queue.
+    func openAlbum(id: String) {
+        searching = true
+        errorMsg = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let c = python_album(id)
+            let json = c.map { String(cString: $0) } ?? "[]"
+            if let c { free(c) }
+            let list = SearchResult.decodeList(json)
+            DispatchQueue.main.async {
+                self.searching = false
+                guard !list.isEmpty else { self.errorMsg = "Empty album"; return }
+                self.artistPage = nil
+                self.tab = .queue
+                self.playList(list, at: 0)
+            }
+        }
     }
 
     /// Open a YT-Music playlist/album by id (from a For-You playlist row): fetch its tracks

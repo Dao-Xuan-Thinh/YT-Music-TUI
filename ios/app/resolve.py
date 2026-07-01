@@ -332,6 +332,79 @@ def home(_: str = "") -> str:
         return json.dumps([])
 
 
+def _thumb(d):
+    thumbs = d.get("thumbnails") or []
+    return thumbs[-1].get("url") if thumbs else ""
+
+
+def search_artist(query: str) -> str:
+    """Top artist match for a query → JSON {name, channelId, thumbnail} or {} if none."""
+    try:
+        res = _ytm().search(query, filter="artists", limit=1)
+        for r in res:
+            cid = r.get("browseId")
+            if cid:
+                return json.dumps({"name": r.get("artist") or r.get("title") or "",
+                                   "channelId": cid, "thumbnail": _thumb(r)})
+    except Exception as e:
+        print("SEARCH_ARTIST_ERROR:", type(e).__name__, e, flush=True)
+    return json.dumps({})
+
+
+def artist(channel_id: str) -> str:
+    """Artist page → JSON {name, thumbnail, subscribers, sections:[{title, kind, items:[…]}]}.
+    Song/video items are playable lite dicts; album/single items are 'album' lite dicts whose
+    id is the album browseId (opened via album())."""
+    try:
+        a = _ytm().get_artist(channel_id)
+    except Exception as e:
+        print("ARTIST_ERROR:", type(e).__name__, e, flush=True)
+        return json.dumps({})
+    sections = []
+    for key, title in (("songs", "Songs"), ("albums", "Albums"),
+                       ("singles", "Singles"), ("videos", "Videos")):
+        block = a.get(key)
+        if not isinstance(block, dict):
+            continue
+        items = []
+        for r in (block.get("results") or []):
+            if not isinstance(r, dict):
+                continue
+            if r.get("videoId"):
+                arts = ", ".join(x.get("name", "") for x in (r.get("artists") or []) if x.get("name"))
+                items.append(_lite(r["videoId"], r.get("title"),
+                                   arts or a.get("name", ""), _parse_ytm_duration(r), _thumb(r)))
+            elif r.get("browseId"):   # album / single → opened via album()
+                it = _lite_playlist(r["browseId"], r.get("title"), _thumb(r))
+                it["kind"] = "album"
+                items.append(it)
+        if items:
+            sections.append({"title": title, "kind": key, "items": items})
+    return json.dumps({
+        "name": a.get("name") or "",
+        "thumbnail": _thumb(a),
+        "subscribers": a.get("subscribers") or "",
+        "sections": sections,
+    })
+
+
+def album(browse_id: str) -> str:
+    """Album tracks (via get_album) → JSON list of lite song dicts."""
+    try:
+        data = _ytm().get_album(browse_id)
+        out = []
+        for t in (data.get("tracks") or []):
+            vid = t.get("videoId")
+            if not vid:
+                continue
+            arts = ", ".join(x.get("name", "") for x in (t.get("artists") or []) if x.get("name"))
+            out.append(_lite(vid, t.get("title"), arts, _parse_ytm_duration(t), _thumb(t)))
+        return json.dumps(_dedupe(out))
+    except Exception as e:
+        print("ALBUM_ERROR:", type(e).__name__, e, flush=True)
+        return json.dumps([])
+
+
 def _ytm_playlist(playlist_id: str) -> list:
     """Full playlist via ytmusicapi (paginates all tracks — no 100-ish cap)."""
     pid = playlist_id[2:] if playlist_id.startswith("VL") else playlist_id

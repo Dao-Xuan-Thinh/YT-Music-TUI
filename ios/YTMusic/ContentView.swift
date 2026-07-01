@@ -33,6 +33,7 @@ struct ContentView: View {
             VStack(spacing: 8) {
                 tabBar
                 if vm.tab == .search { searchRow }
+                if vm.tab == .search, let hit = vm.artistHit { artistCard(hit) }
                 if vm.tab == .library { librarySections }
                 if vm.tab == .foryou { forYouHeader }
                 if vm.tab == .queue, !vm.queue.isEmpty { queueActions }
@@ -80,6 +81,38 @@ struct ContentView: View {
         .sheet(isPresented: $showThemePicker) {
             ThemePickerSheet()
         }
+        .fullScreenCover(isPresented: Binding(
+            get: { vm.artistPage != nil },
+            set: { if !$0 { vm.artistPage = nil } })
+        ) {
+            if let page = vm.artistPage { ArtistScreen(vm: vm, page: page) }
+        }
+    }
+
+    /// A tappable artist result card shown above the search list.
+    private func artistCard(_ hit: ArtistHit) -> some View {
+        HStack(spacing: 10) {
+            AsyncImage(url: hit.thumbnailURL) { phase in
+                if case .success(let img) = phase { img.resizable().scaledToFill() }
+                else { TUI.panel }
+            }
+            .frame(width: 44, height: 44)
+            .clipShape(Circle())
+            .overlay(Circle().stroke(TUI.accent.opacity(0.5)))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("ARTIST").font(TUI.mono(10, .bold)).foregroundStyle(TUI.dim)
+                Text(hit.name).font(TUI.mono(15, .bold)).foregroundStyle(TUI.accent).lineLimit(1)
+            }
+            Spacer()
+            if vm.artistLoading { ProgressView().controlSize(.small).tint(TUI.accent) }
+            else { Image(systemName: "chevron.right").foregroundStyle(TUI.accent) }
+        }
+        .padding(8)
+        .background(TUI.panel)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(TUI.accent.opacity(0.4)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onTapGesture { vm.openArtist(hit) }
     }
 
     // MARK: - Tab bar

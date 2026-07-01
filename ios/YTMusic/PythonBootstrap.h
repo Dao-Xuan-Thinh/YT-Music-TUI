@@ -26,4 +26,13 @@ char *python_home(void);
 /// {"ok":bool,"name":string} — the signed-in account display name. Caller owns the string.
 char *python_set_auth(const char *cookie);
 
+/// Top artist match for a query → JSON {name,channelId,thumbnail} or {}. Caller owns it.
+char *python_search_artist(const char *query);
+
+/// Artist page for a channelId → JSON {name,thumbnail,subscribers,sections:[…]}. Caller owns it.
+char *python_artist(const char *channel_id);
+
+/// Album tracks for a browseId → JSON list of lite song dicts. Caller owns it.
+char *python_album(const char *browse_id);
+
 #endif /* PythonBootstrap_h */
