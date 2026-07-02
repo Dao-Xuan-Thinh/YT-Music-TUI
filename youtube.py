@@ -23,15 +23,12 @@ class _SilentLogger:
 
 # ── ytmusicapi (YouTube Music) ────────────────────────────────────────────────
 
-# OAuth token cache (written by login(); read at client construction). The Google
-# Cloud client_id/secret that produced it are supplied separately (configure_auth)
-# because YTMusic needs them again to refresh the token. See YOUTUBE_LOGIN.md.
-_OAUTH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oauth.json')
+# NOTE: OAuth (device-flow) auth was removed entirely — YouTube rejects
+# third-party-client OAuth tokens with HTTP 400 on every youtubei call (verified
+# empirically; no client-side fix). Browser / cookies auth below is what works.
 
 _ytm = None
-_auth_method = 'none'        # 'none' | 'oauth' | 'cookies' | 'browser'
-_client_id = ''
-_client_secret = ''
+_auth_method = 'none'        # 'none' | 'cookies' | 'browser'
 _cookies_file = ''
 _auth_browser = ''           # yt-dlp browser name for method='browser' (live cookies)
 _auth_browser_profile = ''   # optional profile dir/name for that browser
@@ -73,15 +70,12 @@ def _new_ytm(**kwargs):
     return YTMusic(requests_session=_TimeoutSession(), **kwargs)
 
 
-def configure_auth(method='none', client_id='', client_secret='', cookies_file='',
-                   browser='', profile=''):
+def configure_auth(method='none', cookies_file='', browser='', profile=''):
     """Set the active auth method + its inputs and drop the cached client so the
-    next _get_ytm() rebuilds. method: 'none' | 'oauth' | 'cookies' | 'browser'."""
-    global _auth_method, _client_id, _client_secret, _cookies_file, _ytm, _authed
+    next _get_ytm() rebuilds. method: 'none' | 'cookies' | 'browser'."""
+    global _auth_method, _cookies_file, _ytm, _authed
     global _auth_browser, _auth_browser_profile
-    _auth_method = method if method in ('none', 'oauth', 'cookies', 'browser') else 'none'
-    _client_id = client_id or ''
-    _client_secret = client_secret or ''
+    _auth_method = method if method in ('none', 'cookies', 'browser') else 'none'
     _cookies_file = os.path.expanduser(os.path.expandvars(cookies_file or ''))
     _auth_browser = browser or ''
     _auth_browser_profile = profile or ''
@@ -89,9 +83,7 @@ def configure_auth(method='none', client_id='', client_secret='', cookies_file='
     # Evaluate auth validity ONCE here and cache it; the footer/status query
     # is_authenticated() often and a per-call cookie reparse / extraction would
     # stall the UI.
-    if _auth_method == 'oauth':
-        _authed = _oauth_ready()
-    elif _auth_method == 'cookies':
+    if _auth_method == 'cookies':
         _authed = _browser_headers_from_cookies(_cookies_file) is not None
     elif _auth_method == 'browser':
         # Don't extract on the UI thread (slow / may touch a locked DB) — assume valid
@@ -100,10 +92,6 @@ def configure_auth(method='none', client_id='', client_secret='', cookies_file='
         _authed = bool(_auth_browser)
     else:
         _authed = False
-
-
-def _oauth_ready():
-    return bool(_client_id and _client_secret and os.path.isfile(_OAUTH_FILE))
 
 
 # The only cookies YouTube Music's API needs for auth. A typical cookies.txt is a
@@ -275,8 +263,6 @@ def auth_status():
         return 'cookies' if is_authenticated() else 'cookies (not set)'
     if _auth_method == 'browser':
         return 'browser' if is_authenticated() else 'browser (not set)'
-    if _auth_method == 'oauth':
-        return 'oauth' if _oauth_ready() else 'oauth (not set)'
     return 'public'
 
 
@@ -302,13 +288,6 @@ def _get_ytm():
                     _ytm = _new_ytm(auth=headers) if headers else _new_ytm()
                 except Exception:
                     _ytm = _new_ytm()
-            elif _auth_method == 'oauth' and _oauth_ready():
-                try:
-                    from ytmusicapi import OAuthCredentials
-                    oc = OAuthCredentials(_client_id, _client_secret)
-                    _ytm = _new_ytm(auth=_OAUTH_FILE, oauth_credentials=oc)
-                except Exception:
-                    _ytm = _new_ytm()   # bad/expired token → degrade to public
             else:
                 _ytm = _new_ytm()
     return _ytm
@@ -367,8 +346,8 @@ def verify_auth_live():
       ('ok', name)      — signed in; `name` is the account display name.
       ('expired', '')   — COOKIE auth confirmed logged out (empty account or a
                           logged-out parse error); downgrades is_authenticated().
-      ('unknown', '')   — couldn't confirm (network/transient error, or any oauth
-                          failure); auth state left untouched so a blip doesn't drop it.
+      ('unknown', '')   — couldn't confirm (network/transient error); auth state
+                          left untouched so a blip doesn't drop it.
     """
     global _authed
     if not _authed:
@@ -388,76 +367,6 @@ def verify_auth_live():
             _authed = False
             return ('expired', '')
         return ('unknown', '')
-
-
-def login(client_id, client_secret, on_code, should_cancel=None):
-    """Run the OAuth device flow and persist the token to _OAUTH_FILE.
-
-    Blocking (poll-based) — call from a daemon thread. `on_code(user_code, url)` is
-    invoked once the device code is issued so the UI can display it. `should_cancel`
-    (optional) is polled between attempts to allow aborting.
-
-    Returns {'ok': bool, 'error': str | None}.
-    """
-    import time
-    from pathlib import Path
-    from ytmusicapi import OAuthCredentials
-    from ytmusicapi.auth.oauth.token import RefreshingToken
-
-    try:
-        oc = OAuthCredentials(client_id, client_secret)
-        code = oc.get_code()
-    except Exception as exc:
-        return {'ok': False, 'error': f'{exc}'}
-
-    on_code(code.get('user_code', '??????'), code.get('verification_url', ''))
-
-    interval = int(code.get('interval') or 5) or 5
-    deadline = time.time() + int(code.get('expires_in') or 1800)
-    device_code = code['device_code']
-
-    while time.time() < deadline:
-        if should_cancel and should_cancel():
-            return {'ok': False, 'error': 'cancelled'}
-        try:
-            raw = oc.token_from_code(device_code)
-        except Exception as exc:
-            return {'ok': False, 'error': f'{exc}'}
-        if 'access_token' in raw:
-            # Persist exactly as ytmusicapi's prompt_for_token does, so YTMusic can
-            # load it back; setting local_cache writes the file.
-            refresh_exp = raw.get('refresh_token_expires_in', raw['expires_in'])
-            token = RefreshingToken(
-                credentials=oc,
-                access_token=raw['access_token'],
-                refresh_token=raw['refresh_token'],
-                scope=raw['scope'],
-                token_type=raw['token_type'],
-                expires_in=refresh_exp,
-            )
-            token.update(raw)
-            token.local_cache = Path(_OAUTH_FILE)
-            configure_auth(client_id, client_secret)   # flip to authenticated
-            return {'ok': True, 'error': None}
-        err = raw.get('error')
-        if err in ('authorization_pending', 'slow_down'):
-            time.sleep(interval)
-            continue
-        return {'ok': False, 'error': err or 'login failed'}
-
-    return {'ok': False, 'error': 'login timed out — code expired'}
-
-
-def logout():
-    """Delete the saved OAuth token and drop the cached client."""
-    global _ytm, _authed
-    try:
-        os.remove(_OAUTH_FILE)
-    except OSError:
-        pass
-    _ytm = None
-    if _auth_method == 'oauth':
-        _authed = False
 
 
 def _parse_home(data):
@@ -489,11 +398,9 @@ def _parse_home(data):
 def ytm_home(limit=3):
     """The YouTube Music home feed (personalized when authenticated).
 
-    OAuth tokens are issued for a "TV / limited-input device" client, which YouTube
-    rejects (HTTP 400 "invalid argument") against ytmusicapi's default WEB_REMIX
-    request context for this endpoint. If the *network call* fails we retry inside
-    as_mobile() (ANDROID_MUSIC context). Parsing happens outside the try so a parser
-    error never triggers the mobile retry — that retry rejects cookie auth with 400.
+    If the *network call* fails while authenticated we retry inside as_mobile()
+    (ANDROID_MUSIC context). Parsing happens outside the try so a parser error
+    never triggers the mobile retry — that retry rejects cookie auth with 400.
     """
     yt = _get_ytm()
     with _ytm_lock:

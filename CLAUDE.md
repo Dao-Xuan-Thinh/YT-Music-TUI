@@ -17,7 +17,7 @@ The project is modular with clear separation of concerns:
 ```
 main.py         ← Entry point; Textual TUI wiring, home screen, keybindings, playback flow
 youtube.py      ← yt-dlp + ytmusicapi wrapper: resolve() (URL or keyword), search(), playlists,
-                  auth (cookies/browser + OAuth device flow) + authenticated client, get_home() feed
+                  auth (cookies/browser) + authenticated client, get_home() feed
 player.py       ← mpv IPC + ffplay fallback; single-thread event loop for non-blocking IPC
 config.py       ← JSON persistence: cookies_file (streaming) + auth_cookies_file (account),
                   account_name, volume, search_source, theme, app_mode
@@ -228,9 +228,8 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 | File | Purpose |
 |------|---------|
 | `main.py` | Textual App: home screen, modals, bindings, search/play flow |
-| `youtube.py` | yt-dlp + ytmusicapi wrapper: search, URL/playlist resolution, metadata; OAuth login (`login`/`logout`/`configure_auth`/`is_authenticated`) + `ytm_home()` feed |
-| `YOUTUBE_LOGIN.md` | User guide: create a Google Cloud OAuth client + sign in (the `g` flow) |
-| `oauth.json` | Auto-created OAuth token cache (gitignored) |
+| `youtube.py` | yt-dlp + ytmusicapi wrapper: search, URL/playlist resolution, metadata; account auth (`configure_auth`/`is_authenticated`/`verify_auth_live`) + `ytm_home()` feed |
+| `YOUTUBE_LOGIN.md` | User guide: sign in via Browser or Cookies (the `g` flow) |
 | `player.py` | mpv IPC + ffplay fallback; per-OS transport (named pipe / AF_UNIX) |
 | `config.py` | JSON settings persistence (cookies, volume, source, theme, app_mode) |
 | `library.py` | JSON persistence: liked, playlists, pinned folders, recent, sessions |
@@ -257,7 +256,7 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 **Switch search source:** `t` (cycles YT Music → YouTube → Both)
 
 **Sign in to YouTube:** `g` opens the Account screen (config `auth_method`:
-`none`/`browser`/`cookies`/`oauth`). Once authenticated, the home screen's **For You** tab
+`none`/`browser`/`cookies`). Once authenticated, the home screen's **For You** tab
 and search personalize. Setup: `YOUTUBE_LOGIN.md`.
 - **Browser (recommended — durable):** pick a browser *profile* in the Account screen; at
   every launch `youtube._browser_headers_live(browser, profile)` reads the **live**
@@ -276,17 +275,18 @@ and search personalize. Setup: `YOUTUBE_LOGIN.md`.
   Both browser/cookies share `_headers_from_jar` and send only the ~24 auth-relevant cookie
   names (`_AUTH_COOKIE_NAMES`) — a full-browser dump's ~100 KB Cookie header is rejected by
   YouTube with an empty body.
-- **OAuth (device flow) — DEAD, removed from the UI.** Verified empirically against a real
+- **OAuth (device flow) — DEAD, code removed.** Verified empirically against a real
   token: the refresh exchange succeeds but **every `youtubei` call returns `HTTP 400
   INVALID_ARGUMENT`** (6/6 across `get_account_info`/`get_home`/`search`, both WEB_REMIX and
   ANDROID_MUSIC contexts). Google blocks third-party-client OAuth tokens; no client-side fix
-  (ytmusicapi 1.12.1 is latest). The `login`/`logout`/`OAuthCredentials` backend is kept but
-  unreachable from the Account screen; a stored `auth_method='oauth'` is migrated to `none`
-  at boot (`App.__init__`).
+  (ytmusicapi 1.12.1 is latest). The whole backend (`login`/`logout`/`OAuthCredentials`,
+  `oauth_client_id/secret` config keys) was deleted; only two traces remain: the Account
+  screen's "OAuth sign-in was removed" notice, and the boot migration of a stored
+  `auth_method='oauth'` to `none` (`App.__init__`).
 
-`youtube.configure_auth(method, …, cookies_file=auth_cookies_file, browser=, profile=)`
+`youtube.configure_auth(method, cookies_file=auth_cookies_file, browser=, profile=)`
 wires the active method at boot; `youtube._get_ytm()` builds the matching `YTMusic`
-(cookies/browser → `auth=headers`, oauth → `oauth_credentials`, else anonymous), degrading
+(cookies/browser → `auth=headers`, else anonymous), degrading
 to anonymous on error. For `browser`, extraction happens **inside `_get_ytm()`** (daemon
 threads only, under `_ytm_lock`) — never on the UI thread. `auth_status()` labels the footer. `is_authenticated()` is cached (computed once in
 `configure_auth`) so the footer/status don't re-parse the cookie file each refresh — but
