@@ -158,6 +158,10 @@ def resolve(url: str) -> str:
         "quiet": True, "no_warnings": True, "skip_download": True,
         "format": _M4A_FORMAT,
         "extractor_args": {"youtube": {"player_client": _PLAYER_CLIENTS}},
+        # Bound the network so a stalled connection can't hang the resolve forever (a stuck
+        # fetch otherwise starves later resolves under the GIL until the app restarts).
+        "socket_timeout": 15,
+        "retries": 1,
     }
     t0 = time.time()
     try:

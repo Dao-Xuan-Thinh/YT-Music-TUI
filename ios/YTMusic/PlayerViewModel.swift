@@ -50,6 +50,7 @@ final class PlayerViewModel: ObservableObject {
 
     private var resolveToken = 0
     private var prefetched: [String: Track] = [:]
+    private var resolveWorkItem: DispatchWorkItem?   // pending debounced resolve (cancellable)
 
     init() {
         source = AppConfig.shared.defaultSource
@@ -190,6 +191,7 @@ final class PlayerViewModel: ObservableObject {
         // Invalidate any in-flight resolve up front — even when this selection is served from
         // the prefetch cache — so a slow earlier resolve can't complete and hijack playback.
         resolveToken &+= 1
+        resolveWorkItem?.cancel()   // drop a pending (superseded) debounced resolve
         queueIndex = idx
         let r = queue[idx]
         library.addRecent(r)
@@ -197,13 +199,27 @@ final class PlayerViewModel: ObservableObject {
         // Stop old audio immediately + show loading (no lingering while resolving).
         playback.beginLoading(title: r.title, uploader: r.uploader,
                               thumbnail: r.thumbnail, duration: r.duration)
-        resolveAndPlay(id: r.id, resumeAt: resumeAt)
-    }
-
-    private func resolveAndPlay(id: String, resumeAt: Double = 0) {
-        let token = resolveToken   // already bumped by play(at:)
         resolving = true
         errorMsg = nil
+        // Debounce: a rapid re-selection (misclick) cancels this before it fires, so the
+        // wrong song's extraction never starts (a started one can starve later resolves
+        // under the GIL — the "stuck fetching forever" bug).
+        let token = resolveToken
+        let work = DispatchWorkItem { [weak self] in
+            self?.resolveAndPlay(id: r.id, resumeAt: resumeAt, token: token)
+        }
+        resolveWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    private func resolveAndPlay(id: String, resumeAt: Double = 0, token: Int) {
+        // UI watchdog: if this resolve hasn't produced a result in time, stop showing the
+        // spinner and offer a retry (the socket_timeout in resolve.py ends the work too).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self, token == self.resolveToken, self.resolving else { return }
+            self.resolving = false
+            self.errorMsg = "Couldn't load this track — tap to try again."
+        }
         DispatchQueue.global(qos: .userInitiated).async {
             let c = python_resolve(id)
             let json = c.map { String(cString: $0) } ?? "{}"
