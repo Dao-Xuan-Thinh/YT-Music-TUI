@@ -10,6 +10,10 @@ struct NowPlayingScreen: View {
     @ObservedObject private var library = LibraryStore.shared
     @ObservedObject private var theme = ThemeManager.shared
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var hSize
+
+    /// Artwork/equalizer edge: larger in regular width (iPad) than on iPhone.
+    private var artSize: CGFloat { hSize == .regular ? 200 : 128 }
 
     @State private var scrub: Double = 0
     @State private var scrubbing = false
@@ -32,6 +36,7 @@ struct NowPlayingScreen: View {
             }
             .padding(.horizontal, 22)
             .padding(.top, 8)
+            .frame(maxWidth: 640)   // readable column on iPad; no effect on iPhone
         }
         .foregroundStyle(TUI.fg)
         .font(TUI.mono())
@@ -137,7 +142,7 @@ struct NowPlayingScreen: View {
     /// The boombox panel: ┌─[ ♪ NOW PLAYING ]─┐ frame around square art + the equalizer.
     private var boombox: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("┌─[ ♪ NOW PLAYING ]" + String(repeating: "─", count: 40) + "┐")
+            Text("┌─[ ♪ NOW PLAYING ]" + String(repeating: "─", count: 120) + "┐")
                 .lineLimit(1).clipped()
                 .foregroundStyle(TUI.accent).font(TUI.mono(12))
             HStack(spacing: 14) {
@@ -146,15 +151,15 @@ struct NowPlayingScreen: View {
                     if case .success(let img) = phase { img.resizable().scaledToFill() }
                     else { TUI.panel.overlay(Text("♪").font(.system(size: 40)).foregroundStyle(TUI.dim)) }
                 }
-                .frame(width: 128, height: 128)
+                .frame(width: artSize, height: artSize)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
                 Equalizer(playback: playback, active: playback.isPlaying,
                           palette: theme.current.wave ?? [TUI.accent])
-                    .frame(maxWidth: .infinity, minHeight: 128, maxHeight: 128)
+                    .frame(maxWidth: .infinity, minHeight: artSize, maxHeight: artSize)
                 Text("│").foregroundStyle(TUI.accent).font(TUI.mono(12))
             }
             .padding(.vertical, 10)
-            Text("└" + String(repeating: "─", count: 60) + "┘")
+            Text("└" + String(repeating: "─", count: 120) + "┘")
                 .lineLimit(1).clipped()
                 .foregroundStyle(TUI.accent).font(TUI.mono(12))
         }
