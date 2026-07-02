@@ -788,10 +788,11 @@ class UpdateScreen(ModalScreen):
 # ── Account screen ───────────────────────────────────────────────────────────────
 
 class AccountScreen(ModalScreen):
-    """YouTube account auth — choose Cookies, OAuth, or Public (none).
+    """YouTube account auth — choose Browser, Cookies, or Public (none).
 
-    Dismisses with {'method': 'cookies'|'oauth'|'none', 'client_id': str,
-    'client_secret': str, 'cookies_file': str}, or None if closed unchanged.
+    Dismisses with {'method': 'browser'|'cookies'|'none', 'cookies_file': str,
+    'account_name': str, 'browser': str, 'profile': str}, or None if closed
+    unchanged. (OAuth was removed — YouTube rejects those tokens with HTTP 400.)
     """
     BINDINGS = [Binding('escape', 'cancel', 'Close')]
 
@@ -812,18 +813,13 @@ class AccountScreen(ModalScreen):
     #account-btns { height: 3; margin-top: 1; }
     """
 
-    def __init__(self, method='none', client_id='', client_secret='', cookies_file='',
-                 browser='', profile=''):
+    def __init__(self, method='none', cookies_file='', browser='', profile=''):
         super().__init__()
         self._method = method
-        self._client_id = client_id
-        self._client_secret = client_secret
         self._cookies_file = cookies_file
         self._browser = browser
         self._profile = profile
         self._profiles = youtube.detect_browser_profiles()
-        self._cancel = False     # polled by login() to abort
-        self._busy = False       # a login/validate thread is running
         self._closed = False     # guards late call_from_thread callbacks
 
     def compose(self) -> ComposeResult:
@@ -943,51 +939,12 @@ class AccountScreen(ModalScreen):
             return
         self._finish('cookies', cookies_file=path, account_name='')
 
-    # ── OAuth ────────────────────────────────────────────────────────────
-    def _start_login(self) -> None:
-        if self._busy:
-            return
-        cid = self.query_one('#cid-input', Input).value.strip()
-        csec = self.query_one('#csec-input', Input).value.strip()
-        if not cid or not csec:
-            self._status('Enter both client ID and client secret first.')
-            return
-        self._busy = True
-        self._cancel = False
-        self._status('Requesting device code…')
-
-        def on_code(user_code, url):
-            self.app.call_from_thread(
-                self._status,
-                f'Go to  {url}\nEnter code:  {user_code}\n(waiting for you to authorize…)'
-            )
-
-        def run():
-            res = youtube.login(cid, csec, on_code,
-                                should_cancel=lambda: self._cancel)
-            self.app.call_from_thread(self._after_login, res)
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _after_login(self, res) -> None:
-        self._busy = False
-        if self._closed:
-            return
-        if res.get('ok'):
-            self._status('Signed in ✓')
-            self._finish('oauth')
-        else:
-            err = res.get('error') or 'login failed'
-            self._status('Login cancelled.' if err == 'cancelled'
-                         else f'Login failed: {err}')
-
     # ── Finish / cancel ──────────────────────────────────────────────────
     def _finish(self, method, cookies_file=None, account_name='',
                 browser='', profile='') -> None:
         if self._closed:
             return
         self._closed = True
-        self._cancel = True
         cookies = (cookies_file if cookies_file is not None
                    else self.query_one('#cookies-input', Input).value.strip())
         self.dismiss({'method': method, 'cookies_file': cookies,
@@ -998,7 +955,6 @@ class AccountScreen(ModalScreen):
         if self._closed:
             return
         self._closed = True
-        self._cancel = True
         self.dismiss(None)
 
 
@@ -1523,8 +1479,6 @@ class YTMApp(App):
         # Wire the saved auth method (browser / cookies / none) so ytmusicapi calls
         # run authenticated when configured (personalized search / For You feed).
         youtube.configure_auth(self._config.auth_method,
-                               self._config.oauth_client_id,
-                               self._config.oauth_client_secret,
                                self._config.auth_cookies_file,
                                browser=self._config.auth_browser,
                                profile=self._config.auth_browser_profile)
@@ -1593,7 +1547,7 @@ class YTMApp(App):
                 self._config.account_name = ''
                 self._set_status('⚠ YouTube sign-in expired — your saved cookies no '
                                  'longer work. Press g to re-export cookies.txt.')
-            # 'unknown' (network blip / oauth) → leave the cached name, retry next boot.
+            # 'unknown' (network blip) → leave the cached name, retry next boot.
             self._update_footer()
 
         try:
@@ -2621,8 +2575,7 @@ class YTMApp(App):
             # Persist the signed-in display name for the footer (cleared on sign-out).
             self._config.account_name = (result.get('account_name', '')
                                          if method != 'none' else '')
-            youtube.configure_auth(method, self._config.oauth_client_id,
-                                   self._config.oauth_client_secret, cookies,
+            youtube.configure_auth(method, cookies,
                                    browser=browser, profile=profile)
             self._update_footer()
             # The modal was dismissed on the UI thread (no worker-thread dismiss → input
@@ -2638,8 +2591,6 @@ class YTMApp(App):
 
         self.push_screen(
             AccountScreen(self._config.auth_method,
-                          self._config.oauth_client_id,
-                          self._config.oauth_client_secret,
                           self._config.auth_cookies_file,
                           self._config.auth_browser,
                           self._config.auth_browser_profile),

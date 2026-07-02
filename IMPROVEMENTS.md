@@ -63,16 +63,17 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
   shuffle/repeat); home screen "Resume" dropdown restores and seeks via
   `Player.play(url, start=)` (mpv `file-loaded` seek).
 
-- [ ] **Now-Playing / lyrics view.** ⭐ *Next headline feature.* A full-screen
-  now-playing view: big title/artist, album art rendered as ASCII (or a terminal
-  image protocol), a wide progress bar, and time-synced scrolling lyrics.
-  ytmusicapi exposes lyrics (`get_lyrics` via `get_watch_playlist`) plus album +
-  thumbnails already (`youtube.py:_ytm_track_to_dict`). The most visual "cool
-  design" surface; keep it gated/lazy to preserve the lightweight goal.
+- [~] **Now-Playing / lyrics view.** *Shipped the lyrics half:* `LyricsScreen`
+  with time-synced follow (highlight + centered auto-scroll) and on-demand
+  whole-text translation (`t` toggle, `g` language). Lyrics are fetched with an
+  anonymous client (`youtube.ytm_lyrics` — signed-in auth 400s on the timestamps
+  endpoint). Remaining: the full-screen now-playing face (big title, ASCII album
+  art, wide progress bar).
 
-- [ ] **Album / artist browse.** ytmusicapi supports `get_album`,
-  `get_artist`, `get_watch_playlist` (radio). A "browse" mode would go well
-  beyond plain search.
+- [x] **Album / artist browse.** Search results now prepend `◆` artist and `◇`
+  album rows (`ytm_search_entities` with `filter='artists'/'albums'` for correct
+  ranking); artists open an `ArtistScreen` (songs/albums/singles/videos), albums
+  open into the queue.
 
 - [ ] **Sleep timer.** "Stop after N minutes / after this track." Small timer +
   `self._player.quit()`/`stop()`.
@@ -99,9 +100,8 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
   highlighted track up/down and `d` to remove it. Complements `p` (play-next),
   which is the only queue edit today. (`main` queue actions)
 
-- [ ] **Radio / autoplay continuation.** When the queue ends with repeat off,
-  fetch related tracks (`ytmusicapi.get_watch_playlist`) and keep playing instead
-  of stopping. Toggleable. (`main._on_track_end`)
+- [x] **Radio / endless mix.** `∞` radio seeds an endless mix from the current
+  track via `get_watch_playlist(radio=True)` and replaces the queue.
 
 - [ ] **Play a playlist shuffled from home.** Selecting a Folders entry could
   offer "play shuffled" directly, not just load into the library view.
@@ -232,14 +232,15 @@ Status legend: `[ ]` todo · `[x]` done · `[~]` partial / needs follow-up
 
 ## Suggested next-up (highest value / lowest risk)
 
-The original top items (max_results, debounce, shuffle/repeat, help overlay, `~`
-expansion) all shipped. Remaining high-value / low-risk picks:
+Shipped since the last pass: timed **lyrics + translation**, **artist/album
+browse**, **radio (endless mix)**, the **stuck-fetch fix** (yt-dlp socket
+timeouts + selection debounce + load watchdog), and the OAuth dead-code removal.
+Remaining high-value / low-risk picks:
 
-1. **Now-Playing / lyrics view** (§2) — ⭐ headline next feature: full-screen
-   now-playing with ASCII album art + time-synced lyrics.
-2. **Liked indicator in rows** + **status line auto-clear** (§3) — small, daily.
-3. **Atomic JSON writes** (§4) — cheap insurance against corrupting config/library.
-4. **Queue editing: reorder + remove** (§2) — rounds out queue control.
-5. **Commit the headless tests as `tests/`** (§5) — locks in this session's behavior.
-
-(Done: **Library management UI** (§2) — delete/rename on the home screen.)
+1. **Liked indicator in rows** + **status line auto-clear** (§3) — small, daily.
+2. **Atomic JSON writes** + **library write lock** (§4) — cheap insurance
+   against corrupting config/library (two threads write library.json today).
+3. **Queue editing: reorder + remove** (§2) — rounds out queue control.
+4. **Commit the headless tests as `tests/`** (§5) — locks in current behavior.
+5. **Full-screen now-playing face** (§2 [~]) — the remaining half of the
+   lyrics/now-playing headline feature.

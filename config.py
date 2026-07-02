@@ -16,12 +16,9 @@ _DEFAULTS = {
     'local_folder':  '',
     'theme':         'tokyo-night',
     'app_mode':      'online',  # 'online' or 'offline' — remembered across runs
-    # YouTube OAuth client (device flow). The token itself lives in oauth.json;
-    # these are your Google Cloud OAuth client credentials, needed again at
-    # client construction for token refresh. See YOUTUBE_LOGIN.md.
-    'oauth_client_id':     '',
-    'oauth_client_secret': '',
-    # Active auth method for ytmusicapi: 'none' | 'oauth' | 'cookies' | 'browser'.
+    # Active auth method for ytmusicapi: 'none' | 'cookies' | 'browser'.
+    # ('oauth' is still *accepted* here so an old config loads; boot migrates it
+    # to 'none' — the OAuth backend itself was removed, YouTube rejects it.)
     'auth_method':         'none',
     # For method='browser': yt-dlp browser name + optional profile dir (live cookies,
     # re-read each launch so the session never goes stale). See Account (g).
@@ -149,31 +146,14 @@ class Config:
             self.save()
 
     @property
-    def oauth_client_id(self):
-        return self._data.get('oauth_client_id', '')
-
-    @oauth_client_id.setter
-    def oauth_client_id(self, value):
-        self._data['oauth_client_id'] = value or ''
-        self.save()
-
-    @property
-    def oauth_client_secret(self):
-        return self._data.get('oauth_client_secret', '')
-
-    @oauth_client_secret.setter
-    def oauth_client_secret(self, value):
-        self._data['oauth_client_secret'] = value or ''
-        self.save()
-
-    @property
     def auth_method(self):
+        # 'oauth' still read back so an old config triggers the boot migration.
         m = self._data.get('auth_method', 'none')
         return m if m in ('none', 'oauth', 'cookies', 'browser') else 'none'
 
     @auth_method.setter
     def auth_method(self, value):
-        if value in ('none', 'oauth', 'cookies', 'browser'):
+        if value in ('none', 'cookies', 'browser'):
             self._data['auth_method'] = value
             self.save()
 
