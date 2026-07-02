@@ -777,6 +777,10 @@ def _ydl_opts(cookies_file=None, extra=None):
         'no_warnings': True,
         'noprogress': True,
         'logger': _SilentLogger(),
+        # Bound the network so a stalled connection can't hang extraction forever
+        # (a stuck fetch otherwise wedges playback until the app restarts).
+        'socket_timeout': 15,
+        'retries': 1,
     }
     if cookies_file:
         opts['cookiefile'] = cookies_file

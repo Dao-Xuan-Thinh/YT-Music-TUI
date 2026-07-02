@@ -403,6 +403,10 @@ class Player:
                 'mpv', '--no-video', '--ytdl=yes',
                 f'--input-ipc-server={_IPC_ARG}',
                 '--idle=yes', '--really-quiet',
+                # Bound the network so a stalled load can't wedge the mpv daemon forever
+                # (ytdl_hook runs synchronously on mpv's main thread). --network-timeout is
+                # mpv's own; socket-timeout is passed through to yt-dlp below.
+                '--network-timeout=15',
                 # CRITICAL: without --no-terminal, mpv reads the controlling
                 # terminal/TTY for its own keybindings and STEALS keystrokes from the
                 # Textual UI — the UI renders fine (clock ticks) but no key is ever
@@ -414,8 +418,12 @@ class Player:
             ytdlp = _find_ytdlp()
             if ytdlp:
                 cmd.append(f'--script-opts=ytdl_hook-ytdl_path={ytdlp}')
+            # One --ytdl-raw-options carrying every yt-dlp passthrough (socket-timeout bounds
+            # extraction; cookiefile when set). Passing the flag twice would drop the first.
+            raw = ['socket-timeout=15']
             if self.cookies_file and os.path.isfile(self.cookies_file):
-                cmd.append(f'--ytdl-raw-options=cookiefile={self.cookies_file}')
+                raw.append(f'cookiefile={self.cookies_file}')
+            cmd.append('--ytdl-raw-options=' + ','.join(raw))
             self._proc = subprocess.Popen(
                 cmd, stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -471,14 +479,16 @@ class Player:
             # by watching the process exit and firing on_end (like ffplay does).
             self._shutdown_mpv()
             cmd = ['mpv', '--no-video', '--ytdl=yes', '--really-quiet',
-                   '--no-terminal', url]
+                   '--network-timeout=15', '--no-terminal', url]
             if start and start > 0:
                 cmd.append(f'--start=+{int(start)}')
             ytdlp = _find_ytdlp()
             if ytdlp:
                 cmd.append(f'--script-opts=ytdl_hook-ytdl_path={ytdlp}')
+            raw = ['socket-timeout=15']
             if self.cookies_file and os.path.isfile(self.cookies_file):
-                cmd.append(f'--ytdl-raw-options=cookiefile={self.cookies_file}')
+                raw.append(f'cookiefile={self.cookies_file}')
+            cmd.append('--ytdl-raw-options=' + ','.join(raw))
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -529,6 +539,7 @@ class Player:
         opts = {
             'quiet': True, 'no_warnings': True, 'logger': _Silent(),
             'format': 'bestaudio/best',
+            'socket_timeout': 15, 'retries': 1,   # don't hang forever on a stalled fetch
         }
         if self.cookies_file and os.path.isfile(self.cookies_file):
             opts['cookiefile'] = self.cookies_file
