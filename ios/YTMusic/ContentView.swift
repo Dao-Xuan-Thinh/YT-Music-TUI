@@ -81,7 +81,12 @@ struct ContentView: View {
         ) {
             if let page = vm.artistPage { ArtistScreen(vm: vm, page: page) }
         }
-        .fullScreenCover(isPresented: $vm.openedCollection) {
+        // When an artist page is up, its own nested cover presents the collection
+        // (a sibling cover here would silently wait until the artist page closed).
+        .fullScreenCover(isPresented: Binding(
+            get: { vm.openedCollection && vm.artistPage == nil },
+            set: { if !$0 { vm.openedCollection = false } })
+        ) {
             CollectionScreen(vm: vm, title: vm.collectionTitle, tracks: vm.collectionTracks)
         }
     }

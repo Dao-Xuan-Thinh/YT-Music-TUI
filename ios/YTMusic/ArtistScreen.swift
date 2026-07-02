@@ -25,6 +25,12 @@ struct ArtistScreen: View {
         }
         .foregroundStyle(TUI.fg).font(TUI.mono()).tint(TUI.accent)
         .preferredColorScheme(theme.current.dark ? .dark : .light)
+        // Present albums/playlists from *inside* this cover: SwiftUI can't show a
+        // sibling fullScreenCover while this one is up (ContentView's collection
+        // cover only fires when no artist page is open).
+        .fullScreenCover(isPresented: $vm.openedCollection) {
+            CollectionScreen(vm: vm, title: vm.collectionTitle, tracks: vm.collectionTracks)
+        }
     }
 
     private var header: some View {
