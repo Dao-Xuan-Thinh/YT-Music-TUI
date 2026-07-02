@@ -1505,6 +1505,8 @@ class YTMApp(App):
         self.duration = 0.0
         self.is_paused = False
         self._last_bar_sig = None        # skip redundant player-bar redraws
+        self._loading_since = None       # monotonic ts while awaiting playback (load watchdog)
+        self._play_timer = None          # debounce timer for rapid selections (misclicks)
         # Color-wave animation state (see _sync_animation / _animate_tick).
         self._anim_frame = 0
         self._anim_timer = None          # active Timer while the wave is running
@@ -1973,7 +1975,7 @@ class YTMApp(App):
         if self.view_mode == 'queue':
             qi = int(key[1:])
             if 0 <= qi < len(self._queue):
-                self._play_queue_item(qi)
+                self._debounce_play(lambda: self._play_queue_item(qi))
         else:
             if key.startswith('A:'):        # artist entity row → open the artist page
                 self._open_artist_channel(key[2:])
@@ -1986,9 +1988,18 @@ class YTMApp(App):
                 # Keep the whole loaded list as the queue and point the index at
                 # the chosen track, so jumping behaves like auto-advance — the
                 # n/total counter stays stable instead of resetting to 1.
-                self._queue = list(self._results)
-                self._queue_idx = idx
-                self._play_queue_item(idx)
+                def _go(i=idx):
+                    self._queue = list(self._results)
+                    self._queue_idx = i
+                    self._play_queue_item(i)
+                self._debounce_play(_go)
+
+    def _debounce_play(self, fn) -> None:
+        """Coalesce rapid selections (misclicks) so only the final pick actually loads — a
+        wrong pick's extraction never starts (starting it can wedge the fetch pathway)."""
+        if self._play_timer is not None:
+            self._play_timer.stop()
+        self._play_timer = self.set_timer(0.15, fn)
 
     def _open_album(self, browse_id: str) -> None:
         """Load an album (browseId) into results+queue and play it."""
@@ -2017,6 +2028,7 @@ class YTMApp(App):
         self.now_playing = f'{track["title"]}  —  {track["uploader"]}'
         self._lib.add_recent(track)
         self._play_started_at = time.monotonic()   # for the cascade guard below
+        self._loading_since = time.monotonic()      # for the load watchdog in _poll_player
         self.is_paused = False        # play un-pauses; lets the wave start at once
         self._set_status('Loading…')
         self._render_table()
@@ -2069,6 +2081,19 @@ class YTMApp(App):
         self.position  = self._player.get_position()
         self.duration  = self._player.get_duration()
         self.is_paused = self._player.is_paused()
+        # Load watchdog: once playback really starts (position/duration known), clear it;
+        # if nothing has started within the timeout the fetch is stuck (e.g. a wedged
+        # backend) — surface a retry and recover mpv so the next pick works without an app
+        # restart. Network timeouts (player.py) normally error out first; this is the backstop.
+        if self._loading_since is not None and self.now_playing:
+            if self.duration > 0 or self.position > 0:
+                self._loading_since = None
+            elif time.monotonic() - self._loading_since > 25:
+                self._loading_since = None
+                title = (self._queue[self._queue_idx]['title']
+                         if 0 <= self._queue_idx < len(self._queue) else 'track')
+                self._set_status(f'Couldn\'t load "{title}" — press Enter to retry.')
+                threading.Thread(target=self._player.quit, daemon=True).start()
         # Start/stop the color-wave to match play/pause/stop state (cheap check).
         self._sync_animation()
         # Only redraw the player bar when something visible actually changed.
