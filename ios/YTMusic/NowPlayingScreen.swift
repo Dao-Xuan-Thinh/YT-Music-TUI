@@ -18,8 +18,6 @@ struct NowPlayingScreen: View {
     @State private var scrub: Double = 0
     @State private var scrubbing = false
     @State private var dragY: CGFloat = 0
-    @State private var showLangPrompt = false
-    @State private var langInput = ""
 
     var body: some View {
         ZStack {
@@ -32,7 +30,7 @@ struct NowPlayingScreen: View {
                 transport
                 toggles
                 volume
-                lyricsSection
+                LyricsPanel(vm: vm, playback: playback)
             }
             .padding(.horizontal, 22)
             .padding(.top, 8)
@@ -49,79 +47,7 @@ struct NowPlayingScreen: View {
                 .onEnded { v in if v.translation.height > 120 { dismiss() } else { dragY = 0 } }
         )
         .onChange(of: playback.position) { p in if !scrubbing { scrub = p } }
-        .onAppear { scrub = playback.position; loadLyricsForCurrent() }
-        .onChange(of: vm.currentResult?.id) { _ in loadLyricsForCurrent() }
-    }
-
-    private func loadLyricsForCurrent() {
-        if let id = vm.currentResult?.id, !id.isEmpty { vm.loadLyrics(for: id) }
-    }
-
-    /// Lyrics at the bottom of the player: follows playback (highlights + auto-scrolls the
-    /// current line on synced songs), with an on-demand translation under each line.
-    private var lyricsSection: some View {
-        let cur = vm.currentLyricIndex(positionSeconds: playback.position)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text("lyrics").font(TUI.mono(11, .bold)).foregroundStyle(TUI.dim)
-                if vm.lyricsLoading || vm.translating {
-                    ProgressView().controlSize(.mini).tint(TUI.accent)
-                }
-                Spacer()
-                if vm.lyricsAvailable {
-                    Text(vm.translateOn ? "translated" : "translate")
-                        .font(TUI.mono(11, .bold))
-                        .foregroundStyle(vm.translateOn ? TUI.accent : TUI.dim)
-                        .onTapGesture { vm.toggleTranslate() }
-                    Text("[\(vm.translateLang)]").font(TUI.mono(11)).foregroundStyle(TUI.dim)
-                        .onTapGesture { langInput = vm.translateLang; showLangPrompt = true }
-                }
-            }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 3) {
-                        if vm.lyricsAvailable {
-                            ForEach(Array(vm.lyricLines.enumerated()), id: \.offset) { i, ln in
-                                lyricRow(i, ln, current: i == cur)
-                            }
-                        } else if !vm.lyricsLoading {
-                            Text("no lyrics for this track")
-                                .font(TUI.mono(12)).foregroundStyle(TUI.dim)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .onChange(of: cur) { i in
-                    guard vm.lyricsSynced, i >= 0 else { return }
-                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(i, anchor: .center) }
-                }
-            }
-            .frame(maxHeight: .infinity)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .alert("Translate to", isPresented: $showLangPrompt) {
-            TextField("language code (en, vi, ja…)", text: $langInput)
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-            Button("Set") { vm.setTranslateLang(langInput) }
-            Button("Cancel", role: .cancel) {}
-        }
-    }
-
-    @ViewBuilder private func lyricRow(_ i: Int, _ ln: LyricLine, current: Bool) -> some View {
-        let played = vm.lyricsSynced && i < vm.currentLyricIndex(positionSeconds: playback.position)
-        VStack(alignment: .leading, spacing: 1) {
-            Text(ln.text.isEmpty ? " " : ln.text)
-                .font(TUI.mono(current ? 14 : 13, current ? .bold : .regular))
-                .foregroundStyle(current ? TUI.accent : (played ? TUI.dim : TUI.fg))
-            if vm.translateOn, i < vm.lyricsTranslated.count {
-                let tr = vm.lyricsTranslated[i]
-                if !tr.isEmpty && tr != ln.text {
-                    Text(tr).font(TUI.mono(11)).italic().foregroundStyle(TUI.dim)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .id(i)
+        .onAppear { scrub = playback.position }
     }
 
     // MARK: - Pieces
@@ -268,7 +194,7 @@ struct NowPlayingScreen: View {
 /// A block-char spectrum. Prefers the **real** audio levels from the MTAudioProcessingTap
 /// (`playback.audioLevels`); when those aren't feeding (paused, or a stream where the tap
 /// doesn't fire) it falls back to a decorative per-bar sine mix. Colored from the theme wave.
-private struct Equalizer: View {
+struct Equalizer: View {
     @ObservedObject var playback: PlaybackService
     let active: Bool
     let palette: [Color]

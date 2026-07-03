@@ -24,8 +24,12 @@ struct ContentView: View {
     @State private var showNowPlaying = false
     @State private var showSettings = false
     @State private var showThemePicker = false
+    @State private var showLyricsPanel = false   // iPad landscape: right panel → lyrics
 
     private let rowHeight: CGFloat = 30
+    /// iPad landscape integrates the full player into the root layout (no fullscreen
+    /// cover there); iPhone — including regular-width Max models — keeps the cover.
+    private let isPad = UIDevice.current.userInterfaceIdiom == .pad
 
     var body: some View {
         ZStack {
@@ -111,34 +115,42 @@ struct ContentView: View {
             list
             TUIDivider()
             nowPlaying
-            footer
+            footer(showLyricsButton: false)
         }
     }
 
     /// Landscape: now-playing (square cover + controls) on the LEFT, browse list on the RIGHT.
     /// The left column is intentionally narrower (~38%) so the right column keeps enough width
     /// for the 4 tabs; the cover is sized to fit both the column width and the visible height.
+    /// On iPad the left column IS the full player (equalizer, toggles, radio, volume — the
+    /// fullscreen cover is retired there) and the right panel can swap to lyrics.
     private var landscapeStack: some View {
         GeometryReader { geo in
             let leftW = geo.size.width * 0.38
-            let coverSide = min(leftW - 8, geo.size.height * 0.5)
+            // On iPad leave room below the cover for the equalizer + extra control rows.
+            let coverSide = min(leftW - 8, geo.size.height * (isPad ? 0.42 : 0.5))
             VStack(spacing: 6) {
                 HStack(alignment: .top, spacing: 16) {
                     nowPlayingLandscape(coverSide: coverSide)
                         .frame(width: leftW)
                     VStack(spacing: 6) {
-                        browseHeader
-                        TUIDivider()
-                        list
+                        if isPad && showLyricsPanel {
+                            lyricsSidePanel
+                        } else {
+                            browseHeader
+                            TUIDivider()
+                            list
+                        }
                     }
                     .frame(maxWidth: .infinity)
                 }
-                footer
+                footer(showLyricsButton: isPad)
             }
         }
     }
 
     /// Landscape now-playing: a square (1:1) cover, then title, scrubber, and transport.
+    /// iPad adds the fullscreen player's remaining features inline.
     private func nowPlayingLandscape(coverSide: CGFloat) -> some View {
         VStack(spacing: 10) {
             AsyncImage(url: playback.current?.thumbnailURL) { phase in
@@ -149,8 +161,15 @@ struct ContentView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(TUI.dim.opacity(0.3)))
             .contentShape(Rectangle())
-            .onTapGesture { if playback.current != nil { showNowPlaying = true } }
+            // iPhone: tap expands to the fullscreen player. iPad: the player lives here.
+            .onTapGesture { if !isPad, playback.current != nil { showNowPlaying = true } }
             .frame(maxWidth: .infinity)   // center the cover in the column
+
+            if isPad {
+                Equalizer(playback: playback, active: playback.isPlaying,
+                          palette: theme.current.wave ?? [TUI.accent])
+                    .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30)
+            }
 
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -173,6 +192,14 @@ struct ContentView: View {
             })
             .disabled(playback.current == nil)
 
+            if isPad {
+                HStack {
+                    Text(timeString(scrub)).font(TUI.mono(11)).foregroundStyle(TUI.dim)
+                    Spacer()
+                    Text(timeString(playback.duration)).font(TUI.mono(11)).foregroundStyle(TUI.dim)
+                }
+            }
+
             HStack(spacing: 44) {
                 Button { vm.playPrevious() } label: { Image(systemName: "backward.end.fill").font(.title3) }
                 Button { playback.togglePlayPause() } label: {
@@ -181,6 +208,48 @@ struct ContentView: View {
                 Button { vm.playNext() } label: { Image(systemName: "forward.end.fill").font(.title3) }
             }
             .foregroundStyle(TUI.accent).disabled(playback.current == nil)
+
+            if isPad {
+                HStack(spacing: 30) {
+                    Text("shuffle")
+                        .foregroundStyle(vm.shuffle ? TUI.accent : TUI.dim)
+                        .onTapGesture { vm.toggleShuffle() }
+                    Text("repeat:\(vm.repeatMode.rawValue)")
+                        .foregroundStyle(vm.repeatMode == .off ? TUI.dim : TUI.accent)
+                        .onTapGesture { vm.cycleRepeat() }
+                    Text("∞ radio")
+                        .foregroundStyle(vm.currentResult == nil ? TUI.dim : TUI.accent)
+                        .onTapGesture { vm.startRadio() }
+                }
+                .font(TUI.mono(13, .bold))
+                .padding(.top, 2)
+
+                HStack(spacing: 10) {
+                    Image(systemName: "speaker.fill").font(.caption).foregroundStyle(TUI.dim)
+                    Slider(value: $playback.volume, in: 0...1)
+                    Image(systemName: "speaker.wave.3.fill").font(.caption).foregroundStyle(TUI.dim)
+                    Text("\(Int(playback.volume * 100))%").font(TUI.mono(11)).foregroundStyle(TUI.dim)
+                        .frame(width: 38, alignment: .trailing)
+                }
+            }
+        }
+    }
+
+    /// iPad landscape right panel in lyrics mode: header with a way back to browse,
+    /// then the shared following/translatable lyrics view.
+    private var lyricsSidePanel: some View {
+        VStack(spacing: 6) {
+            HStack {
+                WaveText(text: playback.current?.title ?? "nothing playing",
+                         palette: theme.current.wave, font: TUI.mono(13, .bold),
+                         fallback: TUI.fg,
+                         active: playback.isPlaying && playback.current != nil, lineLimit: 1)
+                Spacer()
+                Text("✕ browse").font(TUI.mono(12, .bold)).foregroundStyle(TUI.dim)
+                    .onTapGesture { showLyricsPanel = false }
+            }
+            TUIDivider()
+            LyricsPanel(vm: vm, playback: playback)
         }
     }
 
@@ -616,7 +685,7 @@ struct ContentView: View {
 
     // MARK: - Footer
 
-    private var footer: some View {
+    private func footer(showLyricsButton: Bool) -> some View {
         let i = (vm.queueIndex ?? -1) + 1
         return HStack(spacing: 6) {
             Text("shuf:\(vm.shuffle ? "on" : "off")")
@@ -633,6 +702,12 @@ struct ContentView: View {
             sep
             Text(theme.current.name).foregroundStyle(TUI.accent)
                 .onTapGesture { showThemePicker = true }
+            if showLyricsButton {
+                sep
+                Text("lyrics")
+                    .foregroundStyle(showLyricsPanel ? TUI.accent : TUI.dim)
+                    .onTapGesture { showLyricsPanel.toggle() }
+            }
             Spacer()
             Image(systemName: "gearshape").foregroundStyle(TUI.dim)
                 .onTapGesture { showSettings = true }
