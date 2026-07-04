@@ -173,7 +173,11 @@ def apply_update():
 
     # Refuse to clobber local edits — a fast-forward pull would abort anyway, but
     # this gives a clearer message.
-    ok, out, _ = _git('status', '--porcelain', timeout=15)
+    # --untracked-files=no: untracked files can't be clobbered by a ff-pull or
+    # checkout (git errors out itself on a real collision) — only tracked
+    # modifications should block. E.g. the iOS branch leaves untracked build
+    # dirs behind that must not wedge the updater.
+    ok, out, _ = _git('status', '--porcelain', '--untracked-files=no', timeout=15)
     if ok and out.strip():
         result['error'] = ('you have local changes — commit or stash them first, '
                            'then update')
@@ -237,7 +241,11 @@ def switch_branch(target):
 
     # Refuse to clobber local edits — a checkout would either fail or drag them
     # onto the other branch.
-    ok, out, _ = _git('status', '--porcelain', timeout=15)
+    # --untracked-files=no: untracked files can't be clobbered by a ff-pull or
+    # checkout (git errors out itself on a real collision) — only tracked
+    # modifications should block. E.g. the iOS branch leaves untracked build
+    # dirs behind that must not wedge the updater.
+    ok, out, _ = _git('status', '--porcelain', '--untracked-files=no', timeout=15)
     if ok and out.strip():
         result['error'] = ('you have local changes — commit or stash them first, '
                            'then switch branches')
