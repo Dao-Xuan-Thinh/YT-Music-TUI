@@ -700,6 +700,55 @@ def _is_url(text):
     return text.startswith('http://') or text.startswith('https://')
 
 
+# ── Premium-gated tracks ─────────────────────────────────────────────────────
+# Extraction runs anonymous by default (signed-in sessions can degrade normal
+# streams to SABR-only formats), so a Music-Premium-only track fails with the
+# error below. When the user IS signed in, we retry that one extraction with
+# their account cookies and hand back the direct audio URL.
+
+def _is_premium_error(exc):
+    return 'premium members' in str(exc).lower()
+
+
+def _account_cookie_opts():
+    """yt-dlp cookie opts for the signed-in account, or None when signed out.
+    browser method → cookiesfrombrowser (live jar); cookies method → cookiefile."""
+    if _auth_method == 'browser' and _auth_browser:
+        return {'cookiesfrombrowser': (_auth_browser, _auth_browser_profile or None,
+                                       None, None)}
+    if _auth_method == 'cookies' and _cookies_file and os.path.isfile(_cookies_file):
+        return {'cookiefile': _cookies_file}
+    return None
+
+
+def resolve_premium_stream(url_or_id):
+    """Authenticated single-video extraction → (track_dict, direct_url) or None.
+
+    The direct googlevideo URL is playable by mpv/ffplay without re-extraction
+    (it expires after a few hours — fine for a listening session, not for saved
+    sessions). Returns None when signed out or the extraction still fails.
+    """
+    cookie_opts = _account_cookie_opts()
+    if not cookie_opts:
+        return None
+    url = (url_or_id if _is_url(url_or_id)
+           else f'https://www.youtube.com/watch?v={url_or_id}')
+    extra = dict(cookie_opts)
+    extra['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
+    try:
+        with yt_dlp.YoutubeDL(_ydl_opts(None, extra)) as ydl:
+            info = ydl.extract_info(url, download=False)
+        direct = info.get('url')
+        if not direct:
+            fmts = info.get('requested_formats') or []
+            direct = fmts[0].get('url') if fmts else None
+        if not direct:
+            return None
+        return _entry_to_dict(info), direct
+    except Exception:
+        return None
+
+
 def _entry_to_dict(e):
     vid_id = e.get('id') or ''
     url = (
@@ -795,6 +844,14 @@ def resolve(inp, source='ytm', cookies_file=None, max_results=15):
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(inp, download=False)
     except Exception as exc:
+        # Music-Premium-only track + signed-in user → retry with account cookies
+        # and return the direct stream so playback doesn't re-extract anonymously.
+        if _is_premium_error(exc):
+            res = resolve_premium_stream(inp)
+            if res is not None:
+                track, direct = res
+                track['url'] = direct
+                return [track]
         raise RuntimeError(f'Failed to resolve URL: {exc}') from exc
 
     # Playlist / channel
