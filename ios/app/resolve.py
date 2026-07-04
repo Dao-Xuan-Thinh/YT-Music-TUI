@@ -79,12 +79,43 @@ def _ytm():
     return YTMusic()
 
 
+_cookiefile = None   # Netscape cookies.txt built from the account cookies (for yt-dlp)
+
+
+def _write_cookiefile():
+    """Serialize the account auth cookies to a Netscape cookies.txt for yt-dlp
+    (it has no cookie-from-string option). Refreshed on every set_auth(); the
+    premium retry in resolve() is the only consumer."""
+    global _cookiefile
+    _cookiefile = None
+    if not _auth_headers:
+        return
+    import tempfile
+    path = os.path.join(tempfile.gettempdir(), "ytm_account_cookies.txt")
+    try:
+        exp = str(int(time.time()) + 365 * 24 * 3600)
+        rows = ["# Netscape HTTP Cookie File"]
+        for part in _auth_headers["cookie"].split("; "):
+            name, _, value = part.partition("=")
+            if not name or not value:
+                continue
+            # The session cookies ride on both domains; write each for both.
+            for domain in (".youtube.com", ".google.com"):
+                rows.append("\t".join([domain, "TRUE", "/", "TRUE", exp, name, value]))
+        with open(path, "w") as f:
+            f.write("\n".join(rows) + "\n")
+        _cookiefile = path
+    except Exception:
+        _cookiefile = None
+
+
 def set_auth(cookie_str: str = "") -> str:
     """Set (or clear, with "") the account session from a cookie string. Returns JSON
     {ok, name} — name is the signed-in account display name (empty if not logged in)."""
     global _auth_headers
     h = _headers_from_cookie_str(cookie_str)
     _auth_headers = h
+    _write_cookiefile()
     if not h:
         return json.dumps({"ok": False, "name": ""})
     try:
@@ -172,7 +203,26 @@ def resolve(url: str) -> str:
         d["_ok"] = bool(d["stream_url"] and "googlevideo" in d["stream_url"])
         return json.dumps(d)
     except Exception as e:
-        return json.dumps({"_ok": False, "_error": f"{type(e).__name__}: {e}"})
+        err = f"{type(e).__name__}: {e}"
+        # Music-Premium-only tracks reject the anonymous mobile clients. If signed
+        # in, retry once with the account cookies on yt-dlp's DEFAULT clients —
+        # premium entitlement rides on the web/tv contexts, whose JS challenges
+        # fall back to the registered JavaScriptCore provider. Anonymous stays the
+        # fast path for everything else (signed-in sessions can go SABR-only).
+        if "premium members" in err.lower() and _cookiefile:
+            try:
+                popts = dict(opts)
+                popts.pop("extractor_args", None)
+                popts["cookiefile"] = _cookiefile
+                with yt_dlp.YoutubeDL(popts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                d = _entry_to_dict(info)
+                d["_elapsed_s"] = round(time.time() - t0, 2)
+                d["_ok"] = bool(d["stream_url"] and "googlevideo" in d["stream_url"])
+                return json.dumps(d)
+            except Exception as e2:
+                err = f"{type(e2).__name__}: {e2}"
+        return json.dumps({"_ok": False, "_error": err})
 
 
 def _diag_resolve(url: str) -> None:
