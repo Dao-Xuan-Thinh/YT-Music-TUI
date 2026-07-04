@@ -11,3 +11,8 @@ sessions.json
 oauth.json
 .venv/
 .claude/
+.DS_Store
+
+# Leftovers from the iOS branch (mobile-fork tracks ios/ sources; its generated/
+# vendored support dirs remain in the tree after switching to a desktop branch).
+ios/
