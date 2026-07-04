@@ -1463,6 +1463,7 @@ class YTMApp(App):
         self._last_bar_sig = None        # skip redundant player-bar redraws
         self._loading_since = None       # monotonic ts while awaiting playback (load watchdog)
         self._play_timer = None          # debounce timer for rapid selections (misclicks)
+        self._premium_retry_id = None    # track id already retried with account cookies
         # Color-wave animation state (see _sync_animation / _animate_tick).
         self._anim_frame = 0
         self._anim_timer = None          # active Timer while the wave is running
@@ -1679,7 +1680,8 @@ class YTMApp(App):
                     cookies_file=self._config.valid_cookies(),
                     max_results=self._config.max_results,
                 )
-                self.call_from_thread(self._populate_results, results)
+                self.call_from_thread(self._populate_results, results,
+                                      False, True)   # keep_entities: async lookup owns them
             except Exception as exc:
                 self.call_from_thread(self._set_status, f'Search error: {exc}')
 
@@ -1772,7 +1774,7 @@ class YTMApp(App):
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _populate_results(self, results, keep_filter=False) -> None:
+    def _populate_results(self, results, keep_filter=False, keep_entities=False) -> None:
         self._results = results
         if not keep_filter:
             self._filter_text = ''
@@ -1780,6 +1782,13 @@ class YTMApp(App):
                 self.query_one('#filter-input', Input).value = ''
             except NoMatches:
                 pass
+        # Drop the ◆ artist / ◇ album rows from the last keyword search unless this
+        # IS a search landing (they'd otherwise linger atop an opened album/playlist).
+        # The search path passes keep_entities=True because its entity lookup lands
+        # asynchronously and must not be wiped by the song results arriving.
+        if not keep_entities:
+            self._search_artists = []
+            self._search_albums = []
         self.view_mode = 'library'
         self._render_table()
         self._update_footer()
@@ -2005,7 +2014,12 @@ class YTMApp(App):
         # they're failing to play (e.g. extraction error), not finishing. Advancing
         # would skip through the whole queue silently. Stop after a few in a row.
         started = getattr(self, '_play_started_at', None)
-        if started is not None and (time.monotonic() - started) < 2.0:
+        fast_fail = started is not None and (time.monotonic() - started) < 2.0
+        if fast_fail:
+            # A track that dies this fast may be Music-Premium-gated (anonymous
+            # extraction rejected). If signed in, retry it once with account cookies.
+            if self._maybe_premium_retry():
+                return
             self._consec_fail = getattr(self, '_consec_fail', 0) + 1
         else:
             self._consec_fail = 0
@@ -2029,6 +2043,41 @@ class YTMApp(App):
             self.call_from_thread(setattr, self, 'now_playing', '')
             self.call_from_thread(self._render_table)
 
+    def _maybe_premium_retry(self) -> bool:
+        """Re-resolve the current track with the signed-in account's cookies and
+        replay its direct stream (Music-Premium-only tracks reject the default
+        anonymous extraction). One attempt per track; returns True when a retry
+        was started, so the caller must not auto-advance. Runs the network work
+        in a daemon thread — never blocks the player callback thread."""
+        if not (0 <= self._queue_idx < len(self._queue)):
+            return False
+        track = self._queue[self._queue_idx]
+        vid = track.get('id')
+        if not vid or self._premium_retry_id == vid:
+            return False
+        if youtube._account_cookie_opts() is None:   # signed out — nothing to retry with
+            return False
+        self._premium_retry_id = vid
+        idx = self._queue_idx
+        self.call_from_thread(self._set_status,
+                              'Track needs your account — retrying signed in…')
+
+        def _run():
+            res = youtube.resolve_premium_stream(vid)
+            if res is not None:
+                # Direct googlevideo URL: mpv plays it without re-extracting
+                # anonymously. Expires after a few hours — session-scoped only.
+                track['url'] = res[1]
+                self.call_from_thread(self._play_queue_item, idx)
+            else:
+                self.call_from_thread(
+                    self._set_status,
+                    f'Couldn\'t play "{track["title"]}" even signed in — skipping.')
+                self._on_track_end()   # retry id is set → falls through to advance
+
+        threading.Thread(target=_run, daemon=True).start()
+        return True
+
     # ── Player polling ────────────────────────────────────────────────────
 
     def _poll_player(self) -> None:
@@ -2042,6 +2091,9 @@ class YTMApp(App):
         if self._loading_since is not None and self.now_playing:
             if self.duration > 0 or self.position > 0:
                 self._loading_since = None
+                # Real playback started — allow a future premium retry for this
+                # track (e.g. its cached direct URL expires hours later).
+                self._premium_retry_id = None
             elif time.monotonic() - self._loading_since > 25:
                 self._loading_since = None
                 title = (self._queue[self._queue_idx]['title']
