@@ -29,6 +29,7 @@ final class DebugLog: ObservableObject {
 /// Settings → debug log: the app (Swift) log and the engine (Python) log, with copy.
 struct DebugLogScreen: View {
     @ObservedObject private var dlog = DebugLog.shared
+    @ObservedObject private var theme = ThemeManager.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var pyLog = ""
@@ -56,7 +57,8 @@ struct DebugLogScreen: View {
                 }
             }
         }
-        .foregroundStyle(TUI.fg).font(TUI.mono()).tint(TUI.accent).preferredColorScheme(.dark)
+        .foregroundStyle(TUI.fg).font(TUI.mono()).tint(TUI.accent)
+        .preferredColorScheme(theme.current.dark ? .dark : .light)
         .onAppear(perform: refresh)
     }
 

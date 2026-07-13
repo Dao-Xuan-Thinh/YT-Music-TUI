@@ -7,6 +7,7 @@ import WebKit
 struct AccountScreen: View {
     @ObservedObject var vm: PlayerViewModel
     @ObservedObject private var account = AccountStore.shared
+    @ObservedObject private var theme = ThemeManager.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var showWeb = false
@@ -23,7 +24,8 @@ struct AccountScreen: View {
                 .padding(18)
             }
         }
-        .foregroundStyle(TUI.fg).font(TUI.mono()).tint(TUI.accent).preferredColorScheme(.dark)
+        .foregroundStyle(TUI.fg).font(TUI.mono()).tint(TUI.accent)
+        .preferredColorScheme(theme.current.dark ? .dark : .light)
         .sheet(isPresented: $showWeb) { webSheet }
         .onChange(of: account.signedIn) { now in if now { vm.loadHome(force: true) } }
     }
@@ -115,7 +117,7 @@ struct AccountScreen: View {
             .font(TUI.mono(14, .bold)).padding(12).background(TUI.panel)
             LoginWebView()
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(theme.current.dark ? .dark : .light)
     }
 
     /// Read the youtube/google cookies from the shared web store and verify them.

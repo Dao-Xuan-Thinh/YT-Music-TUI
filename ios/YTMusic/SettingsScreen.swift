@@ -11,9 +11,12 @@ struct SettingsScreen: View {
     @ObservedObject private var account = AccountStore.shared
     @Environment(\.dismiss) private var dismiss
 
+    @ObservedObject private var updater = UpdateChecker.shared
+
     @State private var confirmClear: ClearTarget?
     @State private var showAccount = false
     @State private var showDebugLog = false
+    @State private var showChangelog = false
 
     enum ClearTarget: String, Identifiable {
         case liked, recent, playlists, sessions
@@ -40,7 +43,7 @@ struct SettingsScreen: View {
         .foregroundStyle(TUI.fg)
         .font(TUI.mono())
         .tint(TUI.accent)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(theme.current.dark ? .dark : .light)
         .alert(item: $confirmClear) { target in
             Alert(
                 title: Text("Clear \(target.rawValue)?"),
@@ -50,6 +53,7 @@ struct SettingsScreen: View {
         }
         .sheet(isPresented: $showAccount) { AccountScreen(vm: vm) }
         .sheet(isPresented: $showDebugLog) { DebugLogScreen() }
+        .sheet(isPresented: $showChangelog) { ChangelogScreen() }
     }
 
     private var accountSection: some View {
@@ -182,7 +186,16 @@ struct SettingsScreen: View {
         VStack(alignment: .leading, spacing: 4) {
             sectionTitle("ABOUT")
             Text("YouTube Music — native iOS").foregroundStyle(TUI.fg).font(TUI.mono(13))
-            Text("version \(appVersion)").foregroundStyle(TUI.dim).font(TUI.mono(12))
+            HStack(spacing: 10) {
+                Text("version \(appVersion)").foregroundStyle(TUI.dim)
+                Text("changelog").foregroundStyle(TUI.accent).underline()
+                    .onTapGesture { showChangelog = true }
+            }
+            .font(TUI.mono(12))
+            if updater.updateAvailable {
+                Text("↑ update available — run ./reinstall.sh on the Mac")
+                    .foregroundStyle(TUI.accent).font(TUI.mono(12))
+            }
             Text("mobile-fork · SwiftUI + embedded yt-dlp").foregroundStyle(TUI.dim).font(TUI.mono(11))
             HStack(spacing: 4) {
                 Text("created by").foregroundStyle(TUI.dim)

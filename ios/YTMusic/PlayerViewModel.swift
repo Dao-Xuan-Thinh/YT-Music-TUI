@@ -23,6 +23,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var searching = false
     @Published var resolving = false
     @Published var errorMsg: String?
+    @Published var loadingLabel = ""               // what the top loading banner says
+    @Published var pendingResume: Session?         // last session armed at launch (tap to resume)
     @Published var home: [SearchResult] = []       // FOR YOU feed (anonymous home)
     @Published var homeLoading = false
     @Published var artistHit: ArtistHit?           // top artist card above search results
@@ -94,6 +96,7 @@ final class PlayerViewModel: ObservableObject {
         guard !q.isEmpty else { return }
         let isURL = q.hasPrefix("http://") || q.hasPrefix("https://")
         searching = true
+        loadingLabel = isURL ? "loading link…" : "searching…"
         errorMsg = nil
         artistHit = nil
         artistPage = nil
@@ -192,6 +195,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func play(at idx: Int, resumeAt: Double = 0) {
+        pendingResume = nil   // any explicit play supersedes the armed launch-resume
         // Invalidate any in-flight resolve up front — even when this selection is served from
         // the prefetch cache — so a slow earlier resolve can't complete and hijack playback.
         resolveToken &+= 1
@@ -336,12 +340,15 @@ final class PlayerViewModel: ObservableObject {
     }
 
     /// Start an endless mix (radio) seeded from the currently-playing track: replaces the
-    /// queue with the mix and plays from the top.
+    /// queue with the mix. If the seed is what's playing right now, the audio keeps going —
+    /// only the queue is swapped underneath it (no restart-from-0:00).
     func startRadio() {
-        guard let seed = currentResult?.id, !seed.isEmpty else {
+        guard let seedRow = currentResult, !seedRow.id.isEmpty else {
             errorMsg = "Play a song first to start radio"; return
         }
+        let seed = seedRow.id
         searching = true
+        loadingLabel = "building radio…"
         errorMsg = nil
         DispatchQueue.global(qos: .userInitiated).async {
             let c = python_radio(seed)
@@ -352,7 +359,20 @@ final class PlayerViewModel: ObservableObject {
                 self.searching = false
                 guard !list.isEmpty else { self.errorMsg = "No radio for this track"; return }
                 self.tab = .queue
-                self.playList(list, at: 0)
+                if self.playback.current?.id == seed {
+                    // Seed is on the air: keep it playing, just swap the queue under it
+                    // (the radio API returns the seed first; make sure of it).
+                    var mix = list
+                    if mix.first?.id != seed {
+                        mix.removeAll { $0.id == seed }
+                        mix.insert(seedRow, at: 0)
+                    }
+                    self.queue = mix
+                    self.queueIndex = 0
+                    self.prefetchNext()
+                } else {
+                    self.playList(list, at: 0)
+                }
             }
         }
     }
@@ -360,6 +380,7 @@ final class PlayerViewModel: ObservableObject {
     /// Open the artist page for a channelId (from the artist card).
     func openArtist(_ hit: ArtistHit) {
         artistLoading = true
+        loadingLabel = "loading artist…"
         artistPage = nil
         DispatchQueue.global(qos: .userInitiated).async {
             let c = python_artist(hit.channelId)
@@ -459,6 +480,7 @@ final class PlayerViewModel: ObservableObject {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !n.isEmpty else { return }
         artistLoading = true
+        loadingLabel = "loading artist…"
         DispatchQueue.global(qos: .userInitiated).async {
             let c = python_search_artist(n)
             let json = c.map { String(cString: $0) } ?? "{}"
@@ -490,6 +512,7 @@ final class PlayerViewModel: ObservableObject {
         collectionTitle = title
         collectionTracks = []
         collectionLoading = true
+        loadingLabel = "loading \(title.isEmpty ? "tracks" : title)…"
         openedCollection = true
         DispatchQueue.global(qos: .userInitiated).async {
             let c = fetch()
@@ -521,6 +544,24 @@ final class PlayerViewModel: ObservableObject {
         queue = s.queue
         tab = .queue
         play(at: s.index, resumeAt: s.position)
+    }
+
+    /// Arm the most recent session at launch: restore the queue silently, WITHOUT
+    /// autoplaying — the now-playing bar shows a resume chip; tapping it starts playback.
+    func armResume() {
+        guard playback.current == nil, queue.isEmpty,
+              let s = library.sessions.first, !s.queue.isEmpty else { return }
+        queue = s.queue
+        queueIndex = min(max(0, s.index), s.queue.count - 1)
+        pendingResume = s
+    }
+
+    /// Start playing the armed session (from the now-playing bar's resume chip).
+    func resumePending() {
+        guard let s = pendingResume else { return }
+        pendingResume = nil
+        tab = .queue
+        play(at: min(max(0, s.index), queue.count - 1), resumeAt: s.position)
     }
 
     /// Snapshot the current queue + position as a resume session (called on backgrounding).

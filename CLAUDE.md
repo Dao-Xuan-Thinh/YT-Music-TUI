@@ -92,6 +92,12 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
 - **Debug log:** `resolve._log`/`get_log` (Python ring buffer, 400 lines) +
   `DebugLog.shared.log` (Swift) surface in Settings → DEBUG → debug log (copyable).
   Never log cookie values.
+- **Version + changelog discipline:** with every user-facing change, bump
+  `CFBundleShortVersionString`/`CFBundleVersion` in `ios/project.yml` AND append an entry
+  to `Changelog.entries` (`ios/YTMusic/ChangelogScreen.swift`). `UpdateChecker` compares
+  the build's baked-in sha (`BuildInfo.generated.swift`, written by build.sh, gitignored)
+  against GitHub's mobile-fork head — commit+push, then rebuild, or the app will report
+  itself out of date.
 - **Sheet/cover presentation:** SwiftUI cannot present two sibling
   `fullScreenCover`s from the same view. All root-level covers live in ContentView; a
   cover that must appear *on top of* another presented screen must be attached *inside*

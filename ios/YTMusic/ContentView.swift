@@ -6,6 +6,7 @@ struct ContentView: View {
     @ObservedObject private var library = LibraryStore.shared
     @ObservedObject private var theme = ThemeManager.shared
     @ObservedObject private var account = AccountStore.shared
+    @ObservedObject private var updater = UpdateChecker.shared
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var query = ""
@@ -44,16 +45,24 @@ struct ContentView: View {
             .padding(.horizontal, 12)
             .padding(.top, 6)
         }
+        .overlay(alignment: .top) { loadingBanner }
         .foregroundStyle(TUI.fg)
         .font(TUI.mono())
         .tint(TUI.accent)
         .preferredColorScheme(theme.current.dark ? .dark : .light)
         .onChange(of: playback.position) { p in if !scrubbing { scrub = p } }
         .onChange(of: scenePhase) { phase in
-            if phase == .background { vm.saveCurrentSession() }
+            // .inactive too: an app-switcher swipe-kill passes through .inactive but can
+            // skip .background, losing the resume snapshot.
+            if phase == .background || phase == .inactive { vm.saveCurrentSession() }
+            if phase == .active { UpdateChecker.shared.check() }
         }
         .onChange(of: vm.tab) { t in if t == .foryou { vm.loadHome() } }
-        .onAppear { AccountStore.shared.restore() }
+        .onAppear {
+            AccountStore.shared.restore()
+            vm.armResume()   // remember where you left off (tap the bar to resume)
+            UpdateChecker.shared.check()
+        }
         .alert("Save playlist", isPresented: $showSavePlaylist) {
             TextField("name", text: $newPlaylistName)
             Button("Save") { vm.saveQueueAsPlaylist(name: newPlaylistName) }
@@ -92,6 +101,31 @@ struct ContentView: View {
             set: { if !$0 { vm.openedCollection = false } })
         ) {
             CollectionScreen(vm: vm, title: vm.collectionTitle, tracks: vm.collectionTracks)
+        }
+    }
+
+    /// Slim top banner while a slow fetch runs (artist page, album/playlist, radio, search)
+    /// so long loads never look like a frozen app.
+    private var isLoadingSomething: Bool {
+        vm.artistLoading || vm.collectionLoading || vm.searching
+    }
+
+    @ViewBuilder private var loadingBanner: some View {
+        if isLoadingSomething {
+            HStack(spacing: 8) {
+                ProgressView().tint(TUI.accent).scaleEffect(0.7)
+                Text(vm.loadingLabel.isEmpty ? "loading…" : vm.loadingLabel)
+                    .font(TUI.mono(12, .bold)).foregroundStyle(TUI.fg)
+                    .lineLimit(1)
+            }
+            .padding(.vertical, 6).padding(.horizontal, 14)
+            .background(TUI.panel.opacity(0.95))
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(TUI.accent.opacity(0.5)))
+            .padding(.top, 4)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .animation(.easeInOut(duration: 0.2), value: isLoadingSomething)
+            .allowsHitTesting(false)
         }
     }
 
@@ -621,28 +655,53 @@ struct ContentView: View {
                 vm.openArtistByName(name) } }
     }
 
+    /// The launch-armed resume session, only while nothing is actually playing yet.
+    private var armedResume: Session? {
+        playback.current == nil ? vm.pendingResume : nil
+    }
+
     private var nowPlaying: some View {
         VStack(spacing: 6) {
             HStack(spacing: 10) {
                 HStack(spacing: 10) {
-                    AsyncImage(url: playback.current?.thumbnailURL) { phase in
+                    AsyncImage(url: playback.current?.thumbnailURL
+                               ?? (armedResume != nil ? vm.currentResult?.thumbnailURL : nil)) { phase in
                         if case .success(let img) = phase { img.resizable().scaledToFill() }
                         else { TUI.panel }
                     }
                     .frame(width: 48, height: 48)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                     .contentShape(Rectangle())
-                    .onTapGesture { if playback.current != nil { showNowPlaying = true } } // expand
+                    .onTapGesture {
+                        if playback.current != nil { showNowPlaying = true }   // expand
+                        else if armedResume != nil { vm.resumePending() }
+                    }
                     VStack(alignment: .leading, spacing: 2) {
-                        WaveText(text: playback.current?.title ?? "nothing playing",
-                                 palette: theme.current.wave,
-                                 font: TUI.mono(14, .bold),
-                                 fallback: TUI.fg,
-                                 active: playback.isPlaying && playback.current != nil,
-                                 lineLimit: 1)
-                            .contentShape(Rectangle())
-                            .onTapGesture { if playback.current != nil { showNowPlaying = true } } // expand
-                        artistLabel(font: TUI.mono(12))   // tap → artist page
+                        HStack(spacing: 6) {
+                            PulseGlyph(glyphs: theme.current.glyphs,
+                                       font: TUI.mono(13, .bold),
+                                       active: playback.isPlaying && playback.current != nil)
+                            WaveText(text: playback.current?.title
+                                           ?? armedResume?.title ?? "nothing playing",
+                                     palette: theme.current.wave,
+                                     font: TUI.mono(14, .bold),
+                                     fallback: TUI.fg,
+                                     active: playback.isPlaying && playback.current != nil,
+                                     lineLimit: 1)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if playback.current != nil { showNowPlaying = true }   // expand
+                            else if armedResume != nil { vm.resumePending() }
+                        }
+                        if let s = armedResume {
+                            Text("resume \u{25B8} at \(timeString(s.position))")
+                                .font(TUI.mono(12)).foregroundStyle(TUI.accent)
+                                .contentShape(Rectangle())
+                                .onTapGesture { vm.resumePending() }
+                        } else {
+                            artistLabel(font: TUI.mono(12))   // tap → artist page
+                        }
                     }
                     Spacer()
                 }
@@ -667,13 +726,16 @@ struct ContentView: View {
 
             HStack(spacing: 48) {
                 Button { vm.playPrevious() } label: { Image(systemName: "backward.end.fill").font(.title2) }
-                Button { playback.togglePlayPause() } label: {
+                Button {
+                    if armedResume != nil { vm.resumePending() }
+                    else { playback.togglePlayPause() }
+                } label: {
                     Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill").font(.largeTitle)
                 }
                 Button { vm.playNext() } label: { Image(systemName: "forward.end.fill").font(.title2) }
             }
             .foregroundStyle(TUI.accent)
-            .disabled(playback.current == nil)
+            .disabled(playback.current == nil && armedResume == nil)
             .padding(.top, 2)
         }
     }
@@ -709,8 +771,14 @@ struct ContentView: View {
                     .onTapGesture { showLyricsPanel.toggle() }
             }
             Spacer()
-            Image(systemName: "gearshape").foregroundStyle(TUI.dim)
-                .onTapGesture { showSettings = true }
+            HStack(spacing: 3) {
+                if updater.updateAvailable {
+                    Text("↑").font(TUI.mono(11, .bold)).foregroundStyle(TUI.accent)
+                }
+                Image(systemName: "gearshape").foregroundStyle(TUI.dim)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { showSettings = true }
         }
         .font(TUI.mono(11))
         .padding(.vertical, 4)

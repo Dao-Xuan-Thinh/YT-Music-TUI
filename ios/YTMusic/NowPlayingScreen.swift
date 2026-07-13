@@ -94,10 +94,15 @@ struct NowPlayingScreen: View {
     private var trackInfo: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                WaveText(text: playback.current?.title ?? "nothing playing",
-                         palette: theme.current.wave, font: TUI.mono(18, .bold),
-                         fallback: TUI.fg,
-                         active: playback.isPlaying && playback.current != nil, lineLimit: 2)
+                HStack(spacing: 8) {
+                    PulseGlyph(glyphs: theme.current.glyphs,
+                               font: TUI.mono(16, .bold),
+                               active: playback.isPlaying && playback.current != nil)
+                    WaveText(text: playback.current?.title ?? "nothing playing",
+                             palette: theme.current.wave, font: TUI.mono(18, .bold),
+                             fallback: TUI.fg,
+                             active: playback.isPlaying && playback.current != nil, lineLimit: 2)
+                }
                 let artist = playback.current?.uploader ?? " "
                 Text(artist)
                     .font(TUI.mono(13)).foregroundStyle(TUI.dim).lineLimit(1)

@@ -21,3 +21,4 @@ ios/Support/Python.xcframework/
 ios/app_packages/
 ios/Support/*.tar.gz
 ios/Support/testbed/
+ios/YTMusic/BuildInfo.generated.swift
