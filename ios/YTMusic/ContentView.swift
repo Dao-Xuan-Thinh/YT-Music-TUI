@@ -16,6 +16,8 @@ struct ContentView: View {
     @State private var scrubbing = false
     @State private var dragStartHighlight: Int?
     @State private var navMode = false   // true while long-press-drag owns the list
+    @State private var dragQueueIndex: Int?   // queue row being drag-reordered (live index)
+    @State private var dragStartQueue: Int?   // where that drag began
 
     // Playlist save / rename prompts.
     @State private var showSavePlaylist = false
@@ -62,6 +64,7 @@ struct ContentView: View {
             AccountStore.shared.restore()
             vm.armResume()   // remember where you left off (tap the bar to resume)
             UpdateChecker.shared.check()
+            UpdateChecker.shared.announceBuildIfNew()
         }
         .alert("Save playlist", isPresented: $showSavePlaylist) {
             TextField("name", text: $newPlaylistName)
@@ -429,7 +432,7 @@ struct ContentView: View {
                     listBody
                 }
             }
-            .scrollDisabled(navMode)
+            .scrollDisabled(navMode || dragQueueIndex != nil)
             .simultaneousGesture(highlightDrag)
             .onChange(of: vm.highlightIndex) { i in
                 guard vm.displayed.indices.contains(i) else { return }
@@ -505,10 +508,18 @@ struct ContentView: View {
     private func row(_ idx: Int, _ r: SearchResult) -> some View {
         let playing = (r.id == vm.playingID)
         let highlighted = (idx == vm.highlightIndex)
+        // Queue rows drag-reorder from either edge (left marker/number zone, right ≡ handle).
+        let reorderable = (vm.tab == .queue && !r.isPlaylist)
+        let dragged = reorderable && dragQueueIndex == idx
         return HStack(spacing: 8) {
-            Text(playing ? "▸" : (r.isPlaylist ? "≡" : (highlighted ? "›" : " ")))
-                .foregroundStyle(TUI.accent)
-            Text(String(format: "%2d", idx + 1)).foregroundStyle(TUI.dim)
+            HStack(spacing: 8) {
+                Text(playing ? "▸" : (r.isPlaylist ? "≡" : (highlighted ? "›" : " ")))
+                    .foregroundStyle(TUI.accent)
+                Text(String(format: "%2d", idx + 1)).foregroundStyle(TUI.dim)
+            }
+            .frame(height: rowHeight)
+            .contentShape(Rectangle())
+            .gesture(reorderDrag(idx), including: reorderable ? .all : .subviews)
             if playing {
                 WaveText(text: r.title, palette: theme.current.wave, font: TUI.mono(13),
                          fallback: TUI.accent, active: playback.isPlaying, lineLimit: 1)
@@ -518,10 +529,18 @@ struct ContentView: View {
             Spacer(minLength: 6)
             Text(r.isPlaylist ? "playlist" : timeString(Double(r.duration)))
                 .foregroundStyle(TUI.dim)
+            if reorderable {
+                Text("≡")
+                    .foregroundStyle(dragged ? TUI.accent : TUI.dim)
+                    .frame(width: 26, height: rowHeight)
+                    .contentShape(Rectangle())
+                    .gesture(reorderDrag(idx))
+            }
         }
         .font(TUI.mono(13))
         .frame(height: rowHeight)
-        .background(highlighted ? TUI.accent.opacity(0.12) : .clear)
+        .background(dragged ? TUI.accent.opacity(0.25)
+                            : (highlighted ? TUI.accent.opacity(0.12) : .clear))
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { vm.tab = (vm.tab == .search ? .queue : .search) }
         .onTapGesture { playRow(idx) }
@@ -633,6 +652,7 @@ struct ContentView: View {
             .sequenced(before: DragGesture(minimumDistance: 0))
             .onChanged { value in
                 if case .second(true, let drag?) = value {
+                    guard dragQueueIndex == nil else { return }   // a reorder drag owns the touch
                     navMode = true
                     if dragStartHighlight == nil { dragStartHighlight = vm.highlightIndex }
                     let delta = Int((drag.translation.height / rowHeight).rounded())
@@ -641,6 +661,34 @@ struct ContentView: View {
                 }
             }
             .onEnded { _ in dragStartHighlight = nil; navMode = false }
+    }
+
+    /// Queue drag-to-reorder: hold a row's left (marker/number) or right (≡ handle) edge
+    /// ~0.2 s to pick the song up, then drag; the row moves live as you cross row
+    /// boundaries. Global coordinate space — the dragged row itself moves, so its local
+    /// space would shift under the gesture. Scrolling is suspended while active.
+    private func reorderDrag(_ idx: Int) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.2)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
+            .onChanged { value in
+                guard case .second(true, let drag) = value else { return }
+                if dragStartQueue == nil {
+                    dragStartQueue = idx
+                    dragQueueIndex = idx
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                }
+                guard let d = drag, let start = dragStartQueue, let cur = dragQueueIndex
+                else { return }
+                let target = min(max(start + Int((d.translation.height / rowHeight).rounded()), 0),
+                                 max(vm.queue.count - 1, 0))
+                if target != cur {
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        vm.moveQueueItem(from: cur, to: target)
+                    }
+                    dragQueueIndex = target
+                }
+            }
+            .onEnded { _ in dragStartQueue = nil; dragQueueIndex = nil }
     }
 
     // MARK: - Now playing

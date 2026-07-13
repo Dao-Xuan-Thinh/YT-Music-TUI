@@ -194,6 +194,20 @@ final class PlayerViewModel: ObservableObject {
         play(at: idx)
     }
 
+    /// Move a queue item (drag-to-reorder). The playing pointer follows its song so
+    /// auto-advance stays correct; the prefetched "next" is re-aimed afterwards.
+    func moveQueueItem(from: Int, to: Int) {
+        guard from != to, queue.indices.contains(from), queue.indices.contains(to) else { return }
+        let item = queue.remove(at: from)
+        queue.insert(item, at: to)
+        if let qi = queueIndex {
+            if qi == from { queueIndex = to }
+            else if from < qi && qi <= to { queueIndex = qi - 1 }
+            else if to <= qi && qi < from { queueIndex = qi + 1 }
+        }
+        prefetchNext()
+    }
+
     private func play(at idx: Int, resumeAt: Double = 0) {
         pendingResume = nil   // any explicit play supersedes the armed launch-resume
         // Invalidate any in-flight resolve up front — even when this selection is served from
