@@ -82,7 +82,7 @@ Install with: `pip install -r requirements.txt`
 - Prints current settings
 
 **main.py (full TUI):** `python main.py`
-- Keybindings: `/` search · `f` filter · `space` pause · `n` next · `p` play-next · `a` +queue · `x` stop · `Q` queue/library · `z` shuffle · `r` repeat · `l` like · `w` save playlist · `h` home · `t` source · `o` online/offline · `c`/`C` theme · `+/-` volume · `←→` seek · `s` settings · `g` account/sign-in · `u` update · `?` key list · `q` quit
+- Keybindings: `/` search · `f` filter · `space` pause · `n` next · `p` play-next · `a` +queue · `x` stop · `Q` queue/library · `K/J` (or shift+↑/↓) move queue track · `z` shuffle · `r` repeat · `l` like · `w` save playlist · `h` home · `t` source · `o` online/offline · `c`/`C` theme · `+/-` volume · `←→` seek · `s` settings · `g` account/sign-in · `u` update · `?` key list · `q` quit
 - The footer is a custom info bar (mode/source/shuffle/repeat/queue/volume/theme); when
   signed in it also shows the account display name (`♥ <name>`) styled in the theme accent
   via a Rich `Text`. `?` is the only key hint and opens the full `KeybindingsScreen`.
