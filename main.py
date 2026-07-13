@@ -86,6 +86,14 @@ CUSTOM_THEMES = [
           accent='#00b4d8', foreground='#0d2438', background='#f0f6ff',
           surface='#e0ecfb', panel='#cfe0f5', success='#2faf6f',
           warning='#d99a2b', error='#e0445d'),
+    Theme(name='paper', dark=False, primary='#8a6d3b', secondary='#6e5f4b',
+          accent='#a8927a', foreground='#2b2620', background='#f7f2e7',
+          surface='#efe8d6', panel='#e8e0cc', success='#5f8f4f',
+          warning='#b3822e', error='#b3452e'),
+    Theme(name='mint', dark=False, primary='#14b884', secondary='#38c9a0',
+          accent='#0e9c8f', foreground='#10382a', background='#eefaf4',
+          surface='#ddf4e9', panel='#cdeede', success='#14b884',
+          warning='#d99a2b', error='#e0445d'),
     Theme(name='solar-flare', dark=True, primary='#ffb300', secondary='#ff7043',
           accent='#ffd54f', foreground='#fff8e1', background='#1a1205',
           surface='#2a1e08', panel='#3a2a0c', success='#c0ca33',
@@ -102,6 +110,14 @@ CUSTOM_THEMES = [
           accent='#ff6bd6', foreground='#f3eaff', background='#0c0818',
           surface='#171029', panel='#22183b', success='#5fe0c0',
           warning='#ffcf66', error='#ff5d8f'),
+    Theme(name='lava-lamp', dark=True, primary='#ff7a3d', secondary='#e0407a',
+          accent='#8a2be2', foreground='#ffe9f2', background='#140a1e',
+          surface='#1f1029', panel='#2a1533', success='#5fe0c0',
+          warning='#ffb03d', error='#ff4d6d'),
+    Theme(name='poison', dark=True, primary='#9dfc2e', secondary='#d8ff5e',
+          accent='#7a3bff', foreground='#e8ffd6', background='#0a1206',
+          surface='#131f0c', panel='#1c2b12', success='#9dfc2e',
+          warning='#d8ff5e', error='#c33bff'),
 ]
 
 # Themes whose now-playing track gets an animated color-wave. The value is a list
@@ -120,6 +136,39 @@ ANIMATED_PALETTES = {
     'solar-flare': ['#ff7043', '#ffb300', '#ffd54f', '#fff3c0'],
     'cyberpunk':   ['#ff2a6d', '#fcee0a', '#00f0ff', '#ff2a6d'],
     'nebula':      ['#6b8bff', '#a06bff', '#ff6bd6', '#a06bff'],
+    'mono-amber':  ['#ffb000', '#ffcf7a', '#b87700', '#ffcf7a'],
+    # Light themes: waves in the theme's saturated range so they read on a light bg.
+    'sakura':      ['#e35d8f', '#f7a8c4', '#ffd9e8', '#f7a8c4'],
+    'arctic':      ['#2f6fed', '#6fb7ff', '#b8e2ff', '#6fb7ff'],
+    'paper':       ['#8a6d3b', '#5c5347', '#a8927a', '#6e5f4b'],
+    'mint':        ['#14b884', '#4dd6b0', '#8ce8cd', '#4dd6b0'],
+    'lava-lamp':   ['#3d1560', '#8a2be2', '#e0407a', '#ff7a3d',
+                    '#ffb03d', '#e0407a', '#8a2be2'],
+    'poison':      ['#3f7a0f', '#9dfc2e', '#d8ff5e', '#7a3bff', '#9dfc2e'],
+}
+
+# Per-theme Unicode spinner frames for the ♪ slot in the now-playing bar (stepped by the
+# same wave timer — a theme animates glyphs only if it's in ANIMATED_PALETTES too). Frames
+# within a set must share a display width so the bar doesn't jitter.
+ANIMATED_GLYPHS = {
+    'synthwave':   ['◢', '◣', '◤', '◥'],
+    'vaporwave':   ['◜', '◠', '◝', '◞', '◡', '◟'],
+    'matrix':      ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'],
+    'prism':       ['✦', '✶', '✸', '✹', '✸', '✶'],
+    'ember':       ['▁▃▅', '▃▅▇', '▅▇▅', '▇▅▃', '▅▃▁', '▃▁▃'],
+    'deep-ocean':  ['◐', '◓', '◑', '◒'],
+    'blood-moon':  ['○', '◎', '◉', '●', '◉', '◎'],
+    'aurora':      ['✦', '✶', '✸', '✹', '✸', '✶'],
+    'sakura':      ['✿', '❀', '✾', '❀'],
+    'arctic':      ['❅', '❆', '✻', '❆'],
+    'paper':       ['♪', '♫', '♬', '♫'],
+    'mint':        ['◐', '◓', '◑', '◒'],
+    'solar-flare': ['✦', '✶', '✸', '✹', '✸', '✶'],
+    'cyberpunk':   ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'],
+    'mono-amber':  ['▁▃▅', '▃▅▇', '▅▇▅', '▇▅▃', '▅▃▁', '▃▁▃'],
+    'nebula':      ['✦', '✶', '✸', '✹', '✸', '✶'],
+    'lava-lamp':   ['◜', '◠', '◝', '◞', '◡', '◟'],
+    'poison':      ['⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈'],
 }
 
 # Curated "cool" themes for quick-cycle (built-ins + the custom themes above).
@@ -1587,6 +1636,13 @@ class YTMApp(App):
             f'Update available — {behind} new commit(s). Press u to update.'
         )
         self._update_footer()
+        # A toast too — the status line is easy to miss (and the HomeScreen covers it
+        # at boot, which is exactly when this check lands).
+        try:
+            self.notify(f'{behind} new commit(s) available — press u to update.',
+                        title='↑ Update available', timeout=8)
+        except Exception:
+            pass
 
     # ── Home screen result ─────────────────────────────────────────────────
 
@@ -2159,11 +2215,15 @@ class YTMApp(App):
             return
         self._anim_frame += 1
         f = self._anim_frame
+        # Per-theme spinner frames in the ♪ slot (stepped slower than the wave so it
+        # reads as a pulse, not a flicker); colored by the same wave.
+        frames = ANIMATED_GLYPHS.get(self.theme)
+        head = (frames[(f // 2) % len(frames)] if frames else '♪') + '  '
         # Now-playing bar (single height-1 widget). Catch everything — a timer
         # callback must never raise (that crashes the app).
         try:
             self.query_one('#now-playing', Static).update(
-                Text('♪  ') + _wave_text(self.now_playing, palette, f))
+                _wave_text(head + self.now_playing, palette, f))
         except Exception:
             pass
         # The playing row's 4 cells (no full-table rebuild). Each column's phase is
@@ -2393,6 +2453,22 @@ class YTMApp(App):
             return
         self._set_status(f'∞ Building radio from "{track["title"]}"…')
 
+        def _apply(tracks):
+            playing = (self._queue[self._queue_idx]
+                       if (self.now_playing and 0 <= self._queue_idx < len(self._queue))
+                       else None)
+            if playing is not None and playing.get('id') == track['id']:
+                # The seed is on the air: swap the queue underneath it and keep the
+                # audio going — never restart the song the user is listening to.
+                mix = [t for t in tracks if t.get('id') != track['id']]
+                mix.insert(0, playing)
+                self._populate_results(mix)
+                self._queue = list(mix)
+                self._queue_idx = 0
+                self._set_status(f'∞ Radio: {track["title"]} — queue updated')
+            else:
+                self._start_track_list(tracks, 0, f'∞ Radio: {track["title"]}')
+
         def _run():
             try:
                 tracks = youtube.ytm_radio(track['id'])
@@ -2402,8 +2478,7 @@ class YTMApp(App):
             if not tracks:
                 self.call_from_thread(self._set_status, 'No radio available for this track.')
                 return
-            self.call_from_thread(self._start_track_list, tracks, 0,
-                                  f'∞ Radio: {track["title"]}')
+            self.call_from_thread(_apply, tracks)
 
         threading.Thread(target=_run, daemon=True).start()
 
