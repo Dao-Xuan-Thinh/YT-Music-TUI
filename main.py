@@ -196,6 +196,7 @@ KEYS_HELP = [
     ('a',        'Add highlighted track to queue'),
     ('x',        'Stop playback'),
     ('Q',        'Toggle Library / Queue view'),
+    ('K / J',    'Move the highlighted queue track up / down (also Shift+↑/↓)'),
     ('z',        'Shuffle queue'),
     ('r',        'Cycle repeat (off / one / all)'),
     ('l',        'Like / unlike track'),
@@ -1435,6 +1436,11 @@ class YTMApp(App):
         Binding('p', 'play_next', 'Play next', show=False),
         Binding('x', 'stop', 'Stop', show=False),
         Binding('Q', 'toggle_view', 'Queue/Library', show=False),
+        # Reorder the queue. K/J are the portable primary (macOS grabs ctrl+arrows for
+        # Mission Control; some terminals eat alt+arrows) — shift+arrows work in most
+        # modern terminals and are kept as a natural alias.
+        Binding('K,shift+up', 'move_track_up', 'Move up', show=False),
+        Binding('J,shift+down', 'move_track_down', 'Move down', show=False),
         Binding('z', 'shuffle', 'Shuffle', show=False),
         Binding('r', 'cycle_repeat', 'Repeat', show=False),
         Binding('l', 'like', 'Like', show=False),
@@ -2445,6 +2451,43 @@ class YTMApp(App):
             self.call_from_thread(self._set_status, 'Playing' if self.now_playing else 'Ready')
 
         threading.Thread(target=_run, daemon=True).start()
+
+    # ── Queue reorder (K/J or Shift+↑/↓) ───────────────────────────────────
+
+    def action_move_track_up(self) -> None:
+        self._move_track(-1)
+
+    def action_move_track_down(self) -> None:
+        self._move_track(+1)
+
+    def _move_track(self, delta: int) -> None:
+        """Move the highlighted queue track up/down one slot. Queue view only — the
+        library view is a browse list, not the play order."""
+        if self.view_mode != 'queue':
+            self._set_status('Open the queue (Q) to reorder it.')
+            return
+        hit = self._highlighted_track()
+        if not hit or hit[0] != 'queue':
+            self._set_status('No queue track highlighted.')
+            return
+        qi = hit[1]
+        tj = qi + delta
+        if not (0 <= tj < len(self._queue)):
+            return
+        q = self._queue
+        q[qi], q[tj] = q[tj], q[qi]
+        # The playing pointer follows its song so auto-advance stays correct.
+        if self._queue_idx == qi:
+            self._queue_idx = tj
+        elif self._queue_idx == tj:
+            self._queue_idx = qi
+        self._render_table()
+        try:
+            self.query_one('#results-table', DataTable).move_cursor(row=tj)
+        except NoMatches:
+            pass
+        self._update_footer()
+        self._set_status(f'Moved "{q[tj]["title"]}" to {tj + 1}/{len(q)}')
 
     def action_radio(self) -> None:
         track = self._target_track()
