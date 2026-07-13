@@ -107,7 +107,10 @@ final class PlayerViewModel: ObservableObject {
                 self.searching = false
                 self.results = list
                 self.highlightIndex = 0
-                if list.isEmpty { self.errorMsg = "No results" }
+                if list.isEmpty {
+                    self.errorMsg = "No results"
+                    DebugLog.shared.log("search", "\(isURL ? "browse" : "search") returned nothing for \(q)")
+                }
                 else if isURL { self.playFromResults(at: 0) }   // paste-and-play url/playlist
             }
         }
@@ -140,6 +143,7 @@ final class PlayerViewModel: ObservableObject {
             DispatchQueue.main.async {
                 self.homeLoading = false
                 self.home = list
+                if list.isEmpty { DebugLog.shared.log("home", "feed returned nothing") }
                 self.backfillDurations(\.home)   // home API omits durations → fetch real ones
             }
         }
@@ -229,7 +233,9 @@ final class PlayerViewModel: ObservableObject {
                 guard token == self.resolveToken else { return }  // a newer skip won
                 self.resolving = false
                 guard let t = track, t.ok, t.streamAVURL != nil else {
-                    self.errorMsg = track?.error ?? "Could not resolve a playable stream"; return
+                    let msg = track?.error ?? "Could not resolve a playable stream"
+                    DebugLog.shared.log("resolve", "\(id) failed: \(msg)")
+                    self.errorMsg = msg; return
                 }
                 self.startPlaying(t, startAt: resumeAt)
             }

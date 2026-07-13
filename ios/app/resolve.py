@@ -6,10 +6,25 @@ provider (`ios_jsc_provider`), registered on import.
 """
 from __future__ import annotations
 
+import collections
 import json
 import os
 import sys
 import time
+
+# ── Debug log (ring buffer, read by the Settings debug screen via get_log) ────
+_LOG = collections.deque(maxlen=400)
+
+
+def _log(tag: str, msg: str) -> None:
+    line = f"{time.strftime('%H:%M:%S')} [{tag}] {msg}"
+    _LOG.append(line)
+    print(line, flush=True)
+
+
+def get_log(_: str = "") -> str:
+    """The recent engine log as plain text (newest last)."""
+    return "\n".join(_LOG)
 
 # Use certifi's CA bundle for TLS (iOS has no OpenSSL default cert path).
 try:
@@ -79,6 +94,20 @@ def _ytm():
     return YTMusic()
 
 
+def _ytm_try(call):
+    """Run call(yt) with the session client; if that fails while signed in, retry
+    anonymously. A stale/expired session (YouTube answers 401 or a logged-out shape)
+    must degrade the app to anonymous — never break search/home/artist outright."""
+    from ytmusicapi import YTMusic
+    try:
+        return call(_ytm())
+    except Exception as e:
+        if not _auth_headers:
+            raise
+        _log("auth", f"signed-in call failed ({type(e).__name__}: {str(e)[:120]}) — retrying anonymously")
+        return call(YTMusic())
+
+
 _cookiefile = None   # Netscape cookies.txt built from the account cookies (for yt-dlp)
 
 
@@ -111,21 +140,30 @@ def _write_cookiefile():
 
 def set_auth(cookie_str: str = "") -> str:
     """Set (or clear, with "") the account session from a cookie string. Returns JSON
-    {ok, name} — name is the signed-in account display name (empty if not logged in)."""
+    {ok, name, reason} — reason is "" on success, "no_session" when the string carries
+    no login cookies, "expired" when they exist but YouTube rejects them. A session
+    that fails verification is NOT left armed (it would 401 every ytmusicapi call)."""
     global _auth_headers
     h = _headers_from_cookie_str(cookie_str)
-    _auth_headers = h
-    _write_cookiefile()
     if not h:
-        return json.dumps({"ok": False, "name": ""})
+        _auth_headers = None
+        _write_cookiefile()
+        _log("auth", "signed out" if not cookie_str else "cookie string carries no login session")
+        return json.dumps({"ok": False, "name": "", "reason": "no_session"})
     try:
         from ytmusicapi import YTMusic
         info = YTMusic(auth=h).get_account_info() or {}
         name = info.get("accountName") or ""
-        return json.dumps({"ok": bool(name), "name": name})
     except Exception as e:
-        print("SET_AUTH_ERROR:", type(e).__name__, e, flush=True)
-        return json.dumps({"ok": False, "name": ""})
+        _auth_headers = None
+        _write_cookiefile()
+        _log("auth", f"session verification failed ({type(e).__name__}: {str(e)[:120]}) — staying anonymous")
+        return json.dumps({"ok": False, "name": "", "reason": "expired"})
+    _auth_headers = h
+    _write_cookiefile()
+    _log("auth", f"signed in as {name!r}" if name else "verification returned no account name")
+    return json.dumps({"ok": bool(name), "name": name,
+                       "reason": "" if name else "expired"})
 
 
 def _entry_to_dict(e: dict) -> dict:
@@ -201,15 +239,18 @@ def resolve(url: str) -> str:
         d = _entry_to_dict(info)
         d["_elapsed_s"] = round(time.time() - t0, 2)
         d["_ok"] = bool(d["stream_url"] and "googlevideo" in d["stream_url"])
+        _log("resolve", f"{d['id']} ok={d['_ok']} in {d['_elapsed_s']}s ({d.get('ext')}/{d.get('abr')}kbps)")
         return json.dumps(d)
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
+        _log("resolve", f"anonymous failed: {err[:200]}")
         # Music-Premium-only tracks reject the anonymous mobile clients. If signed
         # in, retry once with the account cookies on yt-dlp's DEFAULT clients —
         # premium entitlement rides on the web/tv contexts, whose JS challenges
         # fall back to the registered JavaScriptCore provider. Anonymous stays the
         # fast path for everything else (signed-in sessions can go SABR-only).
         if "premium members" in err.lower() and _cookiefile:
+            _log("resolve", "premium wall — retrying with the signed-in account")
             try:
                 popts = dict(opts)
                 popts.pop("extractor_args", None)
@@ -219,9 +260,11 @@ def resolve(url: str) -> str:
                 d = _entry_to_dict(info)
                 d["_elapsed_s"] = round(time.time() - t0, 2)
                 d["_ok"] = bool(d["stream_url"] and "googlevideo" in d["stream_url"])
+                _log("resolve", f"premium retry ok={d['_ok']} in {d['_elapsed_s']}s")
                 return json.dumps(d)
             except Exception as e2:
                 err = f"{type(e2).__name__}: {e2}"
+                _log("resolve", f"premium retry failed: {err[:200]}")
         return json.dumps({"_ok": False, "_error": err})
 
 
@@ -326,11 +369,12 @@ def _yt_search(query: str, n: int) -> list:
 
 def _ytm_search(query: str, n: int) -> list:
     """YouTube Music search via ytmusicapi (authenticated if signed in)."""
-    yt = _ytm()
-    try:
-        res = yt.search(query, filter="songs", limit=n)
-    except Exception:
-        res = yt.search(query, limit=n)
+    def go(yt):
+        try:
+            return yt.search(query, filter="songs", limit=n)
+        except Exception:
+            return yt.search(query, limit=n)
+    res = _ytm_try(go)
     out = []
     for r in res:
         vid = r.get("videoId")
@@ -354,9 +398,10 @@ def search(query: str, source: str = "ytm", n: int = 15) -> str:
             items = _dedupe(_ytm_search(query, n) + _yt_search(query, n))[:n]
         else:  # 'ytm' (default), fall back to YouTube if it yields nothing
             items = _ytm_search(query, n) or _yt_search(query, n)
+        _log("search", f"{query!r} via {source} -> {len(items)} items")
         return json.dumps(_dedupe(items))
     except Exception as e:
-        print("SEARCH_ERROR:", type(e).__name__, e, flush=True)
+        _log("search", f"ERROR {type(e).__name__}: {str(e)[:200]}")
         return json.dumps([])
 
 
@@ -365,7 +410,7 @@ def home(_: str = "") -> str:
     songs (kind='song', playable) AND playlists/albums (kind='playlist', opened). Mirrors the
     desktop `ytm_home()`/`_parse_home`. Personalizes once signed in."""
     try:
-        sections = _ytm().get_home(limit=6)
+        sections = _ytm_try(lambda yt: yt.get_home(limit=6))
         out = []
         for sec in sections:
             for it in (sec.get("contents") or []):
@@ -380,9 +425,10 @@ def home(_: str = "") -> str:
                                      _parse_ytm_duration(it), thumb))
                 elif it.get("playlistId"):
                     out.append(_lite_playlist(it["playlistId"], it.get("title"), thumb))
+        _log("home", f"feed -> {len(out)} items")
         return json.dumps(_dedupe(out))
     except Exception as e:
-        print("HOME_ERROR:", type(e).__name__, e, flush=True)
+        _log("home", f"ERROR {type(e).__name__}: {str(e)[:200]}")
         return json.dumps([])
 
 
@@ -395,8 +441,9 @@ def durations(ids_csv: str) -> str:
     """Fetch real durations for a comma-separated list of videoIds → JSON {id: seconds}.
     The home feed omits durations, so For You backfills them here. Uses ytmusicapi
     get_song (a light player call, anonymous-ok); one bridge call for the whole batch."""
+    from ytmusicapi import YTMusic
     out = {}
-    yt = _ytm()
+    yt = YTMusic()   # get_song is a light anonymous-ok player call; auth adds nothing
     for vid in [v.strip() for v in (ids_csv or "").split(",") if v.strip()]:
         try:
             det = (yt.get_song(vid) or {}).get("videoDetails") or {}
@@ -411,14 +458,14 @@ def durations(ids_csv: str) -> str:
 def search_artist(query: str) -> str:
     """Top artist match for a query → JSON {name, channelId, thumbnail} or {} if none."""
     try:
-        res = _ytm().search(query, filter="artists", limit=1)
+        res = _ytm_try(lambda yt: yt.search(query, filter="artists", limit=1))
         for r in res:
             cid = r.get("browseId")
             if cid:
                 return json.dumps({"name": r.get("artist") or r.get("title") or "",
                                    "channelId": cid, "thumbnail": _thumb(r)})
     except Exception as e:
-        print("SEARCH_ARTIST_ERROR:", type(e).__name__, e, flush=True)
+        _log("artist", f"search ERROR {type(e).__name__}: {str(e)[:200]}")
     return json.dumps({})
 
 
@@ -427,9 +474,9 @@ def artist(channel_id: str) -> str:
     Song/video items are playable lite dicts; album/single items are 'album' lite dicts whose
     id is the album browseId (opened via album())."""
     try:
-        a = _ytm().get_artist(channel_id)
+        a = _ytm_try(lambda yt: yt.get_artist(channel_id))
     except Exception as e:
-        print("ARTIST_ERROR:", type(e).__name__, e, flush=True)
+        _log("artist", f"ERROR {type(e).__name__}: {str(e)[:200]}")
         return json.dumps({})
     sections = []
     for key, title in (("songs", "Songs"), ("albums", "Albums"),
@@ -462,7 +509,7 @@ def artist(channel_id: str) -> str:
 def album(browse_id: str) -> str:
     """Album tracks (via get_album) → JSON list of lite song dicts."""
     try:
-        data = _ytm().get_album(browse_id)
+        data = _ytm_try(lambda yt: yt.get_album(browse_id))
         out = []
         for t in (data.get("tracks") or []):
             vid = t.get("videoId")
@@ -472,16 +519,16 @@ def album(browse_id: str) -> str:
             out.append(_lite(vid, t.get("title"), arts, _parse_ytm_duration(t), _thumb(t)))
         return json.dumps(_dedupe(out))
     except Exception as e:
-        print("ALBUM_ERROR:", type(e).__name__, e, flush=True)
+        _log("album", f"ERROR {type(e).__name__}: {str(e)[:200]}")
         return json.dumps([])
 
 
 def radio(video_id: str) -> str:
     """Endless mix seeded from a track (get_watch_playlist radio) → JSON list of lite dicts."""
     try:
-        data = _ytm().get_watch_playlist(videoId=video_id, radio=True, limit=25)
+        data = _ytm_try(lambda yt: yt.get_watch_playlist(videoId=video_id, radio=True, limit=25))
     except Exception as e:
-        print("RADIO_ERROR:", type(e).__name__, e, flush=True)
+        _log("radio", f"ERROR {type(e).__name__}: {str(e)[:200]}")
         return json.dumps([])
     out = []
     for t in (data.get("tracks") or []):
@@ -516,7 +563,7 @@ def lyrics(video_id: str) -> str:
         except Exception:
             lyr = yt.get_lyrics(bid, timestamps=False)
     except Exception as e:
-        print("LYRICS_ERROR:", type(e).__name__, e, flush=True)
+        _log("lyrics", f"ERROR {type(e).__name__}: {str(e)[:200]}")
         return json.dumps({"ok": False})
     if not lyr:
         return json.dumps({"ok": False})
@@ -555,14 +602,14 @@ def translate(text: str, target: str = "en") -> str:
         out = "".join(seg[0] for seg in data[0] if seg and seg[0])
         return json.dumps({"ok": bool(out), "text": out})
     except Exception as e:
-        print("TRANSLATE_ERROR:", type(e).__name__, e, flush=True)
+        _log("translate", f"ERROR {type(e).__name__}: {str(e)[:200]}")
         return json.dumps({"ok": False, "text": ""})
 
 
 def _ytm_playlist(playlist_id: str) -> list:
     """Full playlist via ytmusicapi (paginates all tracks — no 100-ish cap)."""
     pid = playlist_id[2:] if playlist_id.startswith("VL") else playlist_id
-    data = _ytm().get_playlist(pid, limit=None)
+    data = _ytm_try(lambda yt: yt.get_playlist(pid, limit=None))
     out = []
     for t in (data.get("tracks") or []):
         vid = t.get("videoId")
@@ -589,7 +636,7 @@ def browse(url: str) -> str:
             if items:
                 return json.dumps(_dedupe(items))
         except Exception as e:
-            print("YTM_PLAYLIST_FALLBACK:", type(e).__name__, e, flush=True)
+            _log("browse", f"ytm playlist failed ({type(e).__name__}: {str(e)[:120]}) — trying yt-dlp")
 
     opts = {"quiet": True, "no_warnings": True, "skip_download": True,
             "extract_flat": "in_playlist"}
@@ -607,7 +654,7 @@ def browse(url: str) -> str:
                                  e.get("duration"), e.get("thumbnail")))
         return json.dumps(_dedupe(out))
     except Exception as e:
-        print("BROWSE_ERROR:", type(e).__name__, e, flush=True)
+        _log("browse", f"ERROR {type(e).__name__}: {str(e)[:200]}")
         return json.dumps([])
 
 

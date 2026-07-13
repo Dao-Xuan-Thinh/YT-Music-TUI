@@ -47,4 +47,7 @@ char *python_translate(const char *text, const char *target);
 /// Endless mix seeded from a videoId → JSON list of lite track dicts. Caller owns it.
 char *python_radio(const char *video_id);
 
+/// The recent Python-side engine log as plain text (newest last). Caller owns it.
+char *python_get_log(void);
+
 #endif /* PythonBootstrap_h */

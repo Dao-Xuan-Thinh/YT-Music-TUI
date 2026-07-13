@@ -46,7 +46,13 @@ brew install xcodegen                 # one-time
 cd ios && ./fetch-deps.sh             # one-time / when deps change
 ./build.sh sim                        # simulator
 ./build.sh device YK4NZ9U7TL 034EFB07-1E60-5107-A97D-BE9686A0CAEA   # iPhone
+./reinstall.sh                        # weekly re-sign: build once, install to all devices
 ```
+
+`reinstall.sh` builds against `generic/platform=iOS` (a *locked* device can't be a build
+destination, and none needs to be awake) then devicectl-installs to every reachable
+device — Wi-Fi works after the one-time cable pairing. Registering a NEW device still
+needs a one-off `./build.sh device <team> <device_id>` with that device unlocked.
 
 Device facts (free Apple ID — 7-day signing, auto-provisioned via
 `-allowProvisioningUpdates`):
@@ -71,6 +77,21 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
 - **Lyrics must use an anonymous ytmusicapi client**: `get_lyrics(timestamps=True)` goes
   through `as_mobile()` (ANDROID_MUSIC), which rejects cookie/browser auth with HTTP 400.
   `resolve.py:lyrics()` builds a fresh anonymous `YTMusic()` for lyrics only.
+- **Sessions go stale — degrade, never break.** Google rotates the login cookies
+  (`__Secure-*PSIDTS`), so the persisted snapshot expires after a while. Three defenses:
+  (1) `resolve.set_auth` **never leaves a failed session armed** (a stale one 401s every
+  ytmusicapi call → search/home go empty = "app stopped fetching songs"); it returns
+  `reason: no_session|expired` so the UI can say why. (2) Every ytmusicapi call goes
+  through `resolve._ytm_try`, which retries anonymously when the signed-in call fails.
+  (3) `AccountStore.silentWebRefresh()` (every launch): reloads music.youtube.com in a
+  hidden WKWebView — the persistent `WKWebsiteDataStore.default()` still holds the Google
+  session from the in-app sign-in — waits ~8 s for the rotated Set-Cookie, re-captures and
+  re-persists. The mobile analog of desktop re-reading the live browser jar; keeps the
+  session alive as long as the app is opened occasionally. `signOut()` must also clear the
+  web store's cookies or the next launch silently signs back in.
+- **Debug log:** `resolve._log`/`get_log` (Python ring buffer, 400 lines) +
+  `DebugLog.shared.log` (Swift) surface in Settings → DEBUG → debug log (copyable).
+  Never log cookie values.
 - **Sheet/cover presentation:** SwiftUI cannot present two sibling
   `fullScreenCover`s from the same view. All root-level covers live in ContentView; a
   cover that must appear *on top of* another presented screen must be attached *inside*

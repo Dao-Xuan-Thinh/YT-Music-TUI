@@ -13,6 +13,7 @@ struct SettingsScreen: View {
 
     @State private var confirmClear: ClearTarget?
     @State private var showAccount = false
+    @State private var showDebugLog = false
 
     enum ClearTarget: String, Identifiable {
         case liked, recent, playlists, sessions
@@ -29,6 +30,7 @@ struct SettingsScreen: View {
                     themeSection
                     playbackSection
                     librarySection
+                    debugSection
                     aboutSection
                 }
                 .padding(.horizontal, 18)
@@ -47,6 +49,7 @@ struct SettingsScreen: View {
                 secondaryButton: .cancel())
         }
         .sheet(isPresented: $showAccount) { AccountScreen(vm: vm) }
+        .sheet(isPresented: $showDebugLog) { DebugLogScreen() }
     }
 
     private var accountSection: some View {
@@ -158,6 +161,21 @@ struct SettingsScreen: View {
         }
         .font(TUI.mono(14))
         .frame(height: 30)
+    }
+
+    private var debugSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("DEBUG")
+            HStack {
+                Text("debug log").foregroundStyle(TUI.fg)
+                Spacer()
+                Text("view").foregroundStyle(TUI.accent)
+            }
+            .font(TUI.mono(14))
+            .frame(height: 30)
+            .contentShape(Rectangle())
+            .onTapGesture { showDebugLog = true }
+        }
     }
 
     private var aboutSection: some View {

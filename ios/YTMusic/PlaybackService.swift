@@ -212,7 +212,8 @@ final class PlaybackService: ObservableObject {
                     if let s = self.pendingSeek { self.pendingSeek = nil; self.seek(to: s) }
                     self.updateNowPlaying()
                 } else if status == .failed {
-                    NSLog("[playback] item failed: %@", String(describing: err))
+                    DebugLog.shared.log("playback",
+                        "item failed: \(err.map { String(describing: $0) } ?? "unknown error")")
                 }
             }
         }
