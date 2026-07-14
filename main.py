@@ -2049,17 +2049,20 @@ class YTMApp(App):
         if idx < 0 or idx >= len(self._queue):
             return
         track = self._queue[idx]
+        # A premium retry parks its direct googlevideo stream here (consumed once,
+        # never stored in track['url'] — direct URLs expire in hours and must not
+        # leak into recent/sessions/playlists via this dict).
+        direct_url = track.pop('_direct_url', None)
         self._queue_idx = idx
         self.now_playing = f'{track["title"]}  —  {track["uploader"]}'
         self._lib.add_recent(track)
-        self._play_started_at = time.monotonic()   # for the cascade guard below
         self._loading_since = time.monotonic()      # for the load watchdog in _poll_player
         self.is_paused = False        # play un-pauses; lets the wave start at once
         self._set_status('Loading…')
         self._render_table()
         self._update_footer()
         self._sync_animation()
-        url = track['url']
+        url = direct_url or track['url']
 
         def _run():
             try:
@@ -2072,13 +2075,16 @@ class YTMApp(App):
 
     def _on_track_end(self) -> None:
         """Called by the player when a track finishes (natural eof/error)."""
-        # Cascade guard: if tracks keep ending almost immediately after loading,
-        # they're failing to play (e.g. extraction error), not finishing. Advancing
-        # would skip through the whole queue silently. Stop after a few in a row.
-        started = getattr(self, '_play_started_at', None)
-        fast_fail = started is not None and (time.monotonic() - started) < 2.0
-        if fast_fail:
-            # A track that dies this fast may be Music-Premium-gated (anonymous
+        # Cascade guard: a track that ends WITHOUT EVER PRODUCING AUDIO failed to
+        # load (extraction error), it didn't finish. Advancing on those skips the
+        # whole queue silently, so stop after a few in a row. The signal is
+        # _loading_since — cleared by _poll_player only once position/duration
+        # appear. (A <2s time window was used before, but a failing mpv+yt-dlp
+        # load takes ~3s to error, so real failures looked like normal track
+        # ends: no premium retry, counter reset, endless skipping.)
+        never_played = self._loading_since is not None
+        if never_played:
+            # A track that never starts may be Music-Premium-gated (anonymous
             # extraction rejected). If signed in, retry it once with account cookies.
             if self._maybe_premium_retry():
                 return
@@ -2128,8 +2134,9 @@ class YTMApp(App):
             res = youtube.resolve_premium_stream(vid)
             if res is not None:
                 # Direct googlevideo URL: mpv plays it without re-extracting
-                # anonymously. Expires after a few hours — session-scoped only.
-                track['url'] = res[1]
+                # anonymously. Expires after a few hours — handed over out-of-band
+                # (_direct_url, consumed once) so it can never be persisted.
+                track['_direct_url'] = res[1]
                 self.call_from_thread(self._play_queue_item, idx)
             else:
                 self.call_from_thread(
