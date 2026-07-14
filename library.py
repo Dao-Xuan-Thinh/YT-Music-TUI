@@ -34,6 +34,20 @@ def _track_key(track):
     return track.get('id') or track.get('url') or ''
 
 
+def _sanitize_tracks(tracks):
+    """Repair persisted track dicts in place: a direct googlevideo stream URL
+    (leaked by an old premium-retry bug) expires within hours — restore the
+    canonical watch URL from the id, and drop stray one-shot play keys."""
+    for t in tracks:
+        if not isinstance(t, dict):
+            continue
+        t.pop('_direct_url', None)
+        url = t.get('url') or ''
+        if 'googlevideo' in url and t.get('id'):
+            t['url'] = f'https://www.youtube.com/watch?v={t["id"]}'
+    return tracks
+
+
 def _load(path, default):
     if os.path.isfile(path):
         try:
@@ -60,6 +74,13 @@ class Library:
     def __init__(self):
         self._lib = _load(_LIB_FILE, _LIB_DEFAULTS)
         self._sessions = _load(_SESSIONS_FILE, {'sessions': []})
+        # Heal entries poisoned by the old premium-retry bug (expiring stream URLs).
+        _sanitize_tracks(self._lib.get('liked', []))
+        _sanitize_tracks(self._lib.get('recent', []))
+        for pl in self._lib.get('playlists', []):
+            _sanitize_tracks(pl.get('tracks', []))
+        for s in self._sessions.get('sessions', []):
+            _sanitize_tracks(s.get('queue', []))
 
     # ── Liked ───────────────────────────────────────────────────────────────
 
