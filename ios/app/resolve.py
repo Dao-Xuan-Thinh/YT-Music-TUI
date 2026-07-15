@@ -219,28 +219,82 @@ def _probe_jsc(url: str) -> dict:
     return out
 
 
-def resolve(url: str) -> str:
-    """Resolve a YouTube URL/ID to a JSON track dict (string) with a stream_url."""
-    if not url.startswith("http"):
-        url = f"https://www.youtube.com/watch?v={url}"
-    opts = {
+# While set (unix time), resolve() tries the default web/tv clients BEFORE the
+# anonymous mobile ones: armed for 30 min whenever the mobile path just failed
+# retriably or a resolved URL 403'd during playback (PO-token enforcement makes
+# anonymous mobile URLs extract fine yet die at the CDN — keep minting them and
+# every track stalls 8-48s or worse).
+_prefer_default_until = 0.0
+_LATCH_SECONDS = 1800
+
+
+def _base_opts():
+    return {
         "quiet": True, "no_warnings": True, "skip_download": True,
         "format": _M4A_FORMAT,
-        "extractor_args": {"youtube": {"player_client": _PLAYER_CLIENTS}},
         # Bound the network so a stalled connection can't hang the resolve forever (a stuck
         # fetch otherwise starves later resolves under the GIL until the app restarts).
         "socket_timeout": 15,
         "retries": 1,
     }
+
+
+def _extract(url, opts, t0, tag):
+    """One yt-dlp extraction → track-dict JSON. Raises on failure."""
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    d = _entry_to_dict(info)
+    d["_elapsed_s"] = round(time.time() - t0, 2)
+    d["_ok"] = bool(d["stream_url"] and "googlevideo" in d["stream_url"])
+    _log("resolve", f"{d['id']} [{tag}] ok={d['_ok']} in {d['_elapsed_s']}s "
+                    f"({d.get('ext')}/{d.get('abr')}kbps)")
+    return json.dumps(d)
+
+
+def _extract_mobile(url, t0):
+    """Fast anonymous path: mobile clients, direct m4a, no JS challenges."""
+    opts = _base_opts()
+    opts["extractor_args"] = {"youtube": {"player_client": _PLAYER_CLIENTS}}
+    return _extract(url, opts, t0, "mobile")
+
+
+def _extract_default(url, t0):
+    """Reliable path: yt-dlp's default web/tv clients — their JS challenges go
+    through the registered JavaScriptCore provider — plus the account cookies
+    when signed in (also unlocks Music-Premium-only tracks)."""
+    opts = _base_opts()
+    if _cookiefile:
+        opts["cookiefile"] = _cookiefile
+    return _extract(url, opts, t0, "default" + ("+account" if _cookiefile else ""))
+
+
+def _arm_latch(reason):
+    global _prefer_default_until
+    if time.time() >= _prefer_default_until:
+        _log("resolve", f"preferring default clients for {_LATCH_SECONDS // 60} min ({reason})")
+    _prefer_default_until = time.time() + _LATCH_SECONDS
+
+
+def resolve(url: str) -> str:
+    """Resolve a YouTube URL/ID to a JSON track dict (string) with a stream_url."""
+    if not url.startswith("http"):
+        url = f"https://www.youtube.com/watch?v={url}"
     t0 = time.time()
+    # While the latch is armed the mobile path is known-bad — reverse the order.
+    if time.time() < _prefer_default_until:
+        try:
+            return _extract_default(url, t0)
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            _log("resolve", f"default (latched) failed: {err[:200]}")
+            try:
+                return _extract_mobile(url, t0)
+            except Exception as e2:
+                err = f"{type(e2).__name__}: {e2}"
+                _log("resolve", f"mobile fallback failed: {err[:200]}")
+            return json.dumps({"_ok": False, "_error": err})
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-        d = _entry_to_dict(info)
-        d["_elapsed_s"] = round(time.time() - t0, 2)
-        d["_ok"] = bool(d["stream_url"] and "googlevideo" in d["stream_url"])
-        _log("resolve", f"{d['id']} ok={d['_ok']} in {d['_elapsed_s']}s ({d.get('ext')}/{d.get('abr')}kbps)")
-        return json.dumps(d)
+        return _extract_mobile(url, t0)
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         _log("resolve", f"anonymous failed: {err[:200]}")
@@ -249,35 +303,43 @@ def resolve(url: str) -> str:
         #  - YouTube's SABR-only / PO-token experiments strip every direct format
         #    ("Requested format is not available") or bot-wall the session
         #    ("Sign in to confirm").
-        # Both recover the same way — retry once on yt-dlp's DEFAULT clients
-        # (web/tv), whose JS challenges the registered JavaScriptCore provider
-        # solves. With the account cookies attached when signed in, this is the
-        # exact path the premium retry has always used. Anonymous mobile stays
-        # the fast path for everything else.
+        # Both recover on the default clients (see _extract_default). A premium
+        # wall is per-track, but the experiment failures mean the mobile path is
+        # dead for this session — arm the latch so the next resolves skip the
+        # doomed 3-8s attempt.
         low = err.lower()
-        retriable = ("premium members" in low
+        premium = "premium members" in low
+        retriable = (premium
                      or "requested format is not available" in low
                      or "sign in to confirm" in low)
         if retriable:
-            why = ("premium wall" if "premium members" in low
-                   else "no direct formats from mobile clients")
-            _log("resolve", f"{why} — retrying on default clients"
-                            + (" with the signed-in account" if _cookiefile else ""))
+            _log("resolve", ("premium wall" if premium
+                             else "no direct formats from mobile clients")
+                            + " — retrying on default clients")
             try:
-                popts = dict(opts)
-                popts.pop("extractor_args", None)
-                if _cookiefile:
-                    popts["cookiefile"] = _cookiefile
-                with yt_dlp.YoutubeDL(popts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                d = _entry_to_dict(info)
-                d["_elapsed_s"] = round(time.time() - t0, 2)
-                d["_ok"] = bool(d["stream_url"] and "googlevideo" in d["stream_url"])
-                _log("resolve", f"default-client retry ok={d['_ok']} in {d['_elapsed_s']}s")
-                return json.dumps(d)
+                out = _extract_default(url, t0)
+                if not premium:
+                    _arm_latch("mobile clients failing")
+                return out
             except Exception as e2:
                 err = f"{type(e2).__name__}: {e2}"
                 _log("resolve", f"default-client retry failed: {err[:200]}")
+        return json.dumps({"_ok": False, "_error": err})
+
+
+def resolve_fresh(url: str) -> str:
+    """Playback-failure re-resolve (e.g. the CDN 403'd a previously-good URL):
+    go straight to the default clients — another anonymous mobile resolve would
+    just mint another doomed URL — and arm the latch for the next tracks."""
+    if not url.startswith("http"):
+        url = f"https://www.youtube.com/watch?v={url}"
+    _arm_latch("playback failed on a resolved URL")
+    t0 = time.time()
+    try:
+        return _extract_default(url, t0)
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+        _log("resolve", f"fresh re-resolve failed: {err[:200]}")
         return json.dumps({"_ok": False, "_error": err})
 
 

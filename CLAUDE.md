@@ -108,6 +108,21 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
   yt-dlp `JsChallengeProvider` running the EJS solver through JavaScriptCore's C API via
   ctypes. Often unneeded (`android_vr` client returns m4a directly) but required as
   fallback.
+- **googlevideo URLs are IP/session-bound and can 403 minutes after a successful
+  extraction** (PO-token enforcement on anonymous mobile clients) — a 403 is
+  unrecoverable for that URL; only a re-resolve helps. Defenses: the VM's
+  `prefetched` cache stores (track, resolve time) and expires entries after 20 min;
+  `PlaybackService.onItemFailed` (status KVO + failed-to-play notification + a
+  1s-Timer stall watchdog that first replays the user's pause/unpause nudge) →
+  `PlayerViewModel.handlePlaybackFailure` evicts the URL and retries ONCE via
+  `python_resolve_fresh` (`resolve.resolve_fresh`: default web/tv clients + account
+  cookies, skipping the just-proven-bad mobile clients), resuming at the broken
+  position; a second failure skips, 3 consecutive dead tracks stop the queue.
+  `resolve.py` also keeps a 30-min `_prefer_default_until` latch (armed by retriable
+  mobile-client failures and by playback 403s) that reverses the resolve order so
+  every track doesn't pay the doomed 3-8s anonymous attempt. Never mutate a playing
+  item's `audioMix` (the level-tap is skipped once rendering started — that race
+  wedged the pipeline: silent audio, frozen position).
 - **Listen-time stats + widget:** `PlaybackService`'s 0.5s time observer feeds real
   forward-progress deltas to `StatsStore.tick()` (pauses/seeks/track changes count
   nothing); counters flush to `stats.json` in the App Group

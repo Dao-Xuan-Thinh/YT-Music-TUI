@@ -51,14 +51,32 @@ final class PlayerViewModel: ObservableObject {
     let library = LibraryStore.shared
 
     private var resolveToken = 0
-    private var prefetched: [String: Track] = [:]
+    // Resolved-track cache with resolve time: googlevideo URLs are IP/session-bound
+    // and PO-token enforcement can kill them within minutes, so entries expire
+    // (see prefetchAge) and a playback failure evicts its entry immediately.
+    private var prefetched: [String: (track: Track, at: Date)] = [:]
+    private let prefetchMaxAge: TimeInterval = 20 * 60
     private var resolveWorkItem: DispatchWorkItem?   // pending debounced resolve (cancellable)
+    private var consecFails = 0          // consecutive dead tracks (3 stops the queue)
+    private var failRetriedID: String?   // track already given its one fresh re-resolve
 
     init() {
         source = AppConfig.shared.defaultSource
         playback.onEnded = { [weak self] in self?.playNext(auto: true) }
         playback.onNext = { [weak self] in self?.playNext() }
         playback.onPrevious = { [weak self] in self?.playPrevious() }
+        playback.onItemFailed = { [weak self] reason in self?.handlePlaybackFailure(reason) }
+        playback.onPlaybackStarted = { [weak self] in self?.consecFails = 0 }
+    }
+
+    /// A cached resolved track, if it's still young enough to trust.
+    private func cachedTrack(_ id: String) -> Track? {
+        guard let entry = prefetched[id] else { return nil }
+        if Date().timeIntervalSince(entry.at) > prefetchMaxAge {
+            prefetched[id] = nil
+            return nil
+        }
+        return entry.track
     }
 
     var playingID: String? { playback.current?.id }
@@ -217,7 +235,7 @@ final class PlayerViewModel: ObservableObject {
         queueIndex = idx
         let r = queue[idx]
         library.addRecent(r)
-        if let cached = prefetched[r.id] { startPlaying(cached, startAt: resumeAt); return }
+        if let cached = cachedTrack(r.id) { startPlaying(cached, startAt: resumeAt); return }
         // Stop old audio immediately + show loading (no lingering while resolving).
         playback.beginLoading(title: r.title, uploader: r.uploader,
                               thumbnail: r.thumbnail, duration: r.duration)
@@ -261,9 +279,61 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func startPlaying(_ track: Track, startAt: Double = 0) {
-        prefetched[track.id] = track
+        prefetched[track.id] = (track, Date())
+        if failRetriedID != track.id { failRetriedID = nil }  // new track, fresh chance
         playback.play(track, startAt: startAt)
         prefetchNext()
+    }
+
+    /// Playback died (403'd URL, mid-stream error, or an unrecoverable stall).
+    /// The URL can never work again — evict it and re-resolve ONCE through the
+    /// reliable default-client path, resuming where the audio broke. A second
+    /// failure of the same track skips it; three dead tracks in a row stop the
+    /// queue instead of skipping forever.
+    private func handlePlaybackFailure(_ reason: String) {
+        guard let idx = queueIndex, queue.indices.contains(idx) else { return }
+        let r = queue[idx]
+        let pos = playback.position
+        prefetched[r.id] = nil
+        if failRetriedID == r.id {
+            failSkip(r.id)
+            return
+        }
+        failRetriedID = r.id
+        DebugLog.shared.log("playback", "\(r.id) failed — fresh re-resolve at \(Int(pos))s")
+        resolveToken &+= 1
+        resolveWorkItem?.cancel()
+        let token = resolveToken
+        playback.beginLoading(title: r.title, uploader: r.uploader,
+                              thumbnail: r.thumbnail, duration: r.duration)
+        resolving = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let c = python_resolve_fresh(r.id)
+            let json = c.map { String(cString: $0) } ?? "{}"
+            if let c { free(c) }
+            let track = Track.decode(json)
+            DispatchQueue.main.async {
+                guard token == self.resolveToken else { return }  // user skipped meanwhile
+                self.resolving = false
+                guard let t = track, t.ok, t.streamAVURL != nil else {
+                    self.failSkip(r.id)
+                    return
+                }
+                self.startPlaying(t, startAt: pos)
+            }
+        }
+    }
+
+    private func failSkip(_ id: String) {
+        consecFails += 1
+        if consecFails >= 3 {
+            DebugLog.shared.log("playback", "3 consecutive dead tracks — stopping")
+            errorMsg = "Playback keeps failing — check your connection."
+            resolving = false
+            return
+        }
+        DebugLog.shared.log("playback", "\(id) dead after fresh retry — skipping")
+        playNext(auto: true)
     }
 
     /// Resolve the sequential next queue item in the background so advancing is gapless.
@@ -273,13 +343,13 @@ final class PlayerViewModel: ObservableObject {
         let target = next < queue.count ? next : (repeatMode == .all ? 0 : -1)
         guard queue.indices.contains(target) else { return }
         let id = queue[target].id
-        guard prefetched[id] == nil else { return }
+        guard cachedTrack(id) == nil else { return }
         DispatchQueue.global(qos: .utility).async {
             let c = python_resolve(id)
             let json = c.map { String(cString: $0) } ?? "{}"
             if let c { free(c) }
             if let t = Track.decode(json), t.ok, t.streamAVURL != nil {
-                DispatchQueue.main.async { self.prefetched[t.id] = t }
+                DispatchQueue.main.async { self.prefetched[t.id] = (t, Date()) }
             }
         }
     }

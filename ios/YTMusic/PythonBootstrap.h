@@ -11,6 +11,11 @@ int python_init(void);
 /// Caller owns the returned C string (free it). Never returns NULL.
 char *python_resolve(const char *url);
 
+/// Playback-failure re-resolve: skips the anonymous mobile clients (whose URLs
+/// just 403'd) and goes straight to the default web/tv clients, signed-in when
+/// possible. Caller owns the returned C string (free it). Never returns NULL.
+char *python_resolve_fresh(const char *url);
+
 /// Keyword search → JSON list of lite track dicts {id,title,uploader,duration,thumbnail}.
 /// source is "yt", "ytm", or "both". Caller owns the returned C string (free it).
 char *python_search(const char *query, const char *source);

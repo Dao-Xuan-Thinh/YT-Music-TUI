@@ -153,6 +153,7 @@ static char *call_str_func2(const char *module, const char *func,
 }
 
 char *python_resolve(const char *url) { return call_str_func("resolve", "resolve", url); }
+char *python_resolve_fresh(const char *url) { return call_str_func("resolve", "resolve_fresh", url); }
 char *python_search(const char *query, const char *source) {
     return call_str_func2("resolve", "search", query, source);
 }

@@ -18,6 +18,11 @@ final class PlaybackService: ObservableObject {
 
     /// Fired when the current item plays to its end (used by the VM to auto-advance).
     var onEnded: (() -> Void)?
+    /// Fired once per item when playback dies (load failure, mid-stream error, or an
+    /// unrecoverable stall) — the VM re-resolves the track fresh and retries.
+    var onItemFailed: ((String) -> Void)?
+    /// Fired when an item reaches .readyToPlay (VM resets its failure cascade counter).
+    var onPlaybackStarted: (() -> Void)?
     /// Lock-screen / remote next & previous (wired to the VM's queue navigation).
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
@@ -32,8 +37,16 @@ final class PlaybackService: ObservableObject {
     private var rateObs: NSKeyValueObservation?
     private var artwork: MPMediaItemArtwork?
     private var endedFired = false   // de-dupe end detection (metadata vs AVPlayer)
+    private var failFired = false    // de-dupe failure detection (status vs notification vs stall)
     private var pendingSeek: Double?  // resume offset, applied once the item is ready
     private var statsLastPos: Double? // previous observer position (listen-time deltas)
+    // Stall watchdog: position frozen while "playing" = a wedged render pipeline
+    // (silent audio, frozen in-app progress bar). One automatic pause/play nudge
+    // per item; if that doesn't unstick it, escalate to onItemFailed.
+    private var stallPos: Double = -1
+    private var stallSince: Date?
+    private var stallNudged = false
+    private var stallTimer: Timer?
 
     // Real-time audio spectrum for the now-playing equalizer (MTAudioProcessingTap → FFT).
     let levelProcessor = AudioLevelProcessor(bands: 16)
@@ -48,6 +61,9 @@ final class PlaybackService: ObservableObject {
         configureRemoteCommands()
         observePlayer()
         volume = AppConfig.shared.defaultVolume
+        stallTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) {
+            [weak self] _ in self?.checkForStall()
+        }
     }
 
     // MARK: - Public transport
@@ -61,8 +77,10 @@ final class PlaybackService: ObservableObject {
         duration = Double(track.duration)
         ready = false
         endedFired = false
+        failFired = false
         artwork = nil
         statsLastPos = nil   // new track: next observer tick re-seeds the baseline
+        stallPos = -1; stallSince = nil; stallNudged = false
         // Applied once the item reaches `.readyToPlay` (seeking before then is unreliable).
         pendingSeek = startAt > 0 ? startAt : nil
 
@@ -86,7 +104,17 @@ final class PlaybackService: ObservableObject {
                   let audio = tracks.first,
                   let self, let item else { return }
             if let mix = makeLevelAudioMix(track: audio, processor: self.levelProcessor) {
-                await MainActor.run { item.audioMix = mix }
+                await MainActor.run {
+                    // Never mutate an item that's already rendering: swapping the
+                    // audioMix mid-play can wedge the pipeline (silent audio,
+                    // frozen position — the "muted until pause/unpause" bug, most
+                    // common on prefetched auto-advance where playback starts
+                    // before this async load lands). Skipping just means this
+                    // track's equalizer uses the decorative fallback.
+                    guard item.currentTime() == .zero
+                            || self.player.timeControlStatus != .playing else { return }
+                    item.audioMix = mix
+                }
             }
         }
     }
@@ -98,6 +126,8 @@ final class PlaybackService: ObservableObject {
         isPlaying = false
         ready = false
         endedFired = false
+        failFired = false
+        stallPos = -1; stallSince = nil; stallNudged = false
         position = 0
         duration = Double(dur)
         artwork = nil
@@ -110,6 +140,15 @@ final class PlaybackService: ObservableObject {
         guard !endedFired else { return }
         endedFired = true
         onEnded?()
+    }
+
+    /// One failure signal per item, whatever noticed it first (status KVO,
+    /// failed-to-play-to-end notification, or the stall watchdog).
+    private func handleItemFailed(_ reason: String) {
+        guard !failFired, !endedFired else { return }
+        failFired = true
+        DebugLog.shared.log("playback", "item failed: \(reason)")
+        onItemFailed?(reason)
     }
 
     func togglePlayPause() { isPlaying ? pause() : resume() }
@@ -182,6 +221,14 @@ final class PlaybackService: ObservableObject {
             self?.handleEnded()
         }
 
+        // Mid-stream death (e.g. the CDN starts rejecting the URL partway through).
+        NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime, object: nil, queue: .main
+        ) { [weak self] note in
+            let err = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+            self?.handleItemFailed(err.map { String(describing: $0) } ?? "failed to play to end")
+        }
+
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
             queue: .main
@@ -208,8 +255,46 @@ final class PlaybackService: ObservableObject {
             }
         }
 
+        statusObs = observeItemStatus()
+        rateObs = observeRate()
+    }
+
+    /// Detect a wedged render pipeline: "playing" but the clock isn't moving.
+    /// First try the manual fix automatically (pause + playImmediately) once per
+    /// item; if the position is still frozen 5s later, treat it as a dead item.
+    /// Runs on its own Timer and reads the player clock directly — a wedged
+    /// pipeline can stop the periodic time observer from firing at all.
+    private func checkForStall() {
+        let pos = player.currentTime().seconds
+        guard ready, current != nil, pos.isFinite,
+              player.timeControlStatus == .playing,
+              duration <= 0 || pos < duration - 1 else {
+            stallPos = -1; stallSince = nil
+            return
+        }
+        if pos != stallPos {
+            stallPos = pos
+            stallSince = Date()
+            return
+        }
+        guard let since = stallSince else { stallSince = Date(); return }
+        let frozen = Date().timeIntervalSince(since)
+        if !stallNudged && frozen > 3 {
+            stallNudged = true
+            stallSince = Date()   // restart the clock for the post-nudge check
+            DebugLog.shared.log("playback", "stall — nudging pipeline (pos \(Int(pos))s)")
+            player.pause()
+            player.playImmediately(atRate: 1.0)
+            isPlaying = true
+        } else if stallNudged && frozen > 5 {
+            stallPos = -1; stallSince = nil
+            handleItemFailed("stalled at \(Int(pos))s and the nudge didn't help")
+        }
+    }
+
+    private func observeItemStatus() -> NSKeyValueObservation {
         // KVO callbacks fire off the main thread; hop to main before touching @Published.
-        statusObs = player.observe(\.currentItem?.status, options: [.new]) { [weak self] p, _ in
+        return player.observe(\.currentItem?.status, options: [.new]) { [weak self] p, _ in
             let status = p.currentItem?.status
             let dur = p.currentItem?.duration.seconds
             let err = p.currentItem?.error
@@ -222,14 +307,16 @@ final class PlaybackService: ObservableObject {
                     // Apply a pending resume offset now that seeking is reliable.
                     if let s = self.pendingSeek { self.pendingSeek = nil; self.seek(to: s) }
                     self.updateNowPlaying()
+                    self.onPlaybackStarted?()
                 } else if status == .failed {
-                    DebugLog.shared.log("playback",
-                        "item failed: \(err.map { String(describing: $0) } ?? "unknown error")")
+                    self.handleItemFailed(err.map { String(describing: $0) } ?? "unknown error")
                 }
             }
         }
+    }
 
-        rateObs = player.observe(\.timeControlStatus, options: [.new]) { [weak self] p, _ in
+    private func observeRate() -> NSKeyValueObservation {
+        return player.observe(\.timeControlStatus, options: [.new]) { [weak self] p, _ in
             let playing = (p.timeControlStatus == .playing)
             DispatchQueue.main.async { self?.isPlaying = playing }
         }

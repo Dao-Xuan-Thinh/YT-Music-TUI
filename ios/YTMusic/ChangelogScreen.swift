@@ -11,6 +11,12 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.4", date: "2026-07", notes: [
+            "Streams that die mid-song (403) now re-resolve themselves and pick up where the audio broke",
+            "Prefetched stream links expire after 20 minutes instead of living forever",
+            "When YouTube throttles the fast resolver, the app switches to the reliable signed-in pipeline for 30 minutes (no more repeated long gaps)",
+            "Silent auto-advance (frozen progress bar until pause/unpause) now un-sticks itself",
+        ]),
         ChangelogEntry(version: "1.3", date: "2026-07", notes: [
             "Fixed songs refusing to play (\u{2018}format not available\u{2019}) — they now retry on the web pipeline, signed-in when possible",
             "Fixed the widget being stuck on \u{2018}play something\u{2019} despite existing stats",
