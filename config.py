@@ -34,6 +34,10 @@ _DEFAULTS = {
     'stats_gist_id':       '',   # cached; rediscovered by marker on 404
     'stats_device_id':     '',   # uuid4, minted on first boot
     'stats_device_name':   '',   # shown in per-device totals (default: hostname)
+    # Unix time of the last successful live account verification. Boot skips
+    # the (3-5s, network) re-verify while this is fresh — the browser-jar
+    # re-read still happens lazily, and feed errors still surface expiry.
+    'auth_verified_ts':    0.0,
 }
 
 
@@ -176,6 +180,18 @@ class Config:
     @stats_device_name.setter
     def stats_device_name(self, value):
         self._data['stats_device_name'] = value or ''
+        self.save()
+
+    @property
+    def auth_verified_ts(self):
+        try:
+            return float(self._data.get('auth_verified_ts') or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @auth_verified_ts.setter
+    def auth_verified_ts(self, ts):
+        self._data['auth_verified_ts'] = float(ts or 0)
         self.save()
 
     @property

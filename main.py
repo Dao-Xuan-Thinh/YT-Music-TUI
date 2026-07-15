@@ -305,20 +305,26 @@ class SettingsScreen(ModalScreen):
         border: round $accent; padding: 1 2; background: $surface;
     }
     #settings-title { text-style: bold; color: $accent; margin-bottom: 1; }
+    #sync-stats { margin-bottom: 1; }
     #settings-box Label { margin-bottom: 0; }
     #settings-box Input { margin-bottom: 0; }
     .hint { color: $text-muted; }
     #btn-row { height: 3; margin-top: 1; }
     """
 
-    def __init__(self, current_token='', current_device=''):
+    def __init__(self, current_token='', current_device='', stats=None, cfg=None):
         super().__init__()
         self._current_token  = current_token
         self._current_device = current_device
+        self._stats = stats
+        self._cfg = cfg
 
     def compose(self) -> ComposeResult:
         with Vertical(id='settings-box'):
             yield Label('Listen-stats sync', id='settings-title')
+            if self._stats is not None:
+                yield Static(Text(_stats_report(self._stats, self._cfg)),
+                             id='sync-stats')
             yield Label('GitHub token (classic: gist scope · fine-grained: '
                         'Gists read & write):')
             yield Input(value=self._current_token, id='stats-token-input',
@@ -330,6 +336,16 @@ class SettingsScreen(ModalScreen):
             with Horizontal(id='btn-row'):
                 yield Button('Save', id='btn-save', variant='primary')
                 yield Button('Cancel', id='btn-cancel')
+
+    def refresh_stats(self) -> None:
+        """Re-render the graph (called by the app when a sync lands)."""
+        if self._stats is None:
+            return
+        try:
+            self.query_one('#sync-stats', Static).update(
+                Text(_stats_report(self._stats, self._cfg)))
+        except NoMatches:
+            pass
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == 'btn-save':
@@ -1030,6 +1046,38 @@ class AccountScreen(ModalScreen):
 
 # ── Home screen ─────────────────────────────────────────────────────────────────
 
+def _stats_report(stats, cfg, width=34):
+    """Multi-line plain-text listen-time report: 7-day bar graph, totals,
+    per-device split, sync status. Shared by the home Stats tab and the
+    sync panel (s)."""
+    dev_id = cfg.stats_device_id if cfg else ''
+    dev_name = (cfg.stats_device_name if cfg else '') or 'this device'
+    days = stats.merged_days(7, own_device_id=dev_id)
+    totals = stats.totals(own_device_id=dev_id)
+    fmt = stats_module.fmt_mins
+    peak = max((s for _, s in days), default=0.0)
+    lines = ['Listening time — last 7 days', '']
+    for i, (day, secs) in enumerate(days):
+        if i == len(days) - 1:
+            label = 'Today    '
+        else:
+            label = time.strftime('%a %m-%d', time.strptime(day, '%Y-%m-%d'))
+        filled = int(round(width * secs / peak)) if peak > 0 else 0
+        bar = '█' * filled + '░' * (width - filled)
+        lines.append(f'{label}  {bar}  {fmt(secs)}')
+    lines.append('')
+    lines.append(f'Today {fmt(totals["today"])}   ·   '
+                 f'7 days {fmt(totals["week"])}   ·   '
+                 f'All time {fmt(totals["all"])}')
+    devices = stats.per_device(own_device_id=dev_id, own_device_name=dev_name)
+    if devices:
+        lines.append('  ·  '.join(f'{name} {fmt(total)}'
+                                  for name, total in devices))
+    lines.append('')
+    lines.append(stats.status_line(bool(cfg and cfg.stats_token)))
+    return '\n'.join(lines)
+
+
 class HomeScreen(Screen):
     """Boot landing screen: resume sessions + Folders / Liked / Recent."""
     BINDINGS = [
@@ -1224,37 +1272,8 @@ class HomeScreen(Screen):
         if self._stats is None:
             view.update('No stats available.')
             return
-        dev_id = self._cfg.stats_device_id if self._cfg else ''
-        dev_name = ((self._cfg.stats_device_name if self._cfg else '')
-                    or 'this device')
-        days = self._stats.merged_days(7, own_device_id=dev_id)
-        totals = self._stats.totals(own_device_id=dev_id)
-        fmt = stats_module.fmt_mins
-        peak = max((s for _, s in days), default=0.0)
-        width = 34
-        lines = ['Listening time — last 7 days', '']
-        for i, (day, secs) in enumerate(days):
-            if i == len(days) - 1:
-                label = 'Today    '
-            else:
-                label = time.strftime('%a %m-%d', time.strptime(day, '%Y-%m-%d'))
-            filled = int(round(width * secs / peak)) if peak > 0 else 0
-            bar = '█' * filled + '░' * (width - filled)
-            lines.append(f'{label}  {bar}  {fmt(secs)}')
-        lines.append('')
-        lines.append(f'Today {fmt(totals["today"])}   ·   '
-                     f'7 days {fmt(totals["week"])}   ·   '
-                     f'All time {fmt(totals["all"])}')
-        devices = self._stats.per_device(own_device_id=dev_id,
-                                         own_device_name=dev_name)
-        if devices:
-            lines.append('  ·  '.join(f'{name} {fmt(total)}'
-                                      for name, total in devices))
-        lines.append('')
-        lines.append(self._stats.status_line(
-            bool(self._cfg and self._cfg.stats_token)))
         # Plain Text (not markup) — device/host names may contain brackets.
-        view.update(Text('\n'.join(lines)))
+        view.update(Text(_stats_report(self._stats, self._cfg)))
 
     def _load_foryou(self) -> None:
         err = None
@@ -1569,6 +1588,7 @@ class YTMApp(App):
             import platform
             self._config.stats_device_name = platform.node().split('.')[0] or 'desktop'
         self._stats_last = None   # (queue_idx, position) at the previous poll tick
+        self._stats_syncing = False   # a gist sync is in flight (footer ⟳)
         # One-time migration: earlier builds stored the YTM account cookie dump in
         # `cookies_file`, which is ALSO the yt-dlp/mpv streaming cookie file. An
         # authenticated YouTube session makes yt-dlp get a SABR-only format set it
@@ -1673,9 +1693,12 @@ class YTMApp(App):
         self._update_footer()
         threading.Thread(target=self._init_player, daemon=True).start()
         threading.Thread(target=self._check_for_update, daemon=True).start()
-        # If signed in, live-verify the session once (even with a cached name — the
-        # cached name is exactly what goes stale when cookies expire server-side).
-        if youtube.is_authenticated():
+        # If signed in, live-verify the session — but only when the last successful
+        # check is stale (>12h): the network round-trip costs 3-5s at every boot,
+        # and a session that verified this morning doesn't need re-proving. Expiry
+        # mid-window still surfaces (feed errors show 'press g to check sign-in').
+        if (youtube.is_authenticated()
+                and time.time() - self._config.auth_verified_ts > 12 * 3600):
             threading.Thread(target=self._verify_account, daemon=True).start()
         # Boot straight into the home screen.
         self.push_screen(HomeScreen(self._lib, self._stats, self._config), self._on_home_result)
@@ -1686,10 +1709,12 @@ class YTMApp(App):
         def _apply():
             if status == 'ok' and name:
                 self._config.account_name = name
+                self._config.auth_verified_ts = time.time()
             elif status == 'expired':
                 # Cookies no longer authenticate → drop the stale name (is_authenticated
                 # is now False, so the footer hides the account) and alert the user.
                 self._config.account_name = ''
+                self._config.auth_verified_ts = 0.0
                 self._set_status('⚠ YouTube sign-in expired — your saved cookies no '
                                  'longer work. Press g to re-export cookies.txt.')
             # 'unknown' (network blip) → leave the cached name, retry next boot.
@@ -1751,6 +1776,10 @@ class YTMApp(App):
             return
         if not announce and time.time() - self._stats.last_sync() < 540:
             return
+        if self._stats_syncing:
+            return
+        self._stats_syncing = True
+        self._update_footer()
         threading.Thread(target=self._stats_sync_worker, args=(announce,),
                          daemon=True).start()
 
@@ -1760,6 +1789,8 @@ class YTMApp(App):
             self._config.stats_device_name, self._config.stats_gist_id)
 
         def _apply():
+            self._stats_syncing = False
+            self._update_footer()
             if new_id:
                 self._config.stats_gist_id = new_id
             if announce:
@@ -1767,11 +1798,14 @@ class YTMApp(App):
                                  else f'Stats sync: {msg}')
             if isinstance(self.screen, HomeScreen):
                 self.screen.refresh_stats()
+            # Live-refresh the sync panel's graph if it's open.
+            if isinstance(self.screen, SettingsScreen):
+                self.screen.refresh_stats()
 
         try:
             self.call_from_thread(_apply)
         except Exception:
-            pass
+            self._stats_syncing = False
 
     # ── Home screen result ─────────────────────────────────────────────────
 
@@ -2419,6 +2453,9 @@ class YTMApp(App):
             name = self._config.account_name or youtube.auth_status()
             left.append('    ')
             left.append(f'♥ {name}', style=f'bold {self._accent()}')
+        if getattr(self, '_stats_syncing', False):
+            left.append('    ')
+            left.append('⟳ sync', style=f'bold {self._accent()}')
         if upd:
             left.append(upd)
         try:
@@ -2863,9 +2900,13 @@ class YTMApp(App):
 
         self.push_screen(
             SettingsScreen(self._config.stats_token,
-                           self._config.stats_device_name),
+                           self._config.stats_device_name,
+                           stats=self._stats, cfg=self._config),
             _after,
         )
+        # Freshen the panel's graph with other devices' latest numbers
+        # (throttled no-op when a sync ran in the last few minutes).
+        self._stats_sync_maybe()
 
     # ── YouTube account ─────────────────────────────────────────────────────
 
