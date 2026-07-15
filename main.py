@@ -211,7 +211,7 @@ KEYS_HELP = [
     ('c / C',    'Theme picker / cycle theme'),
     ('+ / -',    'Volume up / down'),
     ('← / →',    'Seek -10s / +10s'),
-    ('s',        'Settings (cookies + local folder)'),
+    ('s',        'Listen-stats sync settings (GitHub token + device name)'),
     ('g',        'YouTube account / sign in (For You feed)'),
     ('u',        'Check for updates / update the app'),
     ('?',        'This help'),
@@ -288,7 +288,11 @@ def _ago(ts):
 # ── Settings screen ───────────────────────────────────────────────────────────
 
 class SettingsScreen(ModalScreen):
-    """Modal for cookies file path and local audio folder (with live ✓/✗)."""
+    """Modal for cross-device listen-stats sync (GitHub token + device name).
+
+    That's ALL it holds now: streaming cookies moved to Account (g), and the
+    offline folder is set by typing its path in the search bar while in
+    offline mode (o)."""
     BINDINGS = [Binding('escape', 'dismiss_modal', 'Close')]
 
     def action_dismiss_modal(self) -> None:
@@ -297,77 +301,41 @@ class SettingsScreen(ModalScreen):
     CSS = """
     SettingsScreen { align: center middle; }
     #settings-box {
-        width: 76; height: 26;
+        width: 76; height: auto;
         border: round $accent; padding: 1 2; background: $surface;
     }
+    #settings-title { text-style: bold; color: $accent; margin-bottom: 1; }
     #settings-box Label { margin-bottom: 0; }
     #settings-box Input { margin-bottom: 0; }
-    .valid { color: $success; height: 1; }
-    .invalid { color: $error; height: 1; }
+    .hint { color: $text-muted; }
     #btn-row { height: 3; margin-top: 1; }
     """
 
-    def __init__(self, current_cookies='', current_folder='',
-                 current_token='', current_device=''):
+    def __init__(self, current_token='', current_device=''):
         super().__init__()
-        self._current_cookies = current_cookies
-        self._current_folder  = current_folder
-        self._current_token   = current_token
-        self._current_device  = current_device
+        self._current_token  = current_token
+        self._current_device = current_device
 
     def compose(self) -> ComposeResult:
         with Vertical(id='settings-box'):
-            yield Label('Streaming cookies for age-restricted videos (Netscape .txt):')
-            yield Input(value=self._current_cookies, id='cookies-input',
-                        placeholder=_EG_COOKIES)
-            yield Static('', id='cookies-status', classes='valid')
-            yield Static('Optional. For signing in to YouTube Music, use Account '
-                         '(g) instead — not this field.', classes='hint')
-            yield Label('Local audio folder (offline mode — press o):')
-            yield Input(value=self._current_folder, id='folder-input',
-                        placeholder=_EG_FOLDER)
-            yield Static('', id='folder-status', classes='valid')
-            yield Label('GitHub token for listen-stats sync (optional):')
+            yield Label('Listen-stats sync', id='settings-title')
+            yield Label('GitHub token (classic: gist scope · fine-grained: '
+                        'Gists read & write):')
             yield Input(value=self._current_token, id='stats-token-input',
                         password=True, placeholder='ghp_… / github_pat_…')
-            yield Static('Classic token with `gist` scope, or fine-grained with '
-                         'Gists: read & write. Stored in config.json.',
-                         classes='hint')
+            yield Static('Paste the same token on every device. Stored locally '
+                         'in config.json.', classes='hint')
             yield Label("This device's name in stats:")
             yield Input(value=self._current_device, id='device-name-input')
             with Horizontal(id='btn-row'):
                 yield Button('Save', id='btn-save', variant='primary')
                 yield Button('Cancel', id='btn-cancel')
 
-    def on_mount(self) -> None:
-        self._validate()
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        self._validate()
-
-    def _validate(self) -> None:
-        self._mark('cookies-input', 'cookies-status', want='file')
-        self._mark('folder-input', 'folder-status', want='dir')
-
-    def _mark(self, input_id, status_id, want) -> None:
-        raw = self.query_one(f'#{input_id}', Input).value.strip()
-        st = self.query_one(f'#{status_id}', Static)
-        if not raw:
-            st.update('')
-            return
-        path = _expand(raw)
-        ok = os.path.isfile(path) if want == 'file' else os.path.isdir(path)
-        st.update(('✓ ' if ok else '✗ ') + path)
-        st.set_classes('valid' if ok else 'invalid')
-
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == 'btn-save':
-            cookies = _expand(self.query_one('#cookies-input', Input).value.strip())
-            folder  = _expand(self.query_one('#folder-input',  Input).value.strip())
-            token   = self.query_one('#stats-token-input', Input).value.strip()
-            device  = self.query_one('#device-name-input', Input).value.strip()
-            self.dismiss({'cookies': cookies, 'folder': folder,
-                          'stats_token': token, 'device_name': device})
+            token  = self.query_one('#stats-token-input', Input).value.strip()
+            device = self.query_one('#device-name-input', Input).value.strip()
+            self.dismiss({'stats_token': token, 'device_name': device})
         else:
             self.dismiss(None)
 
@@ -878,7 +846,8 @@ class AccountScreen(ModalScreen):
     #account-btns { height: 3; margin-top: 1; }
     """
 
-    def __init__(self, method='none', cookies_file='', browser='', profile=''):
+    def __init__(self, method='none', cookies_file='', browser='', profile='',
+                 stream_cookies='', on_stream_cookies=None):
         super().__init__()
         self._method = method
         self._cookies_file = cookies_file
@@ -886,6 +855,12 @@ class AccountScreen(ModalScreen):
         self._profile = profile
         self._profiles = youtube.detect_browser_profiles()
         self._closed = False     # guards late call_from_thread callbacks
+        # Streaming cookies (age-restricted playback) live here too since this
+        # is the cookies screen — but they feed the PLAYER only, never the
+        # account auth. Applied immediately via the callback (valid path or
+        # cleared), so no Save button / dismiss plumbing is needed.
+        self._stream_cookies = stream_cookies
+        self._on_stream_cookies = on_stream_cookies
 
     def compose(self) -> ComposeResult:
         with Vertical(id='account-box'):
@@ -925,6 +900,16 @@ class AccountScreen(ModalScreen):
             yield Static('OAuth sign-in was removed — YouTube rejects those tokens '
                          '(HTTP 400). Use Browser or Cookies above.', classes='hint')
 
+            yield Label('Streaming cookies  (optional — age-restricted playback only)',
+                        classes='section')
+            yield Input(value=self._stream_cookies, id='stream-cookies-input',
+                        placeholder=_EG_COOKIES)
+            yield Static('', id='stream-cookies-check')
+            yield Static('Fed to mpv/yt-dlp for playback only — NOT your sign-in '
+                         '(signed-in streaming cookies actually break playback). '
+                         'Applies as soon as the path is valid; clear to remove.',
+                         classes='hint')
+
             yield Static('', id='account-status')
             with Horizontal(id='account-btns'):
                 yield Button('Use public (no account)', id='acct-none')
@@ -932,6 +917,7 @@ class AccountScreen(ModalScreen):
 
     def on_mount(self) -> None:
         self._mark_cookies()
+        self._mark_stream_cookies(apply=False)
 
     def _status(self, msg) -> None:
         if self._closed:
@@ -944,6 +930,25 @@ class AccountScreen(ModalScreen):
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == 'cookies-input':
             self._mark_cookies()
+        elif event.input.id == 'stream-cookies-input':
+            self._mark_stream_cookies()
+
+    def _mark_stream_cookies(self, apply=True) -> None:
+        """Live ✓/✗ for the streaming-cookies path; apply it (or a clear) as
+        soon as the value is definitive — no Save button."""
+        raw = self.query_one('#stream-cookies-input', Input).value.strip()
+        st = self.query_one('#stream-cookies-check', Static)
+        if not raw:
+            st.update('')
+            if apply and self._on_stream_cookies:
+                self._on_stream_cookies('')
+            return
+        path = _expand(raw)
+        ok = os.path.isfile(path)
+        st.update(('✓ ' if ok else '✗ ') + path)
+        st.set_classes('valid' if ok else 'invalid')
+        if apply and ok and self._on_stream_cookies:
+            self._on_stream_cookies(path)
 
     def _mark_cookies(self) -> None:
         raw = self.query_one('#cookies-input', Input).value.strip()
@@ -2426,7 +2431,7 @@ class YTMApp(App):
             inp = self.query_one('#search-input', Input)
             btn = self.query_one('#source-btn', Button)
             if self.app_mode == 'offline':
-                inp.placeholder = 'Local folder path…'
+                inp.placeholder = f'Local folder path ({_EG_FOLDER})…'
                 btn.label = 'OFFLINE'
             else:
                 inp.placeholder = 'Search or paste URL…'
@@ -2795,7 +2800,7 @@ class YTMApp(App):
             if folder:
                 self._do_scan_folder(folder)
             else:
-                self._set_status('Offline mode — press s to set local folder, or type a path and Enter')
+                self._set_status('Offline mode — type a folder path and press Enter')
                 self.query_one('#search-input', Input).focus()
         else:
             self.app_mode = 'online'
@@ -2841,33 +2846,23 @@ class YTMApp(App):
 
     def action_settings(self) -> None:
         def _after(result):
-            if result is not None:
-                cookies = result.get('cookies', '')
-                folder  = result.get('folder', '')
-                self._config.cookies_file = cookies
-                self._player.cookies_file = cookies
-                self._config.local_folder = folder
-                device = result.get('device_name', '').strip()
-                if device and device != self._config.stats_device_name:
-                    self._config.stats_device_name = device
-                token = result.get('stats_token', '').strip()
-                token_changed = token != self._config.stats_token
-                if token_changed:
-                    self._config.stats_token = token
-                msgs = []
-                if cookies:
-                    msgs.append(f'cookies: {cookies}')
-                if folder:
-                    msgs.append(f'folder: {folder}')
-                self._set_status('Settings saved' + (': ' + ', '.join(msgs) if msgs else ''))
-                # A new token gets validated right away (result lands in the
-                # status line: 'connected ✓' or 'token rejected').
-                if token_changed and token:
-                    self._stats_sync_maybe(announce=True)
+            if result is None:
+                return
+            device = result.get('device_name', '').strip()
+            if device and device != self._config.stats_device_name:
+                self._config.stats_device_name = device
+            token = result.get('stats_token', '').strip()
+            token_changed = token != self._config.stats_token
+            if token_changed:
+                self._config.stats_token = token
+            self._set_status('Sync settings saved')
+            # A new token gets validated right away (result lands in the
+            # status line: 'connected ✓' or 'token rejected').
+            if token_changed and token:
+                self._stats_sync_maybe(announce=True)
 
         self.push_screen(
-            SettingsScreen(self._config.cookies_file, self._config.local_folder,
-                           self._config.stats_token,
+            SettingsScreen(self._config.stats_token,
                            self._config.stats_device_name),
             _after,
         )
@@ -2909,11 +2904,21 @@ class YTMApp(App):
             self._set_status('YouTube auth: ' + youtube.auth_status()
                              + (' — personalized' if youtube.is_authenticated() else ''))
 
+        def _set_stream_cookies(path):
+            # Player-only cookie file (age-restricted playback), never auth.
+            if path != self._config.cookies_file:
+                self._config.cookies_file = path
+                self._player.cookies_file = path
+                self._set_status('Streaming cookies '
+                                 + (f'set: {path}' if path else 'cleared'))
+
         self.push_screen(
             AccountScreen(self._config.auth_method,
                           self._config.auth_cookies_file,
                           self._config.auth_browser,
-                          self._config.auth_browser_profile),
+                          self._config.auth_browser_profile,
+                          stream_cookies=self._config.cookies_file,
+                          on_stream_cookies=_set_stream_cookies),
             _after,
         )
 

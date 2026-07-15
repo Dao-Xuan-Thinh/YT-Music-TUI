@@ -41,7 +41,10 @@ updater.py      ← Self-update via git (check/pull/deps refresh, branch switch)
    index at the chosen track (so jumping matches auto-advance — the `n/total` counter stays
    stable). On track end, auto-advances (honoring `shuffle` and `repeat` off/one/all).
    `add_recent()` records each play.
-5. **Settings** (`s`) sets cookies/local-folder (with `~` expansion + ✓/✗); **quit** (`q`)
+5. **Settings** (`s`) holds ONLY the listen-stats sync settings (GitHub token +
+   device name). Streaming cookies (age-restricted playback, player-only) live in
+   Account (`g`) with live ✓/✗ + immediate apply; the offline folder is set by
+   typing its path in the search bar while in offline mode (`o`). **Quit** (`q`)
    confirms when playing and saves a resume session.
 
 ### Key Design Patterns
