@@ -2,3 +2,4 @@ yt-dlp>=2024.1.0
 textual>=0.47.0
 mutagen>=1.47.0
 ytmusicapi>=1.12.1
+requests>=2.28

@@ -28,6 +28,7 @@ from textual.theme import Theme
 import youtube
 import player as player_module
 import updater
+import stats as stats_module
 from config import Config, _expand
 from library import Library
 
@@ -296,7 +297,7 @@ class SettingsScreen(ModalScreen):
     CSS = """
     SettingsScreen { align: center middle; }
     #settings-box {
-        width: 76; height: 18;
+        width: 76; height: 26;
         border: round $accent; padding: 1 2; background: $surface;
     }
     #settings-box Label { margin-bottom: 0; }
@@ -306,10 +307,13 @@ class SettingsScreen(ModalScreen):
     #btn-row { height: 3; margin-top: 1; }
     """
 
-    def __init__(self, current_cookies='', current_folder=''):
+    def __init__(self, current_cookies='', current_folder='',
+                 current_token='', current_device=''):
         super().__init__()
         self._current_cookies = current_cookies
         self._current_folder  = current_folder
+        self._current_token   = current_token
+        self._current_device  = current_device
 
     def compose(self) -> ComposeResult:
         with Vertical(id='settings-box'):
@@ -323,6 +327,14 @@ class SettingsScreen(ModalScreen):
             yield Input(value=self._current_folder, id='folder-input',
                         placeholder=_EG_FOLDER)
             yield Static('', id='folder-status', classes='valid')
+            yield Label('GitHub token for listen-stats sync (optional):')
+            yield Input(value=self._current_token, id='stats-token-input',
+                        password=True, placeholder='ghp_… / github_pat_…')
+            yield Static('Classic token with `gist` scope, or fine-grained with '
+                         'Gists: read & write. Stored in config.json.',
+                         classes='hint')
+            yield Label("This device's name in stats:")
+            yield Input(value=self._current_device, id='device-name-input')
             with Horizontal(id='btn-row'):
                 yield Button('Save', id='btn-save', variant='primary')
                 yield Button('Cancel', id='btn-cancel')
@@ -352,7 +364,10 @@ class SettingsScreen(ModalScreen):
         if event.button.id == 'btn-save':
             cookies = _expand(self.query_one('#cookies-input', Input).value.strip())
             folder  = _expand(self.query_one('#folder-input',  Input).value.strip())
-            self.dismiss({'cookies': cookies, 'folder': folder})
+            token   = self.query_one('#stats-token-input', Input).value.strip()
+            device  = self.query_one('#device-name-input', Input).value.strip()
+            self.dismiss({'cookies': cookies, 'folder': folder,
+                          'stats_token': token, 'device_name': device})
         else:
             self.dismiss(None)
 
@@ -1031,7 +1046,8 @@ class HomeScreen(Screen):
         'tab-recent':  '#list-recent',
     }
     # Left/right tab cycle order (matches the TabPane order in compose()).
-    _TAB_ORDER = ['tab-resume', 'tab-foryou', 'tab-folders', 'tab-liked', 'tab-recent']
+    _TAB_ORDER = ['tab-resume', 'tab-foryou', 'tab-folders', 'tab-liked',
+                  'tab-recent', 'tab-stats']
 
     CSS = """
     HomeScreen { align: center middle; }
@@ -1047,9 +1063,11 @@ class HomeScreen(Screen):
     ListView { height: 1fr; }
     """
 
-    def __init__(self, library):
+    def __init__(self, library, stats=None, cfg=None):
         super().__init__()
         self._lib = library
+        self._stats = stats
+        self._cfg = cfg
 
     def _track_item(self, track, payload):
         dur = _fmt(track['duration']) if track['duration'] else ''
@@ -1124,6 +1142,8 @@ class HomeScreen(Screen):
                     yield ListView(*self._liked_items(), id='list-liked')
                 with TabPane('Recent', id='tab-recent'):
                     yield ListView(*self._recent_items(), id='list-recent')
+                with TabPane('Stats', id='tab-stats'):
+                    yield Static('', id='stats-view')
 
             yield Button('Search / Browse', id='home-search', variant='primary')
             yield Label('', id='home-status')
@@ -1177,7 +1197,59 @@ class HomeScreen(Screen):
 
     def on_tabbed_content_tab_activated(self, event) -> None:
         # Pull focus into the newly-shown list so a highlighted row always exists.
+        # (Stats has no list — _focused_list() finds nothing and this no-ops.)
         self._focus_active_list()
+        self.refresh_stats()
+
+    # ── Stats tab ──────────────────────────────────────────────────────────
+
+    def refresh_stats(self) -> None:
+        """Re-render the Stats tab if it's the active pane (cheap, local data)."""
+        try:
+            if self.query_one('#home-tabs', TabbedContent).active == 'tab-stats':
+                self._render_stats()
+        except NoMatches:
+            pass
+
+    def _render_stats(self) -> None:
+        try:
+            view = self.query_one('#stats-view', Static)
+        except NoMatches:
+            return
+        if self._stats is None:
+            view.update('No stats available.')
+            return
+        dev_id = self._cfg.stats_device_id if self._cfg else ''
+        dev_name = ((self._cfg.stats_device_name if self._cfg else '')
+                    or 'this device')
+        days = self._stats.merged_days(7, own_device_id=dev_id)
+        totals = self._stats.totals(own_device_id=dev_id)
+        fmt = stats_module.fmt_mins
+        peak = max((s for _, s in days), default=0.0)
+        width = 34
+        lines = ['Listening time — last 7 days', '']
+        for i, (day, secs) in enumerate(days):
+            if i == len(days) - 1:
+                label = 'Today    '
+            else:
+                label = time.strftime('%a %m-%d', time.strptime(day, '%Y-%m-%d'))
+            filled = int(round(width * secs / peak)) if peak > 0 else 0
+            bar = '█' * filled + '░' * (width - filled)
+            lines.append(f'{label}  {bar}  {fmt(secs)}')
+        lines.append('')
+        lines.append(f'Today {fmt(totals["today"])}   ·   '
+                     f'7 days {fmt(totals["week"])}   ·   '
+                     f'All time {fmt(totals["all"])}')
+        devices = self._stats.per_device(own_device_id=dev_id,
+                                         own_device_name=dev_name)
+        if devices:
+            lines.append('  ·  '.join(f'{name} {fmt(total)}'
+                                      for name, total in devices))
+        lines.append('')
+        lines.append(self._stats.status_line(
+            bool(self._cfg and self._cfg.stats_token)))
+        # Plain Text (not markup) — device/host names may contain brackets.
+        view.update(Text('\n'.join(lines)))
 
     def _load_foryou(self) -> None:
         err = None
@@ -1483,6 +1555,15 @@ class YTMApp(App):
         super().__init__()
         self._config  = Config()
         self._lib     = Library()
+        # Listen-time stats: local counters + optional gist sync (see stats.py).
+        self._stats = stats_module.StatsStore()
+        if not self._config.stats_device_id:
+            import uuid
+            self._config.stats_device_id = uuid.uuid4().hex
+        if not self._config.stats_device_name:
+            import platform
+            self._config.stats_device_name = platform.node().split('.')[0] or 'desktop'
+        self._stats_last = None   # (queue_idx, position) at the previous poll tick
         # One-time migration: earlier builds stored the YTM account cookie dump in
         # `cookies_file`, which is ALSO the yt-dlp/mpv streaming cookie file. An
         # authenticated YouTube session makes yt-dlp get a SABR-only format set it
@@ -1580,6 +1661,9 @@ class YTMApp(App):
         tbl.add_column('Artist',   width=25)
         tbl.add_column('Duration', width=8)
         self.set_interval(1.0, self._poll_player)
+        self.set_interval(60.0, self._stats_flush)
+        self.set_interval(600.0, self._stats_sync_maybe)
+        self.set_timer(8.0, self._stats_sync_maybe)   # boot pull of other devices
         self._update_mode_ui()
         self._update_footer()
         threading.Thread(target=self._init_player, daemon=True).start()
@@ -1589,7 +1673,7 @@ class YTMApp(App):
         if youtube.is_authenticated():
             threading.Thread(target=self._verify_account, daemon=True).start()
         # Boot straight into the home screen.
-        self.push_screen(HomeScreen(self._lib), self._on_home_result)
+        self.push_screen(HomeScreen(self._lib, self._stats, self._config), self._on_home_result)
 
     def _verify_account(self) -> None:
         status, name = youtube.verify_auth_live()
@@ -1647,6 +1731,40 @@ class YTMApp(App):
         try:
             self.notify(f'{behind} new commit(s) available — press u to update.',
                         title='↑ Update available', timeout=8)
+        except Exception:
+            pass
+
+    # ── Listen-time stats ──────────────────────────────────────────────────
+
+    def _stats_flush(self) -> None:
+        self._stats.flush()
+
+    def _stats_sync_maybe(self, announce: bool = False) -> None:
+        """Kick a gist sync on a daemon thread. No-op without a token; the
+        periodic timer is throttled so a fresh manual sync isn't repeated."""
+        if not self._config.stats_token:
+            return
+        if not announce and time.time() - self._stats.last_sync() < 540:
+            return
+        threading.Thread(target=self._stats_sync_worker, args=(announce,),
+                         daemon=True).start()
+
+    def _stats_sync_worker(self, announce: bool = False) -> None:
+        ok, msg, new_id = self._stats.sync(
+            self._config.stats_token, self._config.stats_device_id,
+            self._config.stats_device_name, self._config.stats_gist_id)
+
+        def _apply():
+            if new_id:
+                self._config.stats_gist_id = new_id
+            if announce:
+                self._set_status('Stats sync: connected ✓' if ok
+                                 else f'Stats sync: {msg}')
+            if isinstance(self.screen, HomeScreen):
+                self.screen.refresh_stats()
+
+        try:
+            self.call_from_thread(_apply)
         except Exception:
             pass
 
@@ -2153,6 +2271,18 @@ class YTMApp(App):
         self.position  = self._player.get_position()
         self.duration  = self._player.get_duration()
         self.is_paused = self._player.is_paused()
+        # Listen-time accumulator: count only real forward audio progress on the
+        # SAME track — pauses/buffering (position frozen), seeks (delta outside
+        # 0..2s for a 1s poll) and track changes all contribute nothing.
+        if self.now_playing and not self.is_paused:
+            prev = self._stats_last
+            if prev is not None and prev[0] == self._queue_idx:
+                delta = self.position - prev[1]
+                if 0 < delta <= 2.0:
+                    self._stats.add(delta)
+            self._stats_last = (self._queue_idx, self.position)
+        else:
+            self._stats_last = None
         # Load watchdog: once playback really starts (position/duration known), clear it;
         # if nothing has started within the timeout the fetch is stuck (e.g. a wedged
         # backend) — surface a retry and recover mpv so the next pick works without an app
@@ -2623,7 +2753,7 @@ class YTMApp(App):
         self.push_screen(NameScreen('Save current list as playlist:'), _after)
 
     def action_home(self) -> None:
-        self.push_screen(HomeScreen(self._lib), self._on_home_result)
+        self.push_screen(HomeScreen(self._lib, self._stats, self._config), self._on_home_result)
 
     # ── Themes / mode / source ─────────────────────────────────────────────
 
@@ -2717,15 +2847,28 @@ class YTMApp(App):
                 self._config.cookies_file = cookies
                 self._player.cookies_file = cookies
                 self._config.local_folder = folder
+                device = result.get('device_name', '').strip()
+                if device and device != self._config.stats_device_name:
+                    self._config.stats_device_name = device
+                token = result.get('stats_token', '').strip()
+                token_changed = token != self._config.stats_token
+                if token_changed:
+                    self._config.stats_token = token
                 msgs = []
                 if cookies:
                     msgs.append(f'cookies: {cookies}')
                 if folder:
                     msgs.append(f'folder: {folder}')
                 self._set_status('Settings saved' + (': ' + ', '.join(msgs) if msgs else ''))
+                # A new token gets validated right away (result lands in the
+                # status line: 'connected ✓' or 'token rejected').
+                if token_changed and token:
+                    self._stats_sync_maybe(announce=True)
 
         self.push_screen(
-            SettingsScreen(self._config.cookies_file, self._config.local_folder),
+            SettingsScreen(self._config.cookies_file, self._config.local_folder,
+                           self._config.stats_token,
+                           self._config.stats_device_name),
             _after,
         )
 
@@ -2971,6 +3114,16 @@ class YTMApp(App):
 
     def _finalize_quit(self) -> None:
         self._save_session()
+        self._stats.flush()
+        # Best-effort final sync: the data is already safe on disk, so never
+        # hold the quit hostage — 2s max, then exit regardless.
+        if self._config.stats_token:
+            t = threading.Thread(target=self._stats.sync, args=(
+                self._config.stats_token, self._config.stats_device_id,
+                self._config.stats_device_name, self._config.stats_gist_id),
+                daemon=True)
+            t.start()
+            t.join(2.0)
         try:
             self._config.flush()
         except Exception:
