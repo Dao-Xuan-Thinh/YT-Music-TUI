@@ -27,6 +27,13 @@ _DEFAULTS = {
     # Display name of the signed-in account (shown in the footer). Cached from
     # get_account_info() at sign-in / first boot so the footer needs no network.
     'account_name':        '',
+    # Listen-time stats sync (see stats.py). The token is a GitHub PAT (classic
+    # with `gist` scope, or fine-grained with Gists: read & write) — stored in
+    # plaintext here; config.json is gitignored and local-only.
+    'stats_token':         '',
+    'stats_gist_id':       '',   # cached; rediscovered by marker on 404
+    'stats_device_id':     '',   # uuid4, minted on first boot
+    'stats_device_name':   '',   # shown in per-device totals (default: hostname)
 }
 
 
@@ -133,6 +140,42 @@ class Config:
     @account_name.setter
     def account_name(self, name):
         self._data['account_name'] = name or ''
+        self.save()
+
+    @property
+    def stats_token(self):
+        return self._data.get('stats_token', '')
+
+    @stats_token.setter
+    def stats_token(self, value):
+        self._data['stats_token'] = value or ''
+        self.save()
+
+    @property
+    def stats_gist_id(self):
+        return self._data.get('stats_gist_id', '')
+
+    @stats_gist_id.setter
+    def stats_gist_id(self, value):
+        self._data['stats_gist_id'] = value or ''
+        self.save()
+
+    @property
+    def stats_device_id(self):
+        return self._data.get('stats_device_id', '')
+
+    @stats_device_id.setter
+    def stats_device_id(self, value):
+        self._data['stats_device_id'] = value or ''
+        self.save()
+
+    @property
+    def stats_device_name(self):
+        return self._data.get('stats_device_name', '')
+
+    @stats_device_name.setter
+    def stats_device_name(self, value):
+        self._data['stats_device_name'] = value or ''
         self.save()
 
     @property
