@@ -11,6 +11,12 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.2", date: "2026-07", notes: [
+            "Listen-time tracking: minutes counted while audio actually plays",
+            "Home-screen widget: 7-day bar graph + today / week / all-time totals",
+            "Cross-device sync with the desktop app via a private GitHub gist",
+            "Settings: LISTEN STATS section (totals, device name, token, sync now)",
+        ]),
         ChangelogEntry(version: "1.1", date: "2026-07", notes: [
             "Reorder the queue: hold a row's left edge or its ≡ handle, then drag",
             "Notification on the first launch of a freshly installed build",

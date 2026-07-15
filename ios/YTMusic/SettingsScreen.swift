@@ -12,6 +12,7 @@ struct SettingsScreen: View {
     @Environment(\.dismiss) private var dismiss
 
     @ObservedObject private var updater = UpdateChecker.shared
+    @ObservedObject private var stats = StatsStore.shared
 
     @State private var confirmClear: ClearTarget?
     @State private var showAccount = false
@@ -33,6 +34,7 @@ struct SettingsScreen: View {
                     themeSection
                     playbackSection
                     librarySection
+                    statsSection
                     debugSection
                     aboutSection
                 }
@@ -165,6 +167,55 @@ struct SettingsScreen: View {
         }
         .font(TUI.mono(14))
         .frame(height: 30)
+    }
+
+    private var statsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("LISTEN STATS")
+            HStack(spacing: 10) {
+                Text("today \(StatsShared.fmtMins(statsTotals.today))")
+                Text("7d \(StatsShared.fmtMins(statsTotals.week))")
+                Text("all \(StatsShared.fmtMins(statsTotals.all))")
+            }
+            .font(TUI.mono(14)).foregroundStyle(TUI.fg)
+            HStack {
+                Text("device name").foregroundStyle(TUI.fg)
+                Spacer()
+                TextField("device name", text: $config.statsDeviceName)
+                    .multilineTextAlignment(.trailing)
+                    .autocorrectionDisabled()
+                    .foregroundStyle(TUI.accent)
+                    .frame(maxWidth: 180)
+            }
+            .font(TUI.mono(14)).frame(height: 30)
+            HStack {
+                Text("github token").foregroundStyle(TUI.fg)
+                Spacer()
+                SecureField("gist-scope PAT", text: $config.statsToken)
+                    .multilineTextAlignment(.trailing)
+                    .foregroundStyle(TUI.accent)
+                    .frame(maxWidth: 180)
+                    .onSubmit { stats.sync(force: true) }
+            }
+            .font(TUI.mono(14)).frame(height: 30)
+            Text("classic token with gist scope, or fine-grained with Gists: read & write — same token on every device")
+                .font(TUI.mono(11)).foregroundStyle(TUI.dim)
+            HStack {
+                Text(stats.lastSyncLabel).foregroundStyle(TUI.dim)
+                Spacer()
+                Text("sync now")
+                    .foregroundStyle(config.statsToken.isEmpty ? TUI.dim.opacity(0.5)
+                                                               : TUI.accent)
+                    .onTapGesture {
+                        if !config.statsToken.isEmpty { stats.sync(force: true) }
+                    }
+            }
+            .font(TUI.mono(13)).frame(height: 26)
+        }
+    }
+
+    private var statsTotals: (today: Double, week: Double, all: Double) {
+        StatsShared.totals(stats.file)
     }
 
     private var debugSection: some View {

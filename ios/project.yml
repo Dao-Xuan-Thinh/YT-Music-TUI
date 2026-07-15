@@ -24,6 +24,16 @@ targets:
       - framework: Support/Python.xcframework
         embed: true
         codeSign: true
+      # Stats widget rides inside the app bundle (PlugIns/YTMusicWidget.appex).
+      - target: YTMusicWidget
+        embed: true
+    # App Group shared with the widget (stats.json lives there). xcodegen
+    # regenerates the .entitlements plist from these properties at `generate`.
+    entitlements:
+      path: YTMusic/YTMusic.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.ytmtui.YTMusic
     info:
       path: YTMusic/Info.plist
       properties:
@@ -31,8 +41,8 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         ITSAppUsesNonExemptEncryption: false
-        CFBundleShortVersionString: "1.1"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "1.2"
+        CFBundleVersion: "4"
         # Keep audio playing when the screen is locked / app backgrounded.
         UIBackgroundModes:
           - audio
@@ -60,3 +70,36 @@ targets:
           set -e
           source "$PROJECT_DIR/Support/Python.xcframework/build/utils.sh"
           install_python Support/Python.xcframework app app_packages
+
+  # Listen-stats home-screen widget. Tiny on purpose: no bridging header, no
+  # Python, no resources — just the widget UI + the shared StatsModel.swift,
+  # reading stats.json from the App Group the app writes into.
+  YTMusicWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: YTMusicWidget
+      - path: YTMusic/StatsModel.swift
+    entitlements:
+      path: YTMusicWidget/YTMusicWidget.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.ytmtui.YTMusic
+    info:
+      path: YTMusicWidget/Info.plist
+      properties:
+        CFBundleDisplayName: YT Music Stats
+        # MUST match the app's versions or the install is rejected.
+        CFBundleShortVersionString: "1.2"
+        CFBundleVersion: "4"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ytmtui.YTMusic.Widget
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ONLY_ACTIVE_ARCH: YES
+        SKIP_INSTALL: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""

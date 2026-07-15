@@ -56,8 +56,14 @@ struct ContentView: View {
         .onChange(of: scenePhase) { phase in
             // .inactive too: an app-switcher swipe-kill passes through .inactive but can
             // skip .background, losing the resume snapshot.
-            if phase == .background || phase == .inactive { vm.saveCurrentSession() }
-            if phase == .active { UpdateChecker.shared.check() }
+            if phase == .background || phase == .inactive {
+                vm.saveCurrentSession()
+                StatsStore.shared.flush(reloadWidget: true)
+            }
+            if phase == .active {
+                UpdateChecker.shared.check()
+                StatsStore.shared.sync()   // self-throttled (10 min)
+            }
         }
         .onChange(of: vm.tab) { t in if t == .foryou { vm.loadHome() } }
         .onAppear {
@@ -65,6 +71,7 @@ struct ContentView: View {
             vm.armResume()   // remember where you left off (tap the bar to resume)
             UpdateChecker.shared.check()
             UpdateChecker.shared.announceBuildIfNew()
+            StatsStore.shared.sync()   // pull other devices' listen time
         }
         .alert("Save playlist", isPresented: $showSavePlaylist) {
             TextField("name", text: $newPlaylistName)

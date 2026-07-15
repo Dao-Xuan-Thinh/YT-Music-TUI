@@ -33,6 +33,7 @@ final class PlaybackService: ObservableObject {
     private var artwork: MPMediaItemArtwork?
     private var endedFired = false   // de-dupe end detection (metadata vs AVPlayer)
     private var pendingSeek: Double?  // resume offset, applied once the item is ready
+    private var statsLastPos: Double? // previous observer position (listen-time deltas)
 
     // Real-time audio spectrum for the now-playing equalizer (MTAudioProcessingTap → FFT).
     let levelProcessor = AudioLevelProcessor(bands: 16)
@@ -61,6 +62,7 @@ final class PlaybackService: ObservableObject {
         ready = false
         endedFired = false
         artwork = nil
+        statsLastPos = nil   // new track: next observer tick re-seeds the baseline
         // Applied once the item reaches `.readyToPlay` (seeking before then is unreliable).
         pendingSeek = startAt > 0 ? startAt : nil
 
@@ -128,6 +130,7 @@ final class PlaybackService: ObservableObject {
 
     func seek(to seconds: Double) {
         let t = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
+        statsLastPos = nil   // don't count the jump as listened time
         player.seek(to: t) { [weak self] _ in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -187,6 +190,14 @@ final class PlaybackService: ObservableObject {
             // Trust metadata `duration`; some googlevideo m4a mis-report ~2× via AVPlayer.
             let p = time.seconds
             self.position = self.duration > 0 ? min(p, self.duration) : p
+            // Listen-time: count only real forward audio progress (observer fires
+            // every 0.5s on .main). Pauses freeze the position; seeks and track
+            // changes reset statsLastPos or exceed the clamp — none of them count.
+            if self.isPlaying, let last = self.statsLastPos {
+                let d = self.position - last
+                if d > 0 && d <= 0.75 { StatsStore.shared.tick(d) }
+            }
+            self.statsLastPos = self.position
             self.updateNowPlaying()
             // Advance at the real (metadata) end, since AVPlayer's end fires late for the 2×
             // mis-reported items.
