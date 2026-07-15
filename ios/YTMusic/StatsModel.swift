@@ -32,8 +32,14 @@ enum StatsShared {
     }
 
     static func load() -> StatsFile {
+        // MUST mirror StatsStore's encoder (.iso8601 dates): a mismatched date
+        // strategy makes the whole decode fail the moment lastSync is set, which
+        // read as "no data" — the widget showed its placeholder forever and the
+        // app dropped its local counters at every relaunch.
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
         guard let data = try? Data(contentsOf: storeURL()),
-              let f = try? JSONDecoder().decode(StatsFile.self, from: data)
+              let f = try? dec.decode(StatsFile.self, from: data)
         else { return StatsFile() }
         return f
     }

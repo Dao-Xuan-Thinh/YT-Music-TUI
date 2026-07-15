@@ -11,6 +11,11 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.3", date: "2026-07", notes: [
+            "Fixed songs refusing to play (\u{2018}format not available\u{2019}) — they now retry on the web pipeline, signed-in when possible",
+            "Fixed the widget being stuck on \u{2018}play something\u{2019} despite existing stats",
+            "Updated the extraction engine (yt-dlp 2026.07.04)",
+        ]),
         ChangelogEntry(version: "1.2", date: "2026-07", notes: [
             "Listen-time tracking: minutes counted while audio actually plays",
             "Home-screen widget: 7-day bar graph + today / week / all-time totals",

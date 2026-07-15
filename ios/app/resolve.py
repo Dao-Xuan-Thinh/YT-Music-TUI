@@ -244,27 +244,40 @@ def resolve(url: str) -> str:
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         _log("resolve", f"anonymous failed: {err[:200]}")
-        # Music-Premium-only tracks reject the anonymous mobile clients. If signed
-        # in, retry once with the account cookies on yt-dlp's DEFAULT clients —
-        # premium entitlement rides on the web/tv contexts, whose JS challenges
-        # fall back to the registered JavaScriptCore provider. Anonymous stays the
-        # fast path for everything else (signed-in sessions can go SABR-only).
-        if "premium members" in err.lower() and _cookiefile:
-            _log("resolve", "premium wall — retrying with the signed-in account")
+        # The anonymous mobile clients fail in two known ways:
+        #  - Music-Premium-only tracks reject them ("premium members");
+        #  - YouTube's SABR-only / PO-token experiments strip every direct format
+        #    ("Requested format is not available") or bot-wall the session
+        #    ("Sign in to confirm").
+        # Both recover the same way — retry once on yt-dlp's DEFAULT clients
+        # (web/tv), whose JS challenges the registered JavaScriptCore provider
+        # solves. With the account cookies attached when signed in, this is the
+        # exact path the premium retry has always used. Anonymous mobile stays
+        # the fast path for everything else.
+        low = err.lower()
+        retriable = ("premium members" in low
+                     or "requested format is not available" in low
+                     or "sign in to confirm" in low)
+        if retriable:
+            why = ("premium wall" if "premium members" in low
+                   else "no direct formats from mobile clients")
+            _log("resolve", f"{why} — retrying on default clients"
+                            + (" with the signed-in account" if _cookiefile else ""))
             try:
                 popts = dict(opts)
                 popts.pop("extractor_args", None)
-                popts["cookiefile"] = _cookiefile
+                if _cookiefile:
+                    popts["cookiefile"] = _cookiefile
                 with yt_dlp.YoutubeDL(popts) as ydl:
                     info = ydl.extract_info(url, download=False)
                 d = _entry_to_dict(info)
                 d["_elapsed_s"] = round(time.time() - t0, 2)
                 d["_ok"] = bool(d["stream_url"] and "googlevideo" in d["stream_url"])
-                _log("resolve", f"premium retry ok={d['_ok']} in {d['_elapsed_s']}s")
+                _log("resolve", f"default-client retry ok={d['_ok']} in {d['_elapsed_s']}s")
                 return json.dumps(d)
             except Exception as e2:
                 err = f"{type(e2).__name__}: {e2}"
-                _log("resolve", f"premium retry failed: {err[:200]}")
+                _log("resolve", f"default-client retry failed: {err[:200]}")
         return json.dumps({"_ok": False, "_error": err})
 
 

@@ -9,6 +9,7 @@ snapshot.txt
 config.json
 library.json
 sessions.json
+stats.json
 oauth.json
 .venv/
 .claude/
