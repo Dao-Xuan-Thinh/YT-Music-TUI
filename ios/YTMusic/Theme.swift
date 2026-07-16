@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import WidgetKit
 
 /// One color theme. `wave` is the (optional) color-wave palette used to animate the
 /// now-playing text while a track is playing (nil = no wave for this theme). `glyphs`
@@ -32,12 +33,26 @@ final class ThemeManager: ObservableObject {
     private init() {
         let saved = UserDefaults.standard.string(forKey: key)
         current = AppTheme.builtins.first { $0.name == saved } ?? AppTheme.builtins[0]
+        publishToWidget()   // keep the widget in sync even if the file is missing/stale
     }
 
     func select(_ name: String) {
         guard let t = all.first(where: { $0.name == name }) else { return }
         current = t
         UserDefaults.standard.set(name, forKey: key)
+        publishToWidget()
+    }
+
+    /// Mirror the active theme's colors into the App Group so the stats widget
+    /// renders in the same palette as the app, then repaint it.
+    private func publishToWidget() {
+        WidgetTheme(bg: WidgetTheme.rgba(current.bg),
+                    panel: WidgetTheme.rgba(current.panel),
+                    fg: WidgetTheme.rgba(current.fg),
+                    dim: WidgetTheme.rgba(current.dim),
+                    accent: WidgetTheme.rgba(current.accent),
+                    dark: current.dark).write()
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     func cycle() {

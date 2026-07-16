@@ -11,6 +11,29 @@ struct YTMusicWidgetBundle: WidgetBundle {
     var body: some Widget { YTMusicStatsWidget() }
 }
 
+/// The app's active theme, resolved to Colors (falls back to the classic
+/// black/green TUI look when the app hasn't published a theme yet).
+struct WPalette {
+    let bg: Color
+    let fg: Color
+    let dim: Color
+    let accent: Color
+
+    static let fallback = WPalette(
+        bg: Color.black,
+        fg: Color(red: 0.92, green: 0.94, blue: 0.92),
+        dim: Color(red: 0.55, green: 0.60, blue: 0.55),
+        accent: Color(red: 0.30, green: 0.85, blue: 0.45))
+
+    static func load() -> WPalette {
+        guard let t = WidgetTheme.load() else { return .fallback }
+        return WPalette(bg: WidgetTheme.color(t.bg),
+                        fg: WidgetTheme.color(t.fg),
+                        dim: WidgetTheme.color(t.dim),
+                        accent: WidgetTheme.color(t.accent))
+    }
+}
+
 struct StatsEntry: TimelineEntry {
     let date: Date
     let days: [(key: String, secs: Double)]   // last 7, oldest first
@@ -18,6 +41,7 @@ struct StatsEntry: TimelineEntry {
     let week: Double
     let all: Double
     let hasData: Bool
+    var palette: WPalette = .fallback
 }
 
 struct StatsProvider: TimelineProvider {
@@ -39,7 +63,8 @@ struct StatsProvider: TimelineProvider {
         return StatsEntry(date: Date(),
                           days: StatsShared.mergedDays(f, last: 7).map { ($0.0, $0.1) },
                           today: t.today, week: t.week, all: t.all,
-                          hasData: t.all > 0)
+                          hasData: t.all > 0,
+                          palette: WPalette.load())
     }
 
     static var sample: StatsEntry {
@@ -65,10 +90,6 @@ struct YTMusicStatsWidget: Widget {
 // MARK: - Views (TUI look: black, mono, accent green)
 
 private enum W {
-    static let bg = Color.black
-    static let fg = Color(red: 0.92, green: 0.94, blue: 0.92)
-    static let dim = Color(red: 0.55, green: 0.60, blue: 0.55)
-    static let accent = Color(red: 0.30, green: 0.85, blue: 0.45)
     static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
@@ -77,14 +98,15 @@ private enum W {
 struct StatsWidgetView: View {
     @Environment(\.widgetFamily) private var family
     let entry: StatsEntry
+    private var p: WPalette { entry.palette }
 
     var body: some View {
         Group {
             if !entry.hasData {
                 VStack(spacing: 6) {
-                    Text("♪").font(W.mono(22)).foregroundStyle(W.accent)
+                    Text("♪").font(W.mono(22)).foregroundStyle(p.accent)
                     Text("play something in\nYT Music")
-                        .font(W.mono(11)).foregroundStyle(W.dim)
+                        .font(W.mono(11)).foregroundStyle(p.dim)
                         .multilineTextAlignment(.center)
                 }
             } else if family == .systemSmall {
@@ -93,20 +115,20 @@ struct StatsWidgetView: View {
                 mediumView
             }
         }
-        .widgetBackground(W.bg)
+        .widgetBackground(p.bg)
     }
 
     private var smallView: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("♪ listened").font(W.mono(11, .bold)).foregroundStyle(W.accent)
+            Text("♪ listened").font(W.mono(11, .bold)).foregroundStyle(p.accent)
             Spacer(minLength: 2)
             Text(StatsShared.fmtMins(entry.today))
-                .font(W.mono(26, .bold)).foregroundStyle(W.fg)
+                .font(W.mono(26, .bold)).foregroundStyle(p.fg)
                 .minimumScaleFactor(0.6).lineLimit(1)
-            Text("today").font(W.mono(11)).foregroundStyle(W.dim)
+            Text("today").font(W.mono(11)).foregroundStyle(p.dim)
             Spacer(minLength: 2)
             Text("7d \(StatsShared.fmtMins(entry.week))")
-                .font(W.mono(12)).foregroundStyle(W.dim)
+                .font(W.mono(12)).foregroundStyle(p.dim)
                 .minimumScaleFactor(0.7).lineLimit(1)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -116,7 +138,7 @@ struct StatsWidgetView: View {
         HStack(spacing: 14) {
             bars
             VStack(alignment: .trailing, spacing: 4) {
-                Text("♪ listened").font(W.mono(11, .bold)).foregroundStyle(W.accent)
+                Text("♪ listened").font(W.mono(11, .bold)).foregroundStyle(p.accent)
                 Spacer(minLength: 0)
                 statLine("today", entry.today, bold: true)
                 statLine("7 days", entry.week)
@@ -130,9 +152,9 @@ struct StatsWidgetView: View {
         VStack(alignment: .trailing, spacing: 0) {
             Text(StatsShared.fmtMins(secs))
                 .font(W.mono(bold ? 17 : 13, bold ? .bold : .regular))
-                .foregroundStyle(bold ? W.fg : W.dim)
+                .foregroundStyle(bold ? p.fg : p.dim)
                 .minimumScaleFactor(0.7).lineLimit(1)
-            Text(label).font(W.mono(9)).foregroundStyle(W.dim)
+            Text(label).font(W.mono(9)).foregroundStyle(p.dim)
         }
     }
 
@@ -144,12 +166,12 @@ struct StatsWidgetView: View {
                     let isToday = i == entry.days.count - 1
                     VStack(spacing: 3) {
                         RoundedRectangle(cornerRadius: 2)
-                            .fill(isToday ? W.accent : W.accent.opacity(0.45))
+                            .fill(isToday ? p.accent : p.accent.opacity(0.45))
                             .frame(height: max(3, (geo.size.height - 16)
                                                   * day.secs / peak))
                         Text(weekdayInitial(day.key))
                             .font(W.mono(9))
-                            .foregroundStyle(isToday ? W.accent : W.dim)
+                            .foregroundStyle(isToday ? p.accent : p.dim)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity,
                            alignment: .bottom)

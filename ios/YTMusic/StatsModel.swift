@@ -1,4 +1,6 @@
 import Foundation
+import SwiftUI
+import UIKit
 
 /// Listen-time data model + shared storage location. Pure Foundation on purpose:
 /// this file is compiled into BOTH the app and the widget extension, and it is
@@ -97,5 +99,45 @@ enum StatsShared {
         let mins = Int(seconds / 60)
         return mins < 60 ? "\(mins)m"
                          : "\(mins / 60)h \(String(format: "%02d", mins % 60))m"
+    }
+
+    static func themeURL() -> URL {
+        storeURL().deletingLastPathComponent().appendingPathComponent("widget-theme.json")
+    }
+}
+
+/// The active app theme's colors, published into the App Group so the widget
+/// matches the app instead of a hardcoded look. RGBA arrays because Color
+/// isn't Codable. Written by ThemeManager on every theme change.
+struct WidgetTheme: Codable {
+    var bg: [Double]
+    var panel: [Double]
+    var fg: [Double]
+    var dim: [Double]
+    var accent: [Double]
+    var dark: Bool
+
+    static func rgba(_ c: Color) -> [Double] {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(c).getRed(&r, green: &g, blue: &b, alpha: &a)
+        return [Double(r), Double(g), Double(b), Double(a)]
+    }
+
+    static func color(_ v: [Double]) -> Color {
+        guard v.count == 4 else { return .gray }
+        return Color(red: v[0], green: v[1], blue: v[2]).opacity(v[3])
+    }
+
+    static func load() -> WidgetTheme? {
+        guard let data = try? Data(contentsOf: StatsShared.themeURL()),
+              let t = try? JSONDecoder().decode(WidgetTheme.self, from: data)
+        else { return nil }
+        return t
+    }
+
+    func write() {
+        if let data = try? JSONEncoder().encode(self) {
+            try? data.write(to: StatsShared.themeURL(), options: .atomic)
+        }
     }
 }

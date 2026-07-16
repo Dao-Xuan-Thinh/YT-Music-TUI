@@ -11,6 +11,9 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.7", date: "2026-07", notes: [
+            "The stats widget now follows the app's theme (colors update when you switch themes)",
+        ]),
         ChangelogEntry(version: "1.6", date: "2026-07", notes: [
             "Debug log is readable now: per-line entries with colored [tags], red-tinted failures, zebra striping and ── section dividers",
         ]),
