@@ -41,8 +41,8 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         ITSAppUsesNonExemptEncryption: false
-        CFBundleShortVersionString: "1.7"
-        CFBundleVersion: "9"
+        CFBundleShortVersionString: "1.8"
+        CFBundleVersion: "10"
         # Keep audio playing when the screen is locked / app backgrounded.
         UIBackgroundModes:
           - audio
@@ -90,8 +90,8 @@ targets:
       properties:
         CFBundleDisplayName: YT Music Stats
         # MUST match the app's versions or the install is rejected.
-        CFBundleShortVersionString: "1.7"
-        CFBundleVersion: "9"
+        CFBundleShortVersionString: "1.8"
+        CFBundleVersion: "10"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:

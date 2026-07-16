@@ -18,6 +18,7 @@ struct SettingsScreen: View {
     @State private var showAccount = false
     @State private var showDebugLog = false
     @State private var showChangelog = false
+    @State private var showThemes = false
 
     enum ClearTarget: String, Identifiable {
         case liked, recent, playlists, sessions
@@ -56,6 +57,7 @@ struct SettingsScreen: View {
         .sheet(isPresented: $showAccount) { AccountScreen(vm: vm) }
         .sheet(isPresented: $showDebugLog) { DebugLogScreen() }
         .sheet(isPresented: $showChangelog) { ChangelogScreen() }
+        .sheet(isPresented: $showThemes) { ThemePickerSheet() }
     }
 
     private var accountSection: some View {
@@ -88,25 +90,32 @@ struct SettingsScreen: View {
         }
     }
 
+    /// `── TITLE ─────────` divider (matches the debug log's section style).
     private func sectionTitle(_ s: String) -> some View {
-        Text(s).font(TUI.mono(11, .bold)).foregroundStyle(TUI.dim)
+        HStack(spacing: 6) {
+            Text("──").foregroundStyle(TUI.dim)
+            Text(s).font(TUI.mono(11, .bold)).foregroundStyle(TUI.accent)
+            Rectangle().fill(TUI.dim.opacity(0.4)).frame(height: 1)
+        }
+        .font(TUI.mono(11))
+        .padding(.top, 4)
     }
 
+    /// One compact row — the full list lives in the ThemePickerSheet.
     private var themeSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("THEME")
-            ForEach(theme.all) { t in
-                HStack(spacing: 10) {
-                    Text(t.name == theme.current.name ? "◉" : "○").foregroundStyle(t.accent)
-                    Text(t.name).foregroundStyle(t.name == theme.current.name ? TUI.fg : TUI.dim)
-                    Spacer()
-                    swatches(t)
-                }
-                .font(TUI.mono(14))
-                .frame(height: 30)
-                .contentShape(Rectangle())
-                .onTapGesture { theme.select(t.name) }
+            HStack(spacing: 10) {
+                Text("◉").foregroundStyle(theme.current.accent)
+                Text(theme.current.name).foregroundStyle(TUI.fg)
+                Spacer()
+                swatches(theme.current)
+                Text("change ▾").foregroundStyle(TUI.accent)
             }
+            .font(TUI.mono(14))
+            .frame(height: 30)
+            .contentShape(Rectangle())
+            .onTapGesture { showThemes = true }
         }
     }
 
@@ -172,12 +181,36 @@ struct SettingsScreen: View {
     private var statsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("LISTEN STATS")
-            HStack(spacing: 10) {
-                Text("today \(StatsShared.fmtMins(statsTotals.today))")
-                Text("7d \(StatsShared.fmtMins(statsTotals.week))")
-                Text("all \(StatsShared.fmtMins(statsTotals.all))")
+            // Totals as three tiles: value pops in accent, label stays dim.
+            HStack(spacing: 0) {
+                statTile("today", statsTotals.today)
+                statTile("7 days", statsTotals.week)
+                statTile("all time", statsTotals.all)
             }
-            .font(TUI.mono(14)).foregroundStyle(TUI.fg)
+            .padding(.vertical, 6)
+            .background(TUI.panel.opacity(0.55))
+            .cornerRadius(4)
+            // Who listened how much (lifetime, this device first).
+            let devices = StatsShared.perDevice(stats.file,
+                                                ownName: config.statsDeviceName)
+            if devices.count > 1 || devices.first?.secs ?? 0 > 0 {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(devices.enumerated()), id: \.offset) { i, d in
+                        HStack(spacing: 8) {
+                            Text(i == 0 ? "◉" : "○")
+                                .foregroundStyle(i == 0 ? TUI.accent : TUI.dim)
+                            Text(d.name).foregroundStyle(TUI.fg)
+                            Text(i == 0 ? "· this device" : "")
+                                .foregroundStyle(TUI.dim).font(TUI.mono(10))
+                            Spacer()
+                            Text(StatsShared.fmtMins(d.secs))
+                                .foregroundStyle(TUI.accent)
+                        }
+                        .font(TUI.mono(13))
+                        .frame(height: 24)
+                    }
+                }
+            }
             HStack {
                 Text("device name").foregroundStyle(TUI.fg)
                 Spacer()
@@ -201,7 +234,7 @@ struct SettingsScreen: View {
             Text("classic token with gist scope, or fine-grained with Gists: read & write — same token on every device")
                 .font(TUI.mono(11)).foregroundStyle(TUI.dim)
             HStack {
-                Text(stats.lastSyncLabel).foregroundStyle(TUI.dim)
+                Text("▸ \(stats.lastSyncLabel)").foregroundStyle(syncStatusColor)
                 Spacer()
                 Text("sync now")
                     .foregroundStyle(config.statsToken.isEmpty ? TUI.dim.opacity(0.5)
@@ -212,6 +245,24 @@ struct SettingsScreen: View {
             }
             .font(TUI.mono(13)).frame(height: 26)
         }
+    }
+
+    private func statTile(_ label: String, _ secs: Double) -> some View {
+        VStack(spacing: 2) {
+            Text(StatsShared.fmtMins(secs))
+                .font(TUI.mono(16, .bold)).foregroundStyle(TUI.accent)
+                .minimumScaleFactor(0.7).lineLimit(1)
+            Text(label).font(TUI.mono(10)).foregroundStyle(TUI.dim)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var syncStatusColor: Color {
+        let s = stats.lastSyncLabel
+        if s.contains("rejected") || s.contains("error") || s.contains("rate") {
+            return TUI.warn
+        }
+        return s.hasPrefix("synced") ? TUI.accent : TUI.dim
     }
 
     private var statsTotals: (today: Double, week: Double, all: Double) {

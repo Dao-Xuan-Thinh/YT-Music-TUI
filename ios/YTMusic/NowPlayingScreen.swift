@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Full-screen "now playing" — a "terminal boombox": ASCII-framed artwork beside a live
 /// block-char equalizer, a color-wave title, and monospace transport. Swipe down (or ▾) to
@@ -104,14 +105,30 @@ struct NowPlayingScreen: View {
                              active: playback.isPlaying && playback.current != nil, lineLimit: 2)
                 }
                 let artist = playback.current?.uploader ?? " "
-                Text(artist)
-                    .font(TUI.mono(13)).foregroundStyle(TUI.dim).lineLimit(1)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        guard !artist.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-                        dismiss()                       // close the player first
-                        vm.openArtistByName(artist)     // then present the artist page
+                HStack(spacing: 10) {
+                    Text(artist)
+                        .font(TUI.mono(13)).foregroundStyle(TUI.dim).lineLimit(1)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            guard !artist.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+                            dismiss()                       // close the player first
+                            vm.openArtistByName(artist)     // then present the artist page
+                        }
+                    if let id = playback.current?.id, !id.isEmpty {
+                        // Hand the song to the real YT Music app (universal link —
+                        // opens the app when installed, the web player otherwise).
+                        Text("↗ YT Music")
+                            .font(TUI.mono(11)).foregroundStyle(TUI.accent)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .overlay(RoundedRectangle(cornerRadius: 3)
+                                .stroke(TUI.accent.opacity(0.5), lineWidth: 1))
+                            .onTapGesture {
+                                if let url = URL(string: "https://music.youtube.com/watch?v=\(id)") {
+                                    UIApplication.shared.open(url)
+                                }
+                            }
                     }
+                }
             }
             Spacer(minLength: 8)
             Button { vm.toggleLikeCurrent() } label: {

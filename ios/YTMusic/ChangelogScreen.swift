@@ -11,6 +11,11 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.8", date: "2026-07", notes: [
+            "Settings cleanup: ── section dividers, themes collapsed to one row (opens the picker)",
+            "LISTEN STATS redone: totals as tiles, colored sync status, and a per-device breakdown so you can see which device listened how much",
+            "↗ YT Music button in the player — opens the current song in the real YouTube Music app",
+        ]),
         ChangelogEntry(version: "1.7", date: "2026-07", notes: [
             "The stats widget now follows the app's theme (colors update when you switch themes)",
         ]),

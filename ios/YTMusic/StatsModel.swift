@@ -94,6 +94,21 @@ enum StatsShared {
                 all: map.values.reduce(0, +))
     }
 
+    /// Per-device lifetime totals, this device first. For our own device the
+    /// per-day value is max(local, gist copy) — never double-counted; other
+    /// devices come straight from their gist files.
+    static func perDevice(_ f: StatsFile, ownName: String) -> [(name: String, secs: Double)] {
+        var remote = f.remote
+        let own = f.deviceID.flatMap { remote.removeValue(forKey: $0)?.days } ?? [:]
+        let ownTotal = Set(f.days.keys).union(own.keys)
+            .reduce(0.0) { $0 + max(f.days[$1] ?? 0, own[$1] ?? 0) }
+        var out: [(name: String, secs: Double)] = [(ownName, ownTotal)]
+        out += remote.values
+            .map { ($0.device, $0.days.values.reduce(0, +)) }
+            .sorted { $0.1 > $1.1 }
+        return out
+    }
+
     /// 132 → "2m", 9876 → "2h 44m".
     static func fmtMins(_ seconds: Double) -> String {
         let mins = Int(seconds / 60)
