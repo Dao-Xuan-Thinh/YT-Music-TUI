@@ -14,12 +14,17 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PORT=8445
+PORT=8445        # tailnet-facing HTTPS port
+LOCAL_PORT=8099  # localhost static server tailscale proxies to (macOS's
+                 # sandboxed Tailscale can't serve filesystem paths directly)
 APP=build/Build/Products/Debug-iphoneos/YTMusic.app
 OTA=build/ota
+PIDFILE=$OTA/server.pid
 
 if [ "${1:-}" = "stop" ]; then
   tailscale serve --https=$PORT off 2>/dev/null || true
+  [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null || true
+  rm -f "$PIDFILE"
   echo "OTA serving stopped."
   exit 0
 fi
@@ -79,8 +84,12 @@ cat > "$OTA/index.html" <<EOF
 </div>
 EOF
 
+# Localhost-only static server; tailscale terminates TLS and proxies to it.
+[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null || true
+(python3 -m http.server "$LOCAL_PORT" --bind 127.0.0.1 --directory "$PWD/$OTA" \
+    >/dev/null 2>&1 & echo $! > "$PIDFILE")
 tailscale serve --https=$PORT off 2>/dev/null || true
-tailscale serve --bg --https=$PORT "$PWD/$OTA" >/dev/null
+tailscale serve --bg --https=$PORT "http://127.0.0.1:$LOCAL_PORT" >/dev/null
 echo
 echo "Serving (tailnet only): open on the device with Tailscale ON:"
 echo "  $BASE"
