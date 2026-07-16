@@ -11,6 +11,9 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.6", date: "2026-07", notes: [
+            "Debug log is readable now: per-line entries with colored [tags], red-tinted failures, zebra striping and ── section dividers",
+        ]),
         ChangelogEntry(version: "1.5", date: "2026-07", notes: [
             "Dead uploads self-heal: when a saved track's video was removed, the app searches for the song's living copy, plays it, and fixes your library/playlists to point at it",
             "Unavailable videos answer instantly (no more 8s of retrying every tap) and show the real reason",
