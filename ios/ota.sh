@@ -4,9 +4,10 @@
 # but Apple's itms-services OTA install only needs an HTTPS URL with a valid
 # cert, which `tailscale serve` provides (*.ts.net / Let's Encrypt).
 #
-#   ./ota.sh          package build/Build/Products/Debug-iphoneos/YTMusic.app
-#                     and serve it on the tailnet (port 8445, tailnet-only)
-#   ./ota.sh stop     stop serving
+#   ./ota.sh                archive + development-export an OTA ipa and serve
+#                           it on the tailnet (port 8445, tailnet-only)
+#   ./ota.sh stop           stop serving
+#   ./ota.sh serve <TEAM>   override the signing team (default YK4NZ9U7TL)
 #
 # On the device: Tailscale ON → open the printed URL in Safari → tap install.
 # Works because the dev provisioning profile inside the app already contains
@@ -29,45 +30,55 @@ if [ "${1:-}" = "stop" ]; then
   exit 0
 fi
 
-[ -d "$APP" ] || { echo "No device build at $APP — run ./build.sh device <team> (or ./reinstall.sh) first."; exit 1; }
+[ -e YTMusic.xcodeproj/project.pbxproj ] || { echo "No YTMusic.xcodeproj — run ./build.sh once first (xcodegen + BuildInfo)."; exit 1; }
 
+TEAM="${2:-${TEAM:-YK4NZ9U7TL}}"
 HOST=$(tailscale status --json | python3 -c "import json,sys; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))")
-VER=$(defaults read "$PWD/$APP/Info" CFBundleShortVersionString)
 BASE="https://$HOST:$PORT"
 
-echo "Packaging YTMusic $VER for OTA…"
-rm -rf "$OTA" && mkdir -p "$OTA/work/Payload"
-cp -R "$APP" "$OTA/work/Payload/"
-(cd "$OTA/work" && zip -qry ../YTMusic.ipa Payload)
-rm -rf "$OTA/work"
-
-cat > "$OTA/manifest.plist" <<EOF
+# A raw Debug-iphoneos .app zipped by hand installs via devicectl but gets
+# ROLLED BACK by installd on the OTA path (debug/preview stub dylibs + debug
+# signing). archive + development-export produces the canonical OTA ipa —
+# and writes the manifest.plist for us.
+echo "Archiving YTMusic (development export — takes a few minutes)…"
+rm -rf "$OTA" && mkdir -p "$OTA"
+cat > "$OTA/export-options.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>items</key>
-  <array>
-    <dict>
-      <key>assets</key>
-      <array>
-        <dict>
-          <key>kind</key><string>software-package</string>
-          <key>url</key><string>$BASE/YTMusic.ipa</string>
-        </dict>
-      </array>
-      <key>metadata</key>
-      <dict>
-        <key>bundle-identifier</key><string>com.ytmtui.YTMusic</string>
-        <key>bundle-version</key><string>$VER</string>
-        <key>kind</key><string>software</string>
-        <key>title</key><string>YTMusic</string>
-      </dict>
-    </dict>
-  </array>
+  <key>method</key><string>development</string>
+  <key>teamID</key><string>$TEAM</string>
+  <key>compileBitcode</key><false/>
+  <key>thinning</key><string>&lt;none&gt;</string>
+  <key>manifest</key>
+  <dict>
+    <key>appURL</key><string>$BASE/YTMusic.ipa</string>
+    <key>displayImageURL</key><string>$BASE/icon.png</string>
+    <key>fullSizeImageURL</key><string>$BASE/icon.png</string>
+  </dict>
 </dict>
 </plist>
 EOF
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild archive \
+    -project YTMusic.xcodeproj -scheme YTMusic \
+    -destination "generic/platform=iOS" \
+    -archivePath "$OTA/YTMusic.xcarchive" \
+    -derivedDataPath build \
+    ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+    CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$TEAM" \
+    -allowProvisioningUpdates -quiet
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -exportArchive \
+    -archivePath "$OTA/YTMusic.xcarchive" \
+    -exportPath "$OTA" \
+    -exportOptionsPlist "$OTA/export-options.plist" \
+    -allowProvisioningUpdates -quiet
+
+ARCHIVED_APP="$OTA/YTMusic.xcarchive/Products/Applications/YTMusic.app"
+VER=$(defaults read "$PWD/$ARCHIVED_APP/Info" CFBundleShortVersionString)
+# Manifest display icon (required keys) — reuse the app icon.
+cp "$ARCHIVED_APP/AppIcon60x60@2x.png" "$OTA/icon.png" 2>/dev/null \
+    || cp "$ARCHIVED_APP"/AppIcon*.png "$OTA/icon.png" 2>/dev/null || true
 
 cat > "$OTA/index.html" <<EOF
 <!doctype html>
