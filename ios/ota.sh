@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
-# OTA-install the current device build over Tailscale — for when the devices are
-# NOT on the home Wi-Fi. devicectl needs same-LAN mDNS + Apple's trust tunnel,
-# but Apple's itms-services OTA install only needs an HTTPS URL with a valid
-# cert, which `tailscale serve` provides (*.ts.net / Let's Encrypt).
+# OTA-install the current build over Tailscale — for when the devices are NOT
+# on the home Wi-Fi. devicectl needs same-LAN mDNS + Apple's trust tunnel, but
+# Apple's itms-services OTA install only needs an HTTPS URL with a valid cert,
+# which `tailscale serve` provides (*.ts.net / Let's Encrypt).
+#
+# ⚠ REQUIRES A PAID Apple Developer membership. Free personal-team profiles
+# are marked LocalProvision=true and iOS only accepts them via the direct
+# developer-tools channel (Xcode/devicectl) — itms-services shows the install
+# progress bar, then silently rolls back to the previous version. Verified
+# 2026-07-16 (perfect archive+development-export ipa, correct manifest, both
+# attempts rolled back; the profile flag is the blocker). With a paid team
+# (ad-hoc or development profile) this script works as-is.
 #
 #   ./ota.sh                archive + development-export an OTA ipa and serve
 #                           it on the tailnet (port 8445, tailnet-only)
