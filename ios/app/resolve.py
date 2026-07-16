@@ -223,9 +223,56 @@ def _probe_jsc(url: str) -> dict:
 # anonymous mobile ones: armed for 30 min whenever the mobile path just failed
 # retriably or a resolved URL 403'd during playback (PO-token enforcement makes
 # anonymous mobile URLs extract fine yet die at the CDN — keep minting them and
-# every track stalls 8-48s or worse).
+# every track stalls 8-48s or worse). A second arm in one app session means the
+# enforcement is chronic, not a blip — latch for the rest of the session.
 _prefer_default_until = 0.0
+_latch_arms = 0
 _LATCH_SECONDS = 1800
+
+# Videos confirmed unavailable (removed/private/region-blocked): NO client can
+# ever resolve them, so cache the verdict briefly and answer repeat attempts
+# instantly instead of burning ~8s of network per tap.
+_dead_ids = {}          # video id -> verdict expiry (unix time)
+_DEAD_TTL = 600
+
+_UNAVAILABLE_MARKERS = (
+    "video is not available", "video unavailable", "private video",
+    "has been removed", "account associated with this video has been terminated",
+)
+
+
+def _is_unavailable(err: str) -> bool:
+    low = err.lower()
+    return any(m in low for m in _UNAVAILABLE_MARKERS)
+
+
+def _vid_of(url: str) -> str:
+    if "watch?v=" in url:
+        return url.split("watch?v=")[-1].split("&")[0]
+    return "" if url.startswith("http") else url
+
+
+def _err_json(msg: str) -> str:
+    """Failure result in the FULL track shape — Swift's Track decoder requires
+    every field, so a bare {_ok,_error} dict never decodes and the UI could only
+    show a generic message instead of the real reason."""
+    return json.dumps({
+        "id": "", "title": "", "uploader": "", "duration": 0,
+        "url": "", "stream_url": "", "thumbnail": "",
+        "_ok": False, "_error": msg,
+    })
+
+
+def _mark_dead(url: str) -> None:
+    vid = _vid_of(url)
+    if vid:
+        _dead_ids[vid] = time.time() + _DEAD_TTL
+        _log("resolve", f"{vid} marked unavailable for {_DEAD_TTL // 60} min")
+
+
+def _known_dead(url: str) -> bool:
+    vid = _vid_of(url)
+    return bool(vid) and _dead_ids.get(vid, 0) > time.time()
 
 
 def _base_opts():
@@ -269,7 +316,16 @@ def _extract_default(url, t0):
 
 
 def _arm_latch(reason):
-    global _prefer_default_until
+    global _prefer_default_until, _latch_arms
+    _latch_arms += 1
+    if _latch_arms >= 2:
+        # Re-armed after expiring once: enforcement is chronic here — the last
+        # expiry let the mobile path mint another 403-poisoned URL within
+        # minutes. Hold for the rest of this app session.
+        if _prefer_default_until < time.time() + 86400:
+            _log("resolve", f"preferring default clients for the rest of this session ({reason})")
+        _prefer_default_until = time.time() + 7 * 86400
+        return
     if time.time() >= _prefer_default_until:
         _log("resolve", f"preferring default clients for {_LATCH_SECONDS // 60} min ({reason})")
     _prefer_default_until = time.time() + _LATCH_SECONDS
@@ -279,6 +335,8 @@ def resolve(url: str) -> str:
     """Resolve a YouTube URL/ID to a JSON track dict (string) with a stream_url."""
     if not url.startswith("http"):
         url = f"https://www.youtube.com/watch?v={url}"
+    if _known_dead(url):
+        return _err_json("This video is not available (removed or blocked).")
     t0 = time.time()
     # While the latch is armed the mobile path is known-bad — reverse the order.
     if time.time() < _prefer_default_until:
@@ -287,17 +345,25 @@ def resolve(url: str) -> str:
         except Exception as e:
             err = f"{type(e).__name__}: {e}"
             _log("resolve", f"default (latched) failed: {err[:200]}")
+            if _is_unavailable(err):
+                # No client can resolve a removed/blocked video — don't bother
+                # the mobile clients, just remember the verdict.
+                _mark_dead(url)
+                return _err_json(err)
             try:
                 return _extract_mobile(url, t0)
             except Exception as e2:
                 err = f"{type(e2).__name__}: {e2}"
                 _log("resolve", f"mobile fallback failed: {err[:200]}")
-            return json.dumps({"_ok": False, "_error": err})
+            return _err_json(err)
     try:
         return _extract_mobile(url, t0)
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         _log("resolve", f"anonymous failed: {err[:200]}")
+        if _is_unavailable(err):
+            _mark_dead(url)
+            return _err_json(err)
         # The anonymous mobile clients fail in two known ways:
         #  - Music-Premium-only tracks reject them ("premium members");
         #  - YouTube's SABR-only / PO-token experiments strip every direct format
@@ -324,7 +390,9 @@ def resolve(url: str) -> str:
             except Exception as e2:
                 err = f"{type(e2).__name__}: {e2}"
                 _log("resolve", f"default-client retry failed: {err[:200]}")
-        return json.dumps({"_ok": False, "_error": err})
+                if _is_unavailable(err):
+                    _mark_dead(url)
+        return _err_json(err)
 
 
 def resolve_fresh(url: str) -> str:
@@ -333,6 +401,8 @@ def resolve_fresh(url: str) -> str:
     just mint another doomed URL — and arm the latch for the next tracks."""
     if not url.startswith("http"):
         url = f"https://www.youtube.com/watch?v={url}"
+    if _known_dead(url):
+        return _err_json("This video is not available (removed or blocked).")
     _arm_latch("playback failed on a resolved URL")
     t0 = time.time()
     try:
@@ -340,7 +410,9 @@ def resolve_fresh(url: str) -> str:
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         _log("resolve", f"fresh re-resolve failed: {err[:200]}")
-        return json.dumps({"_ok": False, "_error": err})
+        if _is_unavailable(err):
+            _mark_dead(url)
+        return _err_json(err)
 
 
 def _diag_resolve(url: str) -> None:

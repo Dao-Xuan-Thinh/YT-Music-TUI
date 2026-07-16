@@ -11,6 +11,11 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.5", date: "2026-07", notes: [
+            "Dead uploads self-heal: when a saved track's video was removed, the app searches for the song's living copy, plays it, and fixes your library/playlists to point at it",
+            "Unavailable videos answer instantly (no more 8s of retrying every tap) and show the real reason",
+            "If YouTube throttling comes back after the 30-min window, the reliable pipeline stays on for the whole session",
+        ]),
         ChangelogEntry(version: "1.4", date: "2026-07", notes: [
             "Streams that die mid-song (403) now re-resolve themselves and pick up where the audio broke",
             "Prefetched stream links expire after 20 minutes instead of living forever",

@@ -112,6 +112,29 @@ final class LibraryStore: ObservableObject {
         if recent.count != before { saveLibrary() }
     }
 
+    /// Self-healing library: a YT Music upload died (removed/blocked) and playback
+    /// found a living replacement by search — rewrite every stored reference so
+    /// liked/playlists/recents don't keep pointing at the corpse.
+    func replaceTrack(deadID: String, with sub: SearchResult) {
+        guard !deadID.isEmpty, !sub.id.isEmpty, deadID != sub.id else { return }
+        var changed = false
+        func swapIn(_ list: inout [SearchResult]) {
+            for i in list.indices where list[i].id == deadID {
+                list[i] = sub
+                changed = true
+            }
+        }
+        swapIn(&liked)
+        swapIn(&recent)
+        for p in playlists.indices {
+            for i in playlists[p].tracks.indices where playlists[p].tracks[i].id == deadID {
+                playlists[p].tracks[i] = sub
+                changed = true
+            }
+        }
+        if changed { saveLibrary() }
+    }
+
     func clearRecent() {
         if !recent.isEmpty { recent.removeAll(); saveLibrary() }
     }

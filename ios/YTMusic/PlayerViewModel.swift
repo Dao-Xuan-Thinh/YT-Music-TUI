@@ -59,6 +59,7 @@ final class PlayerViewModel: ObservableObject {
     private var resolveWorkItem: DispatchWorkItem?   // pending debounced resolve (cancellable)
     private var consecFails = 0          // consecutive dead tracks (3 stops the queue)
     private var failRetriedID: String?   // track already given its one fresh re-resolve
+    private var searchRecoveryTried = false  // one replacement-search per play attempt
 
     init() {
         source = AppConfig.shared.defaultSource
@@ -228,6 +229,7 @@ final class PlayerViewModel: ObservableObject {
 
     private func play(at idx: Int, resumeAt: Double = 0) {
         pendingResume = nil   // any explicit play supersedes the armed launch-resume
+        searchRecoveryTried = false
         // Invalidate any in-flight resolve up front — even when this selection is served from
         // the prefetch cache — so a slow earlier resolve can't complete and hijack playback.
         resolveToken &+= 1
@@ -271,6 +273,15 @@ final class PlayerViewModel: ObservableObject {
                 guard let t = track, t.ok, t.streamAVURL != nil else {
                     let msg = track?.error ?? "Could not resolve a playable stream"
                     DebugLog.shared.log("resolve", "\(id) failed: \(msg)")
+                    // A removed/blocked UPLOAD is usually not a removed SONG —
+                    // YT Music re-uploads tracks under new ids all the time.
+                    // Do what the user would: search title+artist, play the
+                    // living copy, and heal the stored references.
+                    if !self.searchRecoveryTried, Self.isUnavailable(msg) {
+                        self.searchRecoveryTried = true
+                        self.recoverBySearch(deadID: id, token: token)
+                        return
+                    }
                     self.errorMsg = msg; return
                 }
                 self.startPlaying(t, startAt: resumeAt)
@@ -320,6 +331,52 @@ final class PlayerViewModel: ObservableObject {
                     return
                 }
                 self.startPlaying(t, startAt: pos)
+            }
+        }
+    }
+
+    private static func isUnavailable(_ msg: String) -> Bool {
+        let low = msg.lowercased()
+        return low.contains("not available") || low.contains("unavailable")
+            || low.contains("private video") || low.contains("has been removed")
+    }
+
+    /// The upload died — find the song's living copy by searching title + artist,
+    /// play it, and rewrite the queue row + library references to the new id.
+    private func recoverBySearch(deadID: String, token: Int) {
+        guard let idx = queueIndex, queue.indices.contains(idx),
+              queue[idx].id == deadID else {
+            errorMsg = "This video is not available (removed or blocked)."
+            return
+        }
+        let dead = queue[idx]
+        DebugLog.shared.log("resolve",
+            "\(deadID) unavailable — searching for a replacement upload")
+        resolving = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let c = python_search("\(dead.title) \(dead.uploader)", "ytm")
+            let json = c.map { String(cString: $0) } ?? "[]"
+            if let c { free(c) }
+            let sub = SearchResult.decodeList(json).first {
+                $0.id != deadID && !$0.isPlaylist
+                    && (dead.duration == 0 || $0.duration == 0
+                        || abs($0.duration - dead.duration) <= 10)
+            }
+            DispatchQueue.main.async {
+                guard token == self.resolveToken else { return }
+                guard let sub else {
+                    self.resolving = false
+                    self.errorMsg = "This video is unavailable — no replacement found."
+                    return
+                }
+                DebugLog.shared.log("resolve",
+                    "replaced \(deadID) with \(sub.id) (\(sub.title))")
+                // Heal every reference: the live queue row + liked/playlists/recent.
+                for i in self.queue.indices where self.queue[i].id == deadID {
+                    self.queue[i] = sub
+                }
+                self.library.replaceTrack(deadID: deadID, with: sub)
+                self.resolveAndPlay(id: sub.id, resumeAt: 0, token: token)
             }
         }
     }
