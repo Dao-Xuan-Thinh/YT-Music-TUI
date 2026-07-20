@@ -163,6 +163,15 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
   calls `python_set_auth` when `python_ready()` is already 1 (never cold-start
   CPython in a ~30s budget). Test with lldb
   `_simulateLaunchForTaskWithIdentifier:`.
+- **watchOS remote is a frame, NOT wired into the build.** `ios/WatchApp/` +
+  the `YTMusicWatch` target exist, and the phone half (`WatchLink`, WCSession
+  status/playpause/next/prev) ships in the app. But this Mac has the watchOS
+  *SDK* without the *runtime*, and embedding the watch app makes xcodebuild
+  refuse EVERY iOS build ("watchOS 26.5 must be installed in order to run the
+  scheme") — which would break device installs. So the target is intentionally
+  left out of the app's `dependencies`. To finish it: `xcodebuild
+  -downloadPlatform watchOS`, re-add `- target: YTMusicWatch` + `embed: true`
+  under the app target, then build. Until then the watch half is uncompiled.
 - **`./build.sh sim` never exits**: its last step is `simctl launch --console-pty`,
   which attaches to the app console forever. The build itself is done well before
   that — don't wait on the script. Also `simctl`/`devicectl` need

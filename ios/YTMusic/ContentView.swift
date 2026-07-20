@@ -82,6 +82,8 @@ struct ContentView: View {
             UpdateChecker.shared.check()
             UpdateChecker.shared.announceBuildIfNew()
             StatsStore.shared.sync()   // pull other devices' listen time
+            WatchLink.shared.vm = vm   // watch remote (no-op without a watch)
+            WatchLink.shared.start()
         }
         .alert("Save playlist", isPresented: $showSavePlaylist) {
             TextField("name", text: $newPlaylistName)
