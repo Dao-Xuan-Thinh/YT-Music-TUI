@@ -1870,17 +1870,20 @@ class YTMApp(App):
             return
         self._stats_syncing = True
         self._update_footer()
-        threading.Thread(target=self._stats_sync_worker, args=(announce,),
+        # Snapshot the library HERE, on the UI thread: Library isn't thread-safe,
+        # and exporting from the worker could copy a dict the UI is mutating
+        # (liking a track mid-sync) — that raises "dictionary changed size".
+        export = self._lib.export_sync(device_name=self._config.stats_device_name)
+        threading.Thread(target=self._stats_sync_worker, args=(announce, export),
                          daemon=True).start()
 
-    def _stats_sync_worker(self, announce: bool = False) -> None:
+    def _stats_sync_worker(self, announce: bool = False, export=None) -> None:
         # The library blob (liked/playlists/sessions + tombstones) rides in our
         # gist file; the sync returns everyone's merged state to apply locally.
         ok, msg, new_id, merged_lib = self._stats.sync(
             self._config.stats_token, self._config.stats_device_id,
             self._config.stats_device_name, self._config.stats_gist_id,
-            library_export=self._lib.export_sync(
-                device_name=self._config.stats_device_name))
+            library_export=export)
 
         def _apply():
             self._stats_syncing = False
