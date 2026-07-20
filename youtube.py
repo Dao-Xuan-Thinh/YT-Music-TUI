@@ -423,6 +423,36 @@ def ytm_home_public(limit=3):
     return _parse_home(data)
 
 
+def ytm_library(limit=50):
+    """The signed-in account's YouTube Music library playlists.
+
+    Returns [{'name', 'playlistId', 'count'}] (count None when YTM doesn't
+    report one). [] when signed out. Raises on network errors so the caller
+    can distinguish "empty library" from "call failed". The account's Liked
+    Music is the special playlist id 'LM' (loadable via ytm_playlist) — not
+    included here; the UI adds its own row for it.
+    """
+    if not is_authenticated():
+        return []
+    with _ytm_lock:
+        pls = _get_ytm().get_library_playlists(limit=limit) or []
+    out = []
+    for p in pls:
+        pid = p.get('playlistId') or ''
+        # Skip the auto "Liked Music"/"Episodes for later" style entries that
+        # duplicate the explicit rows the UI adds (LM) or aren't music (SE).
+        if not pid or pid in ('LM', 'SE'):
+            continue
+        count = p.get('count')
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            count = None
+        out.append({'name': p.get('title') or 'Playlist',
+                    'playlistId': pid, 'count': count})
+    return out
+
+
 def _parse_ytm_duration(t):
     """ytmusicapi gives duration_seconds, or 'duration' as 'M:SS'/'H:MM:SS'."""
     ds = t.get('duration_seconds')

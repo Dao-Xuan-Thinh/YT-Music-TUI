@@ -1099,8 +1099,8 @@ class HomeScreen(Screen):
         'tab-recent':  '#list-recent',
     }
     # Left/right tab cycle order (matches the TabPane order in compose()).
-    _TAB_ORDER = ['tab-resume', 'tab-foryou', 'tab-folders', 'tab-liked',
-                  'tab-recent', 'tab-stats']
+    _TAB_ORDER = ['tab-resume', 'tab-foryou', 'tab-ytmusic', 'tab-folders',
+                  'tab-liked', 'tab-recent', 'tab-stats']
 
     CSS = """
     HomeScreen { align: center middle; }
@@ -1189,6 +1189,11 @@ class HomeScreen(Screen):
                     placeholder = ListItem(Label('Loading your feed…'))
                     placeholder.payload = None
                     yield ListView(placeholder, id='list-foryou')
+                with TabPane('YT Music', id='tab-ytmusic'):
+                    # The signed-in account's real YTM library (on_mount loader).
+                    ph = ListItem(Label('Loading your YouTube Music library…'))
+                    ph.payload = None
+                    yield ListView(ph, id='list-ytmusic')
                 with TabPane('Folders', id='tab-folders'):
                     yield ListView(*self._folder_items(), id='list-folders')
                 with TabPane('Liked', id='tab-liked'):
@@ -1208,6 +1213,7 @@ class HomeScreen(Screen):
             pass
         # Fetch the (personalized when signed in) home feed off the UI thread.
         threading.Thread(target=self._load_foryou, daemon=True).start()
+        threading.Thread(target=self._load_ytlib, daemon=True).start()
 
     def _status(self, msg: str) -> None:
         """Show a one-line feedback message in the home box (best-effort)."""
@@ -1346,6 +1352,52 @@ class HomeScreen(Screen):
                     row.payload = {'kind': 'foryou_playlist',
                                    'playlistId': it['playlistId']}
                 items.append(row)
+        lv.extend(items)
+
+    def _load_ytlib(self) -> None:
+        """Fetch the signed-in account's YTM library playlists (daemon thread)."""
+        err = None
+        playlists = []
+        signed_in = youtube.is_authenticated()
+        if signed_in:
+            try:
+                playlists = youtube.ytm_library()
+            except Exception as exc:
+                err = f'{type(exc).__name__}: {exc}'
+        try:
+            self.app.call_from_thread(self._populate_ytlib, playlists,
+                                      signed_in, err)
+        except Exception:
+            pass   # screen dismissed before the library arrived
+
+    def _populate_ytlib(self, playlists, signed_in, err=None) -> None:
+        try:
+            lv = self.query_one('#list-ytmusic', ListView)
+        except NoMatches:
+            return
+        lv.clear()
+        if not signed_in:
+            row = ListItem(Label('Sign in (press g) to see your YouTube Music '
+                                 'library — playlists and likes.'))
+            row.payload = None
+            lv.append(row)
+            return
+        if err:
+            row = ListItem(Label(f'Library error: {err}  —  press g to check '
+                                 'sign-in', markup=False))
+            row.payload = None
+            lv.append(row)
+            return
+        items = []
+        likes = ListItem(Label('♥ Your Likes'))
+        likes.payload = {'kind': 'foryou_playlist', 'playlistId': 'LM'}
+        items.append(likes)
+        for p in playlists:
+            count = f"  ({p['count']})" if p.get('count') else ''
+            row = ListItem(Label(f"♫ {p['name']}{count}", markup=False))
+            row.payload = {'kind': 'foryou_playlist',
+                           'playlistId': p['playlistId']}
+            items.append(row)
         lv.extend(items)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
