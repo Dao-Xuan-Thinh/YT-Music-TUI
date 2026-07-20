@@ -13,7 +13,7 @@ import threading
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
 from textual.reactive import reactive
@@ -28,6 +28,7 @@ from textual.theme import Theme
 import youtube
 import player as player_module
 import updater
+import mediakeys
 import stats as stats_module
 from config import Config, _expand
 from library import Library
@@ -193,6 +194,7 @@ KEYS_HELP = [
     ('Enter',    'Play selected track'),
     ('Space',    'Pause / Resume'),
     ('n',        'Next track'),
+    ('b',        'Previous track (restarts first when mid-song)'),
     ('p',        'Play highlighted track next'),
     ('a',        'Add highlighted track to queue'),
     ('x',        'Stop playback'),
@@ -323,7 +325,8 @@ class SettingsScreen(ModalScreen):
         with Vertical(id='settings-box'):
             yield Label('Listen-stats sync', id='settings-title')
             if self._stats is not None:
-                yield Static(Text(_stats_report(self._stats, self._cfg)),
+                yield Static(Text(_stats_report(self._stats, self._cfg,
+                                                top=False)),
                              id='sync-stats')
             yield Label('GitHub token (classic: gist scope · fine-grained: '
                         'Gists read & write):')
@@ -343,7 +346,7 @@ class SettingsScreen(ModalScreen):
             return
         try:
             self.query_one('#sync-stats', Static).update(
-                Text(_stats_report(self._stats, self._cfg)))
+                Text(_stats_report(self._stats, self._cfg, top=False)))
         except NoMatches:
             pass
 
@@ -1046,9 +1049,10 @@ class AccountScreen(ModalScreen):
 
 # ── Home screen ─────────────────────────────────────────────────────────────────
 
-def _stats_report(stats, cfg, width=34):
+def _stats_report(stats, cfg, width=34, top=True):
     """Multi-line plain-text listen-time report: 7-day bar graph, totals,
-    per-device split, sync status. Shared by the home Stats tab and the
+    per-device split, monthly top charts (top=False skips them — the sync
+    panel stays compact), sync status. Shared by the home Stats tab and the
     sync panel (s)."""
     dev_id = cfg.stats_device_id if cfg else ''
     dev_name = (cfg.stats_device_name if cfg else '') or 'this device'
@@ -1073,6 +1077,18 @@ def _stats_report(stats, cfg, width=34):
     if devices:
         lines.append('  ·  '.join(f'{name} {fmt(total)}'
                                   for name, total in devices))
+    top_artists = stats.top_artists(5, own_device_id=dev_id) if top else []
+    top_tracks = stats.top_tracks(5, own_device_id=dev_id) if top else []
+    if top_artists or top_tracks:
+        lines.append('')
+        lines.append('Top this month')
+        for i, (artist, secs) in enumerate(top_artists, 1):
+            lines.append(f'  {i}. {artist[:34]:<34}  {fmt(secs)}')
+        if top_tracks:
+            lines.append('')
+        for i, (title, artist, secs) in enumerate(top_tracks, 1):
+            label = f'{title} — {artist}' if artist else title
+            lines.append(f'  {i}. {label[:34]:<34}  {fmt(secs)}')
     lines.append('')
     lines.append(stats.status_line(bool(cfg and cfg.stats_token)))
     return '\n'.join(lines)
@@ -1099,8 +1115,8 @@ class HomeScreen(Screen):
         'tab-recent':  '#list-recent',
     }
     # Left/right tab cycle order (matches the TabPane order in compose()).
-    _TAB_ORDER = ['tab-resume', 'tab-foryou', 'tab-folders', 'tab-liked',
-                  'tab-recent', 'tab-stats']
+    _TAB_ORDER = ['tab-resume', 'tab-foryou', 'tab-ytmusic', 'tab-folders',
+                  'tab-liked', 'tab-recent', 'tab-stats']
 
     CSS = """
     HomeScreen { align: center middle; }
@@ -1145,7 +1161,11 @@ class HomeScreen(Screen):
         for s in self._lib.sessions():
             title = s.get('title') or 'session'
             n = len(s.get('queue', []))
-            it = ListItem(Label(f"▸ {title}  ·  {n} tracks  ·  {_ago(s.get('ts'))}"))
+            # Sessions synced in from another device carry its name.
+            dev = f"  ·  {s['device']}" if s.get('device') else ''
+            it = ListItem(Label(
+                f"▸ {title}  ·  {n} tracks  ·  {_ago(s.get('ts'))}{dev}",
+                markup=False))
             it.payload = {'kind': 'session', 'id': s.get('id')}
             items.append(it)
         return items or [self._empty_item()]
@@ -1189,6 +1209,11 @@ class HomeScreen(Screen):
                     placeholder = ListItem(Label('Loading your feed…'))
                     placeholder.payload = None
                     yield ListView(placeholder, id='list-foryou')
+                with TabPane('YT Music', id='tab-ytmusic'):
+                    # The signed-in account's real YTM library (on_mount loader).
+                    ph = ListItem(Label('Loading your YouTube Music library…'))
+                    ph.payload = None
+                    yield ListView(ph, id='list-ytmusic')
                 with TabPane('Folders', id='tab-folders'):
                     yield ListView(*self._folder_items(), id='list-folders')
                 with TabPane('Liked', id='tab-liked'):
@@ -1196,7 +1221,8 @@ class HomeScreen(Screen):
                 with TabPane('Recent', id='tab-recent'):
                     yield ListView(*self._recent_items(), id='list-recent')
                 with TabPane('Stats', id='tab-stats'):
-                    yield Static('', id='stats-view')
+                    with VerticalScroll():
+                        yield Static('', id='stats-view')
 
             yield Button('Search / Browse', id='home-search', variant='primary')
             yield Label('', id='home-status')
@@ -1208,6 +1234,7 @@ class HomeScreen(Screen):
             pass
         # Fetch the (personalized when signed in) home feed off the UI thread.
         threading.Thread(target=self._load_foryou, daemon=True).start()
+        threading.Thread(target=self._load_ytlib, daemon=True).start()
 
     def _status(self, msg: str) -> None:
         """Show a one-line feedback message in the home box (best-effort)."""
@@ -1348,6 +1375,52 @@ class HomeScreen(Screen):
                 items.append(row)
         lv.extend(items)
 
+    def _load_ytlib(self) -> None:
+        """Fetch the signed-in account's YTM library playlists (daemon thread)."""
+        err = None
+        playlists = []
+        signed_in = youtube.is_authenticated()
+        if signed_in:
+            try:
+                playlists = youtube.ytm_library()
+            except Exception as exc:
+                err = f'{type(exc).__name__}: {exc}'
+        try:
+            self.app.call_from_thread(self._populate_ytlib, playlists,
+                                      signed_in, err)
+        except Exception:
+            pass   # screen dismissed before the library arrived
+
+    def _populate_ytlib(self, playlists, signed_in, err=None) -> None:
+        try:
+            lv = self.query_one('#list-ytmusic', ListView)
+        except NoMatches:
+            return
+        lv.clear()
+        if not signed_in:
+            row = ListItem(Label('Sign in (press g) to see your YouTube Music '
+                                 'library — playlists and likes.'))
+            row.payload = None
+            lv.append(row)
+            return
+        if err:
+            row = ListItem(Label(f'Library error: {err}  —  press g to check '
+                                 'sign-in', markup=False))
+            row.payload = None
+            lv.append(row)
+            return
+        items = []
+        likes = ListItem(Label('♥ Your Likes'))
+        likes.payload = {'kind': 'foryou_playlist', 'playlistId': 'LM'}
+        items.append(likes)
+        for p in playlists:
+            count = f"  ({p['count']})" if p.get('count') else ''
+            row = ListItem(Label(f"♫ {p['name']}{count}", markup=False))
+            row.payload = {'kind': 'foryou_playlist',
+                           'playlistId': p['playlistId']}
+            items.append(row)
+        lv.extend(items)
+
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         payload = getattr(event.item, 'payload', None)
         if not payload:
@@ -1385,6 +1458,12 @@ class HomeScreen(Screen):
             if ok:
                 on_yes()
         self.app.push_screen(ConfirmScreen(message), _cb)
+
+    def refresh_library(self) -> None:
+        """Re-render the library-backed tabs after a cross-device sync applied
+        remote changes (new likes/playlists/sessions from other devices)."""
+        for pane in ('tab-resume', 'tab-folders', 'tab-liked'):
+            self._reload_tab(pane)
 
     def _reload_tab(self, pane_id) -> None:
         """Rebuild a single tab's ListView from the current library state."""
@@ -1528,6 +1607,7 @@ class YTMApp(App):
         Binding('f', 'filter', 'Filter', show=False),
         Binding('space', 'toggle_pause', 'Pause', show=False),
         Binding('n', 'next_track', 'Next', show=False),
+        Binding('b', 'prev_track', 'Previous', show=False),
         Binding('a', 'add_queue', '+Queue', show=False),
         Binding('p', 'play_next', 'Play next', show=False),
         Binding('x', 'stop', 'Stop', show=False),
@@ -1588,6 +1668,7 @@ class YTMApp(App):
             import platform
             self._config.stats_device_name = platform.node().split('.')[0] or 'desktop'
         self._stats_last = None   # (queue_idx, position) at the previous poll tick
+        self._mediakeys = None    # OS media-keys backend (set by _init_player)
         self._stats_syncing = False   # a gist sync is in flight (footer ⟳)
         # One-time migration: earlier builds stored the YTM account cookie dump in
         # `cookies_file`, which is ALSO the yt-dlp/mpv streaming cookie file. An
@@ -1739,6 +1820,15 @@ class YTMApp(App):
             )
         self._player._ensure_mpv_running()
         self._apply_volume(save=False)
+        # OS media keys + now-playing panel (Control Center / MPRIS / SMTC).
+        # Optional: returns None when the per-OS dep isn't installed — the app
+        # behaves exactly as before. Callbacks arrive on backend threads.
+        self._mediakeys = mediakeys.start({
+            'toggle_pause': lambda: self.call_from_thread(self.action_toggle_pause),
+            'next': lambda: self.call_from_thread(self.action_next_track),
+            'previous': lambda: self.call_from_thread(self.action_prev_track),
+            'stop': lambda: self.call_from_thread(self.action_stop),
+        })
 
     # ── Self-update ────────────────────────────────────────────────────────
 
@@ -1784,9 +1874,13 @@ class YTMApp(App):
                          daemon=True).start()
 
     def _stats_sync_worker(self, announce: bool = False) -> None:
-        ok, msg, new_id = self._stats.sync(
+        # The library blob (liked/playlists/sessions + tombstones) rides in our
+        # gist file; the sync returns everyone's merged state to apply locally.
+        ok, msg, new_id, merged_lib = self._stats.sync(
             self._config.stats_token, self._config.stats_device_id,
-            self._config.stats_device_name, self._config.stats_gist_id)
+            self._config.stats_device_name, self._config.stats_gist_id,
+            library_export=self._lib.export_sync(
+                device_name=self._config.stats_device_name))
 
         def _apply():
             self._stats_syncing = False
@@ -1796,6 +1890,13 @@ class YTMApp(App):
             if announce:
                 self._set_status('Stats sync: connected ✓' if ok
                                  else f'Stats sync: {msg}')
+            # Apply the merged library on the UI thread (Library isn't
+            # thread-safe) and refresh any home tabs showing it.
+            if ok and merged_lib is not None:
+                changed = self._lib.apply_sync(
+                    merged_lib, own_device_name=self._config.stats_device_name)
+                if changed and isinstance(self.screen, HomeScreen):
+                    self.screen.refresh_library()
             if isinstance(self.screen, HomeScreen):
                 self.screen.refresh_stats()
             # Live-refresh the sync panel's graph if it's open.
@@ -2206,10 +2307,14 @@ class YTMApp(App):
         if idx < 0 or idx >= len(self._queue):
             return
         track = self._queue[idx]
-        # A premium retry parks its direct googlevideo stream here (consumed once,
-        # never stored in track['url'] — direct URLs expire in hours and must not
-        # leak into recent/sessions/playlists via this dict).
+        # A premium retry or the gapless prefetch parks a direct googlevideo
+        # stream here (consumed once, never stored in track['url'] — direct URLs
+        # expire in hours and must not leak into recent/sessions/playlists).
         direct_url = track.pop('_direct_url', None)
+        direct_ts = track.pop('_direct_ts', None)
+        if direct_url and direct_ts and time.monotonic() - direct_ts > 1800:
+            direct_url = None   # stale pre-resolve — let mpv extract fresh
+        self._prefetch_gen = getattr(self, '_prefetch_gen', 0) + 1
         self._queue_idx = idx
         self.now_playing = f'{track["title"]}  —  {track["uploader"]}'
         self._lib.add_recent(track)
@@ -2227,6 +2332,43 @@ class YTMApp(App):
                 self.call_from_thread(self._set_status, 'Playing')
             except Exception as exc:
                 self.call_from_thread(self._set_status, f'Playback error: {exc}')
+
+        threading.Thread(target=_run, daemon=True).start()
+        self._prefetch_next()
+
+    def _prefetch_next(self) -> None:
+        """Gapless: pre-resolve the NEXT queue track's direct stream URL in the
+        background, so auto-advance hands mpv an already-extracted googlevideo
+        URL instead of a watch URL (skips the ~2-4s yt-dlp extraction). The URL
+        rides the one-shot `_direct_url` key — consumed by _play_queue_item,
+        stripped by library._sanitize_tracks, expired after 30 min — so it can
+        never be persisted or go stale mid-session."""
+        if self.repeat == 'one' or not self._queue:
+            return
+        nxt = self._queue_idx + 1
+        if nxt >= len(self._queue):
+            if self.repeat != 'all':
+                return
+            nxt = 0
+        if nxt == self._queue_idx:
+            return
+        track = self._queue[nxt]
+        url = track.get('url') or ''
+        if not url.startswith('http'):
+            return          # offline/local file — nothing to pre-resolve
+        if track.get('_direct_url') and \
+                time.monotonic() - track.get('_direct_ts', 0) < 1500:
+            return          # already prefetched and still fresh
+        gen = self._prefetch_gen
+
+        def _run():
+            res = youtube.resolve_stream(track.get('id') or url)
+            # Drop the result if the queue was replaced while we resolved (the
+            # dict we'd write to is orphaned anyway — this just avoids noise).
+            if res is None or gen != self._prefetch_gen:
+                return
+            track['_direct_url'] = res[1]
+            track['_direct_ts'] = time.monotonic()
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -2294,6 +2436,7 @@ class YTMApp(App):
                 # anonymously. Expires after a few hours — handed over out-of-band
                 # (_direct_url, consumed once) so it can never be persisted.
                 track['_direct_url'] = res[1]
+                track['_direct_ts'] = time.monotonic()
                 self.call_from_thread(self._play_queue_item, idx)
             else:
                 self.call_from_thread(
@@ -2318,7 +2461,9 @@ class YTMApp(App):
             if prev is not None and prev[0] == self._queue_idx:
                 delta = self.position - prev[1]
                 if 0 < delta <= 2.0:
-                    self._stats.add(delta)
+                    track = (self._queue[self._queue_idx]
+                             if 0 <= self._queue_idx < len(self._queue) else None)
+                    self._stats.add(delta, track=track)
             self._stats_last = (self._queue_idx, self.position)
         else:
             self._stats_last = None
@@ -2349,6 +2494,15 @@ class YTMApp(App):
             return
         self._last_bar_sig = sig
         self._update_player_bar()
+        # Feed the OS now-playing panel (media keys backend); cheap + coalescing.
+        if self._mediakeys is not None:
+            if self.now_playing and 0 <= self._queue_idx < len(self._queue):
+                t = self._queue[self._queue_idx]
+                self._mediakeys.set_now_playing(
+                    t.get('title', ''), t.get('uploader', ''),
+                    self.duration, self.position, not self.is_paused)
+            else:
+                self._mediakeys.set_now_playing('', '', 0, 0, False)
 
     def _update_player_bar(self) -> None:
         pos = self.position
@@ -2506,6 +2660,16 @@ class YTMApp(App):
             else:
                 return
         self._play_queue_item(nxt)
+
+    def action_prev_track(self) -> None:
+        """Previous-track semantics like every player: restart the current
+        track when it's more than a few seconds in, else go back one."""
+        if not self._queue or self._queue_idx < 0:
+            return
+        if self.position > 3 or self._queue_idx == 0:
+            self._play_queue_item(self._queue_idx)
+        else:
+            self._play_queue_item(self._queue_idx - 1)
 
     def action_stop(self) -> None:
         self._player.stop()
@@ -3161,19 +3325,24 @@ class YTMApp(App):
     def _finalize_quit(self) -> None:
         self._save_session()
         self._stats.flush()
-        # Best-effort final sync: the data is already safe on disk, so never
-        # hold the quit hostage — 2s max, then exit regardless.
+        # Best-effort final sync (stats + the just-saved session, so another
+        # device can resume it): data is already safe on disk, so never hold
+        # the quit hostage — 3s max, then exit regardless.
         if self._config.stats_token:
             t = threading.Thread(target=self._stats.sync, args=(
                 self._config.stats_token, self._config.stats_device_id,
                 self._config.stats_device_name, self._config.stats_gist_id),
+                kwargs={'library_export': self._lib.export_sync(
+                    device_name=self._config.stats_device_name)},
                 daemon=True)
             t.start()
-            t.join(2.0)
+            t.join(3.0)
         try:
             self._config.flush()
         except Exception:
             pass
+        if self._mediakeys is not None:
+            self._mediakeys.stop()
         self._player.quit()
         self.exit()
 

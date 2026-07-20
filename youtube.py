@@ -423,6 +423,36 @@ def ytm_home_public(limit=3):
     return _parse_home(data)
 
 
+def ytm_library(limit=50):
+    """The signed-in account's YouTube Music library playlists.
+
+    Returns [{'name', 'playlistId', 'count'}] (count None when YTM doesn't
+    report one). [] when signed out. Raises on network errors so the caller
+    can distinguish "empty library" from "call failed". The account's Liked
+    Music is the special playlist id 'LM' (loadable via ytm_playlist) — not
+    included here; the UI adds its own row for it.
+    """
+    if not is_authenticated():
+        return []
+    with _ytm_lock:
+        pls = _get_ytm().get_library_playlists(limit=limit) or []
+    out = []
+    for p in pls:
+        pid = p.get('playlistId') or ''
+        # Skip the auto "Liked Music"/"Episodes for later" style entries that
+        # duplicate the explicit rows the UI adds (LM) or aren't music (SE).
+        if not pid or pid in ('LM', 'SE'):
+            continue
+        count = p.get('count')
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            count = None
+        out.append({'name': p.get('title') or 'Playlist',
+                    'playlistId': pid, 'count': count})
+    return out
+
+
 def _parse_ytm_duration(t):
     """ytmusicapi gives duration_seconds, or 'duration' as 'M:SS'/'H:MM:SS'."""
     ds = t.get('duration_seconds')
@@ -721,20 +751,23 @@ def _account_cookie_opts():
     return None
 
 
-def resolve_premium_stream(url_or_id):
-    """Authenticated single-video extraction → (track_dict, direct_url) or None.
+def resolve_stream(url_or_id, use_account=False):
+    """Single-video extraction → (track_dict, direct_url) or None.
 
     The direct googlevideo URL is playable by mpv/ffplay without re-extraction
     (it expires after a few hours — fine for a listening session, not for saved
-    sessions). Returns None when signed out or the extraction still fails.
+    sessions). Anonymous by default (used by the gapless next-track prefetch);
+    `use_account=True` adds the signed-in cookies for Premium-gated tracks and
+    returns None when signed out.
     """
-    cookie_opts = _account_cookie_opts()
-    if not cookie_opts:
-        return None
+    extra = {'format': 'bestaudio[ext=m4a]/bestaudio/best'}
+    if use_account:
+        cookie_opts = _account_cookie_opts()
+        if not cookie_opts:
+            return None
+        extra.update(cookie_opts)
     url = (url_or_id if _is_url(url_or_id)
            else f'https://www.youtube.com/watch?v={url_or_id}')
-    extra = dict(cookie_opts)
-    extra['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
     try:
         with yt_dlp.YoutubeDL(_ydl_opts(None, extra)) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -747,6 +780,11 @@ def resolve_premium_stream(url_or_id):
         return _entry_to_dict(info), direct
     except Exception:
         return None
+
+
+def resolve_premium_stream(url_or_id):
+    """Authenticated extraction for Premium-gated tracks (see resolve_stream)."""
+    return resolve_stream(url_or_id, use_account=True)
 
 
 def _entry_to_dict(e):
