@@ -2206,10 +2206,14 @@ class YTMApp(App):
         if idx < 0 or idx >= len(self._queue):
             return
         track = self._queue[idx]
-        # A premium retry parks its direct googlevideo stream here (consumed once,
-        # never stored in track['url'] — direct URLs expire in hours and must not
-        # leak into recent/sessions/playlists via this dict).
+        # A premium retry or the gapless prefetch parks a direct googlevideo
+        # stream here (consumed once, never stored in track['url'] — direct URLs
+        # expire in hours and must not leak into recent/sessions/playlists).
         direct_url = track.pop('_direct_url', None)
+        direct_ts = track.pop('_direct_ts', None)
+        if direct_url and direct_ts and time.monotonic() - direct_ts > 1800:
+            direct_url = None   # stale pre-resolve — let mpv extract fresh
+        self._prefetch_gen = getattr(self, '_prefetch_gen', 0) + 1
         self._queue_idx = idx
         self.now_playing = f'{track["title"]}  —  {track["uploader"]}'
         self._lib.add_recent(track)
@@ -2227,6 +2231,43 @@ class YTMApp(App):
                 self.call_from_thread(self._set_status, 'Playing')
             except Exception as exc:
                 self.call_from_thread(self._set_status, f'Playback error: {exc}')
+
+        threading.Thread(target=_run, daemon=True).start()
+        self._prefetch_next()
+
+    def _prefetch_next(self) -> None:
+        """Gapless: pre-resolve the NEXT queue track's direct stream URL in the
+        background, so auto-advance hands mpv an already-extracted googlevideo
+        URL instead of a watch URL (skips the ~2-4s yt-dlp extraction). The URL
+        rides the one-shot `_direct_url` key — consumed by _play_queue_item,
+        stripped by library._sanitize_tracks, expired after 30 min — so it can
+        never be persisted or go stale mid-session."""
+        if self.repeat == 'one' or not self._queue:
+            return
+        nxt = self._queue_idx + 1
+        if nxt >= len(self._queue):
+            if self.repeat != 'all':
+                return
+            nxt = 0
+        if nxt == self._queue_idx:
+            return
+        track = self._queue[nxt]
+        url = track.get('url') or ''
+        if not url.startswith('http'):
+            return          # offline/local file — nothing to pre-resolve
+        if track.get('_direct_url') and \
+                time.monotonic() - track.get('_direct_ts', 0) < 1500:
+            return          # already prefetched and still fresh
+        gen = self._prefetch_gen
+
+        def _run():
+            res = youtube.resolve_stream(track.get('id') or url)
+            # Drop the result if the queue was replaced while we resolved (the
+            # dict we'd write to is orphaned anyway — this just avoids noise).
+            if res is None or gen != self._prefetch_gen:
+                return
+            track['_direct_url'] = res[1]
+            track['_direct_ts'] = time.monotonic()
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -2294,6 +2335,7 @@ class YTMApp(App):
                 # anonymously. Expires after a few hours — handed over out-of-band
                 # (_direct_url, consumed once) so it can never be persisted.
                 track['_direct_url'] = res[1]
+                track['_direct_ts'] = time.monotonic()
                 self.call_from_thread(self._play_queue_item, idx)
             else:
                 self.call_from_thread(

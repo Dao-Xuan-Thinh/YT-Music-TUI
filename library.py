@@ -42,6 +42,7 @@ def _sanitize_tracks(tracks):
         if not isinstance(t, dict):
             continue
         t.pop('_direct_url', None)
+        t.pop('_direct_ts', None)
         url = t.get('url') or ''
         if 'googlevideo' in url and t.get('id'):
             t['url'] = f'https://www.youtube.com/watch?v={t["id"]}'

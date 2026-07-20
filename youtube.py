@@ -721,20 +721,23 @@ def _account_cookie_opts():
     return None
 
 
-def resolve_premium_stream(url_or_id):
-    """Authenticated single-video extraction → (track_dict, direct_url) or None.
+def resolve_stream(url_or_id, use_account=False):
+    """Single-video extraction → (track_dict, direct_url) or None.
 
     The direct googlevideo URL is playable by mpv/ffplay without re-extraction
     (it expires after a few hours — fine for a listening session, not for saved
-    sessions). Returns None when signed out or the extraction still fails.
+    sessions). Anonymous by default (used by the gapless next-track prefetch);
+    `use_account=True` adds the signed-in cookies for Premium-gated tracks and
+    returns None when signed out.
     """
-    cookie_opts = _account_cookie_opts()
-    if not cookie_opts:
-        return None
+    extra = {'format': 'bestaudio[ext=m4a]/bestaudio/best'}
+    if use_account:
+        cookie_opts = _account_cookie_opts()
+        if not cookie_opts:
+            return None
+        extra.update(cookie_opts)
     url = (url_or_id if _is_url(url_or_id)
            else f'https://www.youtube.com/watch?v={url_or_id}')
-    extra = dict(cookie_opts)
-    extra['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
     try:
         with yt_dlp.YoutubeDL(_ydl_opts(None, extra)) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -747,6 +750,11 @@ def resolve_premium_stream(url_or_id):
         return _entry_to_dict(info), direct
     except Exception:
         return None
+
+
+def resolve_premium_stream(url_or_id):
+    """Authenticated extraction for Premium-gated tracks (see resolve_stream)."""
+    return resolve_stream(url_or_id, use_account=True)
 
 
 def _entry_to_dict(e):
