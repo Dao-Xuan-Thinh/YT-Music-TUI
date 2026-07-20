@@ -165,13 +165,22 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
   `_simulateLaunchForTaskWithIdentifier:`.
 - **watchOS remote is a frame, NOT wired into the build.** `ios/WatchApp/` +
   the `YTMusicWatch` target exist, and the phone half (`WatchLink`, WCSession
-  status/playpause/next/prev) ships in the app. But this Mac has the watchOS
-  *SDK* without the *runtime*, and embedding the watch app makes xcodebuild
-  refuse EVERY iOS build ("watchOS 26.5 must be installed in order to run the
-  scheme") — which would break device installs. So the target is intentionally
-  left out of the app's `dependencies`. To finish it: `xcodebuild
-  -downloadPlatform watchOS`, re-add `- target: YTMusicWatch` + `embed: true`
-  under the app target, then build. Until then the watch half is uncompiled.
+  status/playpause/next/prev) ships in the app. The target is deliberately left
+  out of the app's `dependencies`: embedding it makes xcodebuild refuse EVERY
+  iOS build unless the watch app can be built AND signed, so any hiccup there
+  breaks device installs. Two prerequisites, in order:
+  1. watchOS *runtime* (not just the SDK): `xcodebuild -downloadPlatform watchOS`
+     (~4 GB). **Done on this Mac (watchOS 26.5, 2026-07-20).**
+  2. A live Apple ID session in Xcode. `com.ytmtui.YTMusic.watchkitapp` is a NEW
+     App ID and automatic signing must mint it via the developer portal; the
+     cached profiles for `.YTMusic`/`.Widget` don't help. With no account token
+     in the keychain the build fails with "No Accounts: Add a new account in
+     Accounts settings" + "No profiles for '…watchkitapp' were found" — even
+     though `IDEProvisioningTeamByIdentifier` still lists the team. Fix: Xcode →
+     Settings → Accounts → sign in (free team, counts against the 10-App-IDs-per
+     -7-days quota).
+  Then re-add `- target: YTMusicWatch` + `embed: true` under the app target and
+  bump all THREE targets' versions together.
 - **`./build.sh sim` never exits**: its last step is `simctl launch --console-pty`,
   which attaches to the app console forever. The build itself is done well before
   that — don't wait on the script. Also `simctl`/`devicectl` need
