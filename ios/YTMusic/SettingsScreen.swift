@@ -211,6 +211,40 @@ struct SettingsScreen: View {
                     }
                 }
             }
+            // Monthly top charts (merged across devices).
+            let topArtists = StatsShared.topArtists(stats.file, n: 5)
+            let topTracks = StatsShared.topTracks(stats.file, n: 5)
+            if !topArtists.isEmpty {
+                Text("top this month").font(TUI.mono(11, .bold))
+                    .foregroundStyle(TUI.dim).padding(.top, 4)
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(topArtists.enumerated()), id: \.offset) { i, a in
+                        HStack(spacing: 8) {
+                            Text("\(i + 1).").foregroundStyle(TUI.dim)
+                            Text(a.0).foregroundStyle(TUI.fg).lineLimit(1)
+                            Spacer()
+                            Text(StatsShared.fmtMins(a.1)).foregroundStyle(TUI.accent)
+                        }
+                        .font(TUI.mono(12)).frame(height: 20)
+                    }
+                    if !topTracks.isEmpty {
+                        Divider().background(TUI.dim.opacity(0.3)).padding(.vertical, 2)
+                    }
+                    ForEach(Array(topTracks.enumerated()), id: \.offset) { i, t in
+                        HStack(spacing: 8) {
+                            Text("\(i + 1).").foregroundStyle(TUI.dim)
+                            Text(t.1.isEmpty ? t.0 : "\(t.0) — \(t.1)")
+                                .foregroundStyle(TUI.fg).lineLimit(1)
+                            Spacer()
+                            Text(StatsShared.fmtMins(t.2)).foregroundStyle(TUI.accent)
+                        }
+                        .font(TUI.mono(12)).frame(height: 20)
+                    }
+                }
+                .padding(8)
+                .background(TUI.panel.opacity(0.55))
+                .cornerRadius(4)
+            }
             HStack {
                 Text("device name").foregroundStyle(TUI.fg)
                 Spacer()

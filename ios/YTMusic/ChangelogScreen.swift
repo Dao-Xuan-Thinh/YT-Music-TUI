@@ -11,6 +11,15 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.9", date: "2026-07", notes: [
+            "YT MUSIC library section: your real account playlists + Your Likes",
+            "Full cross-device sync: likes, playlists and resume sessions travel between desktop and mobile (deletions too)",
+            "Now Playing widget with play/pause right on the home screen (iOS 17)",
+            "Lock-screen widgets: today's listening at a glance",
+            "Top-5 artists and tracks this month in Settings, merged across devices",
+            "Background refresh keeps your session alive and stats synced without opening the app",
+            "Tokens and the account session moved into the Keychain",
+        ]),
         ChangelogEntry(version: "1.8", date: "2026-07", notes: [
             "Settings cleanup: ── section dividers, themes collapsed to one row (opens the picker)",
             "LISTEN STATS redone: totals as tiles, colored sync status, and a per-device breakdown so you can see which device listened how much",

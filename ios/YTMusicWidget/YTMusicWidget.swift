@@ -8,7 +8,11 @@ import WidgetKit
 /// never wakes that day.
 @main
 struct YTMusicWidgetBundle: WidgetBundle {
-    var body: some Widget { YTMusicStatsWidget() }
+    var body: some Widget {
+        YTMusicStatsWidget()
+        NowPlayingWidget()
+        StatsLockWidget()
+    }
 }
 
 /// The app's active theme, resolved to Colors (falls back to the classic
@@ -190,14 +194,26 @@ struct StatsWidgetView: View {
     }
 }
 
-private extension View {
-    /// iOS 17 requires containerBackground for widgets; 16 uses a plain background.
+extension View {
+    /// iOS 17 requires containerBackground for widgets; 16 uses a plain
+    /// background. (Shared by every widget in this extension — accessory
+    /// families skip the padding via widgetAccessoryBackground below.)
     @ViewBuilder
     func widgetBackground(_ color: Color) -> some View {
         if #available(iOSApplicationExtension 17.0, *) {
             containerBackground(for: .widget) { color }
         } else {
             padding(12).background(color)
+        }
+    }
+
+    /// Accessory (lock-screen) variant: no padding hack, transparent container.
+    @ViewBuilder
+    func widgetAccessoryBackground() -> some View {
+        if #available(iOSApplicationExtension 17.0, *) {
+            containerBackground(for: .widget) { Color.clear }
+        } else {
+            self
         }
     }
 }

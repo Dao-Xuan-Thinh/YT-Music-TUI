@@ -16,10 +16,10 @@ final class AppConfig: ObservableObject {
     }
 
     // Listen-stats sync (mirrors the desktop's stats_* config keys). The token
-    // stays in the app's own UserDefaults — never in the App Group the widget
-    // reads, so the widget has no access to it (and no network).
+    // lives in the Keychain — never in UserDefaults and never in the App Group
+    // the widget reads, so the widget has no access to it (and no network).
     @Published var statsToken: String {
-        didSet { d.set(statsToken, forKey: "stats_token") }
+        didSet { Keychain.set("stats_token", statsToken) }
     }
     @Published var statsDeviceName: String {
         didSet { d.set(statsDeviceName, forKey: "stats_device_name") }
@@ -33,7 +33,13 @@ final class AppConfig: ObservableObject {
     private init() {
         defaultSource = SearchSource(rawValue: d.string(forKey: "default_source") ?? "") ?? .ytm
         defaultVolume = (d.object(forKey: "default_volume") as? Double) ?? 1.0
-        statsToken = d.string(forKey: "stats_token") ?? ""
+        // Token: Keychain, with a one-time migration from the old UserDefaults slot.
+        if let legacy = d.string(forKey: "stats_token"), !legacy.isEmpty,
+           Keychain.get("stats_token") == nil {
+            Keychain.set("stats_token", legacy)
+        }
+        d.removeObject(forKey: "stats_token")
+        statsToken = Keychain.get("stats_token") ?? ""
         statsDeviceName = d.string(forKey: "stats_device_name") ?? UIDevice.current.name
         if let id = d.string(forKey: "stats_device_id"), !id.isEmpty {
             statsDeviceID = id

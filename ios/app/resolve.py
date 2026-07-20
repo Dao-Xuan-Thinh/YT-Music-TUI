@@ -584,6 +584,35 @@ def _thumb(d):
     return thumbs[-1].get("url") if thumbs else ""
 
 
+def library(_: str = "") -> str:
+    """The signed-in account's YouTube Music library playlists. Auth-only —
+    anonymous retry is meaningless for account data, so no _ytm_try here.
+    Returns {"ok", "playlists": [{name, playlistId, count, thumbnail}],
+    "reason": "not signed in"?}. The account's Liked Music is the special
+    playlist id 'LM' (openable via browse) — the UI adds its own row for it."""
+    if not _auth_headers:
+        return json.dumps({"ok": False, "playlists": [], "reason": "not signed in"})
+    try:
+        pls = _ytm().get_library_playlists(limit=50) or []
+        out = []
+        for p in pls:
+            pid = p.get("playlistId") or ""
+            if not pid or pid in ("LM", "SE"):   # UI adds Likes itself; SE = episodes
+                continue
+            try:
+                count = int(p.get("count"))
+            except (TypeError, ValueError):
+                count = 0
+            out.append({"name": p.get("title") or "Playlist", "playlistId": pid,
+                        "count": count, "thumbnail": _thumb(p)})
+        _log("library", f"{len(out)} playlists")
+        return json.dumps({"ok": True, "playlists": out})
+    except Exception as e:
+        _log("library", f"ERROR {type(e).__name__}: {str(e)[:200]}")
+        return json.dumps({"ok": False, "playlists": [],
+                           "reason": f"{type(e).__name__}"})
+
+
 def durations(ids_csv: str) -> str:
     """Fetch real durations for a comma-separated list of videoIds → JSON {id: seconds}.
     The home feed omits durations, so For You backfills them here. Uses ytmusicapi

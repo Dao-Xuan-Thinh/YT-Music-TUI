@@ -66,6 +66,16 @@ struct ContentView: View {
             }
         }
         .onChange(of: vm.tab) { t in if t == .foryou { vm.loadHome() } }
+        // Now Playing widget's iOS-16 fallback (no interactive buttons there):
+        // the whole widget deep-links here and toggles/resumes.
+        .onOpenURL { url in
+            guard url.scheme == "ytmtui", url.host == "playpause" else { return }
+            if playback.current != nil {
+                playback.togglePlayPause()
+            } else if vm.pendingResume != nil {
+                vm.resumePending()
+            }
+        }
         .onAppear {
             AccountStore.shared.restore()
             vm.armResume()   // remember where you left off (tap the bar to resume)
@@ -373,7 +383,10 @@ struct ContentView: View {
                 let active = vm.librarySection == s
                 Text(active ? "[\(s.rawValue)]" : s.rawValue)
                     .foregroundStyle(active ? TUI.accent : TUI.dim)
-                    .onTapGesture { vm.librarySection = s; vm.openedPlaylist = nil; vm.highlightIndex = 0 }
+                    .onTapGesture {
+                        vm.librarySection = s; vm.openedPlaylist = nil; vm.highlightIndex = 0
+                        if s == .ytm { vm.loadYTMLibrary() }
+                    }
             }
             Spacer()
         }
@@ -456,6 +469,8 @@ struct ContentView: View {
             if vm.openedPlaylist != nil { playlistDetail } else { playlistRows }
         } else if vm.tab == .library && vm.librarySection == .resume {
             sessionRows
+        } else if vm.tab == .library && vm.librarySection == .ytm {
+            ytmRows
         } else {
             if vm.tab == .foryou && vm.homeLoading && vm.home.isEmpty {
                 HStack { Spacer(); ProgressView().tint(TUI.accent); Spacer() }
@@ -626,6 +641,47 @@ struct ContentView: View {
         }
     }
 
+    // The signed-in account's real YouTube Music library (Library → yt music).
+    @ViewBuilder private var ytmRows: some View {
+        if !account.signedIn {
+            Text("sign in (settings → account) to see your YouTube Music library")
+                .foregroundStyle(TUI.dim).padding(.vertical, 8)
+        } else {
+            HStack(spacing: 8) {
+                Text("♥").foregroundStyle(TUI.accent)
+                Text("Your Likes").foregroundStyle(TUI.fg)
+                Spacer(minLength: 6)
+                if vm.ytmLibLoading { ProgressView().controlSize(.mini).tint(TUI.accent) }
+            }
+            .font(TUI.mono(13))
+            .frame(height: rowHeight)
+            .contentShape(Rectangle())
+            .onTapGesture { vm.openPlaylist(id: "LM", title: "Your Likes") }
+
+            if let e = vm.ytmLibError {
+                Text("library error: \(e) — tap to retry")
+                    .foregroundStyle(TUI.warn).font(TUI.mono(12))
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                    .onTapGesture { vm.loadYTMLibrary(force: true) }
+            }
+            ForEach(vm.ytmPlaylists) { p in
+                HStack(spacing: 8) {
+                    Text("♫").foregroundStyle(TUI.accent)
+                    Text(p.name).foregroundStyle(TUI.fg).lineLimit(1)
+                    Spacer(minLength: 6)
+                    if p.count > 0 {
+                        Text("\(p.count)").foregroundStyle(TUI.dim)
+                    }
+                }
+                .font(TUI.mono(13))
+                .frame(height: rowHeight)
+                .contentShape(Rectangle())
+                .onTapGesture { vm.openPlaylist(id: p.playlistId, title: p.name) }
+            }
+        }
+    }
+
     // Saved-session rows (Library → resume).
     @ViewBuilder private var sessionRows: some View {
         if library.sessions.isEmpty {
@@ -636,7 +692,8 @@ struct ContentView: View {
                 Text("⏵").foregroundStyle(TUI.accent)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(s.title).foregroundStyle(TUI.fg).lineLimit(1).font(TUI.mono(13))
-                    Text("\(s.queue.count) tracks · \(timeString(s.position))")
+                    Text("\(s.queue.count) tracks · \(timeString(s.position))"
+                         + (s.device.map { " · \($0)" } ?? ""))
                         .foregroundStyle(TUI.dim).font(TUI.mono(10))
                 }
                 Spacer(minLength: 6)

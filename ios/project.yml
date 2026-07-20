@@ -41,11 +41,20 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         ITSAppUsesNonExemptEncryption: false
-        CFBundleShortVersionString: "1.8"
-        CFBundleVersion: "10"
-        # Keep audio playing when the screen is locked / app backgrounded.
+        CFBundleShortVersionString: "1.9"
+        CFBundleVersion: "11"
+        # Deep link used by the Now Playing widget's iOS-16 fallback.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.ytmtui.YTMusic
+            CFBundleURLSchemes:
+              - ytmtui
+        # audio: keep playing when locked/backgrounded. fetch: BGAppRefreshTask
+        # (BackgroundRefresher — session keep-alive + stats sync).
         UIBackgroundModes:
           - audio
+          - fetch
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.ytmtui.YTMusic.refresh
     settings:
       base:
         SWIFT_OBJC_BRIDGING_HEADER: YTMusic/YTMusic-Bridging-Header.h
@@ -80,6 +89,10 @@ targets:
     sources:
       - path: YTMusicWidget
       - path: YTMusic/StatsModel.swift
+      - path: YTMusic/NowPlayingShared.swift
+      # Type-only in the widget (perform() body is app-side, fenced behind
+      # !WIDGET_EXTENSION) — needed for Button(intent:).
+      - path: YTMusic/PlayIntent.swift
     entitlements:
       path: YTMusicWidget/YTMusicWidget.entitlements
       properties:
@@ -90,14 +103,15 @@ targets:
       properties:
         CFBundleDisplayName: YT Music Stats
         # MUST match the app's versions or the install is rejected.
-        CFBundleShortVersionString: "1.8"
-        CFBundleVersion: "10"
+        CFBundleShortVersionString: "1.9"
+        CFBundleVersion: "11"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ytmtui.YTMusic.Widget
         SWIFT_VERSION: "5.0"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WIDGET_EXTENSION"
         TARGETED_DEVICE_FAMILY: "1,2"
         ONLY_ACTIVE_ARCH: YES
         SKIP_INSTALL: YES

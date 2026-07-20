@@ -38,8 +38,11 @@ radio/shuffle/repeat) · `ArtistScreen` / `CollectionScreen` (artist page, album
 view) · `AccountScreen`+`AccountStore` (WKWebView/paste sign-in → ytmusicapi browser
 auth) · `SettingsScreen`, `Theme`/`ThemePickerSheet` (TUI-style themes + color-wave) ·
 `LibraryStore` (liked/playlists/recent persistence) · `Track`/`Artist` (models) ·
-`StatsModel`+`StatsStore` (listen-time counters + gist sync) · `../YTMusicWidget/`
-(home-screen stats widget target).
+`StatsModel`+`StatsStore` (listen-time counters, monthly top charts, gist sync +
+cross-device library merge) · `Keychain` (token + account cookie) ·
+`BackgroundRefresher` (BGAppRefreshTask session keep-alive) ·
+`NowPlayingShared`+`PlayIntent` (shared with the widget) · `../YTMusicWidget/`
+(extension: stats, now-playing and lock-screen widgets).
 
 ## Build & run
 
@@ -132,8 +135,39 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
   (description `ytm-tui listen stats`), ONE FILE PER DEVICE (`ytm-stats-<uuid>.json`)
   so merging is conflict-free; same protocol as desktop `stats.py`. Token (classic
   `gist` scope or fine-grained Gists r/w) lives in `AppConfig.statsToken`
-  (UserDefaults, app-only). Widget/app `CFBundleShortVersionString`+`CFBundleVersion`
-  MUST stay identical or the install is rejected.
+  (Keychain, app-only). Widget/app `CFBundleShortVersionString`+`CFBundleVersion`
+  MUST stay identical or the install is rejected. The same gist files also carry
+  monthly top-track attribution (`top`) and the **library blob** (below).
+- **Cross-device library sync:** each device's gist file carries `library` —
+  liked (with per-entry timestamps), playlists, newest 5 sessions, plus deletion
+  tombstones (90-day TTL). `LibrarySync.merge` (StatsModel.swift) MUST stay
+  behaviorally identical to desktop `library.merge_sync`: newest timestamp wins,
+  a removal beats an older add and *loses ties* to an add. `LibraryStore
+  .exportSync/applySync` are the endpoints; sessions synced in from elsewhere
+  carry `device` and render with that label. `Session.id` is a String (not UUID)
+  so desktop ids round-trip.
+- **Three widgets, one extension:** kinds `YTMusicStats` (home, bar graph),
+  `YTMusicNowPlaying` (home, current track + iOS-17 interactive play/pause via
+  `TogglePlaybackIntent`), `YTMusicStatsLock` (lock-screen accessories). Widgets
+  cannot fetch remote images, so `PlaybackService` caches a ~400px JPEG next to
+  `nowplaying.json` in the App Group and reloads that kind at most every 30s.
+  `PlayIntent.swift` is compiled into BOTH targets, but its body is fenced behind
+  `#if !WIDGET_EXTENSION` (set via `SWIFT_ACTIVE_COMPILATION_CONDITIONS` on the
+  widget target) — the widget needs only the type, the app process runs it.
+- **Background refresh** (`BackgroundRefresher`, id `com.ytmtui.YTMusic.refresh`,
+  registered with SwiftUI's `.backgroundTask(.appRefresh:)`, needs
+  `UIBackgroundModes: fetch` + `BGTaskSchedulerPermittedIdentifiers`): keeps the
+  Google session alive while the app sits unopened. It must NOT use WKWebView —
+  that's foreground-only; it does a plain URLSession GET to music.youtube.com with
+  the Keychain cookie header, merges rotated Set-Cookie values back, and only
+  calls `python_set_auth` when `python_ready()` is already 1 (never cold-start
+  CPython in a ~30s budget). Test with lldb
+  `_simulateLaunchForTaskWithIdentifier:`.
+- **`./build.sh sim` never exits**: its last step is `simctl launch --console-pty`,
+  which attaches to the app console forever. The build itself is done well before
+  that — don't wait on the script. Also `simctl`/`devicectl` need
+  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (CommandLineTools
+  lacks them).
 - Embedded Python `print()` is invisible; surface diagnostics via NSLog / returned JSON.
   On-device logs: `devicectl … launch --console`.
 - The Mac is chronically low on disk; device builds need the ~8.5 GB iOS platform

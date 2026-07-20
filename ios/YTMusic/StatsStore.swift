@@ -36,10 +36,15 @@ final class StatsStore: ObservableObject {
 
     // MARK: - Accumulation
 
-    /// Add listened seconds (called every 0.5s while audio actually advances).
-    func tick(_ delta: Double) {
+    /// Add listened seconds (called every 0.5s while audio actually advances),
+    /// attributed to `track` for the monthly top charts.
+    func tick(_ delta: Double, track: Track? = nil) {
         guard delta > 0 else { return }
         file.days[StatsShared.dayKey(), default: 0] += delta
+        if let t = track, !t.id.isEmpty {
+            let key = "\(t.id)|\(t.title)|\(t.uploader)"
+            file.top[StatsShared.monthKey(), default: [:]][key, default: 0] += delta
+        }
         dirty = true
         if Date().timeIntervalSince(lastWrite) > 60 { flush() }
     }
@@ -48,9 +53,21 @@ final class StatsStore: ObservableObject {
         if dirty {
             dirty = false
             lastWrite = Date()
+            pruneTop()
             write(file)
         }
         if reloadWidget { WidgetCenter.shared.reloadAllTimelines() }
+    }
+
+    /// Newest 12 months, top 300 keys per month (matches desktop stats.py).
+    private func pruneTop() {
+        for month in file.top.keys.sorted(by: >).dropFirst(12) {
+            file.top[month] = nil
+        }
+        for (month, entries) in file.top where entries.count > 300 {
+            file.top[month] = Dictionary(uniqueKeysWithValues:
+                entries.sorted { $0.value > $1.value }.prefix(300).map { ($0, $1) })
+        }
     }
 
     private func write(_ f: StatsFile) {
@@ -73,41 +90,60 @@ final class StatsStore: ObservableObject {
     // MARK: - Gist sync
 
     /// Full cycle on a background queue; throttled to one attempt / 10 min
-    /// unless forced. Same protocol as the desktop's stats.py.
-    func sync(force: Bool = false) {
+    /// unless forced. Same protocol as the desktop's stats.py. `completion`
+    /// fires on the main queue after the cycle ends (or immediately when the
+    /// sync is skipped) — the background-refresh task awaits it so the process
+    /// isn't suspended mid-PATCH. Main-actor: reads LibraryStore for the
+    /// library blob (network work still hops to a background queue).
+    @MainActor
+    func sync(force: Bool = false, completion: (() -> Void)? = nil) {
         let token = AppConfig.shared.statsToken
         let deviceID = AppConfig.shared.statsDeviceID
         let deviceName = AppConfig.shared.statsDeviceName
-        guard !token.isEmpty, !syncing else { return }
-        guard force || Date().timeIntervalSince(lastSyncAttempt) > 600 else { return }
+        guard !token.isEmpty, !syncing else { completion?(); return }
+        guard force || Date().timeIntervalSince(lastSyncAttempt) > 600 else {
+            completion?(); return
+        }
         lastSyncAttempt = Date()
         syncing = true
         file.deviceID = deviceID
         let localDays = file.days
+        let localTop = file.top
+        // The library blob (liked/playlists/sessions + tombstones) rides in our
+        // gist file; the merged state comes back and is applied below.
+        let libraryBlob = LibraryStore.shared.exportSync(deviceName: deviceName)
         let gistID = AppConfig.shared.statsGistID
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let result = Self.runSync(token: token, deviceID: deviceID,
                                       deviceName: deviceName, gistID: gistID,
-                                      localDays: localDays)
+                                      localDays: localDays, localTop: localTop,
+                                      libraryBlob: libraryBlob)
             DispatchQueue.main.async {
+                defer { completion?() }
                 guard let self else { return }
                 self.syncing = false
                 switch result {
-                case .success(let (remote, mergedOwnDays, newGistID)):
-                    if let id = newGistID { AppConfig.shared.statsGistID = id }
+                case .success(let outcome):
+                    if let id = outcome.newGistID {
+                        AppConfig.shared.statsGistID = id
+                    }
                     // Merge-max our own gist copy back in (protects a wiped
                     // store) without clobbering seconds ticked during the sync.
-                    for (day, secs) in mergedOwnDays
+                    for (day, secs) in outcome.mergedDays
                     where secs > (self.file.days[day] ?? 0) {
                         self.file.days[day] = secs
                     }
-                    self.file.remote = remote
+                    self.file.remote = outcome.remote
                     self.file.lastSync = Date()
                     self.syncStatus = "synced"
                     self.dirty = true
                     self.flush(reloadWidget: true)
+                    let mergedLib = outcome.mergedLibrary
+                    Task { @MainActor in
+                        LibraryStore.shared.applySync(mergedLib)
+                    }
                     DebugLog.shared.log("stats",
-                        "synced \(remote.count) device file(s)")
+                        "synced \(outcome.remote.count) device file(s)")
                 case .failure(let err):
                     self.syncStatus = err.label
                     DebugLog.shared.log("stats", "sync failed: \(err.label)")
@@ -127,12 +163,20 @@ final class StatsStore: ObservableObject {
         }
     }
 
-    /// Blocking sync (background queue only). Returns the fresh remote map, our
-    /// own merged day counters, and a new gist id when it changed.
+    private struct SyncOutcome {
+        let remote: [String: DeviceStats]
+        let mergedDays: [String: Double]
+        let newGistID: String?
+        let mergedLibrary: LibraryBlob
+    }
+
+    /// Blocking sync (background queue only): pull all device files, merge the
+    /// library blobs, push ours (days + monthly top + merged library).
     private static func runSync(
         token: String, deviceID: String, deviceName: String, gistID: String,
-        localDays: [String: Double]
-    ) -> Result<([String: DeviceStats], [String: Double], String?), SyncError> {
+        localDays: [String: Double], localTop: [String: [String: Double]],
+        libraryBlob: LibraryBlob
+    ) -> Result<SyncOutcome, SyncError> {
         do {
             var id = gistID
             var pulled: [String: Any]? = nil
@@ -150,6 +194,7 @@ final class StatsStore: ObservableObject {
                 }
             }
             var remote: [String: DeviceStats] = [:]
+            var remoteLibs: [LibraryBlob] = []   // other devices' blobs (ours excluded)
             if let files = pulled?["files"] as? [String: Any] {
                 for (name, info) in files {
                     guard name.hasPrefix("ytm-stats-"), name.hasSuffix(".json"),
@@ -160,21 +205,37 @@ final class StatsStore: ObservableObject {
                     else { continue }
                     let dev = String(name.dropFirst("ytm-stats-".count)
                                          .dropLast(".json".count))
-                    let days = (parsed["days"] as? [String: Double])
-                        ?? (parsed["days"] as? [String: Any])?
-                            .compactMapValues { ($0 as? NSNumber)?.doubleValue } ?? [:]
+                    let days = doubleMap(parsed["days"])
+                    var top: [String: [String: Double]] = [:]
+                    for (month, entries) in (parsed["top"] as? [String: Any]) ?? [:] {
+                        top[month] = doubleMap(entries)
+                    }
                     remote[dev] = DeviceStats(
                         device: parsed["device"] as? String ?? String(dev.prefix(8)),
-                        days: days)
+                        days: days, top: top)
+                    if dev != deviceID, let lib = parsed["library"],
+                       let libData = try? JSONSerialization.data(withJSONObject: lib),
+                       let blob = try? JSONDecoder().decode(LibraryBlob.self, from: libData) {
+                        remoteLibs.append(blob)
+                    }
                 }
             }
+            // Cross-device library merge: our fresh export + everyone else's.
+            let mergedLibrary = LibrarySync.merge([libraryBlob] + remoteLibs)
             // Merge-max our own remote copy into the local counters, then push.
             var days = localDays
             for (day, secs) in remote[deviceID]?.days ?? [:]
             where secs > (days[day] ?? 0) {
                 days[day] = secs
             }
-            let payload: [String: Any] = ["device": deviceName, "days": days]
+            var payload: [String: Any] = ["device": deviceName, "days": days,
+                                          "top": localTop]
+            // Publish the MERGED library so this file already reflects
+            // everyone's edits the next time another device pulls.
+            if let libData = try? JSONEncoder().encode(mergedLibrary),
+               let libObj = try? JSONSerialization.jsonObject(with: libData) {
+                payload["library"] = libObj
+            }
             let content = String(
                 data: try JSONSerialization.data(withJSONObject: payload),
                 encoding: .utf8) ?? "{}"
@@ -189,13 +250,22 @@ final class StatsStore: ObservableObject {
             } else {
                 _ = try request("PATCH", "/gists/\(id)", token: token, body: fileBody)
             }
-            remote[deviceID] = DeviceStats(device: deviceName, days: days)
-            return .success((remote, days, id == gistID ? nil : id))
+            remote[deviceID] = DeviceStats(device: deviceName, days: days,
+                                           top: localTop)
+            return .success(SyncOutcome(remote: remote, mergedDays: days,
+                                        newGistID: id == gistID ? nil : id,
+                                        mergedLibrary: mergedLibrary))
         } catch let err as SyncError {
             return .failure(err)
         } catch {
             return .failure(.network)
         }
+    }
+
+    private static func doubleMap(_ any: Any?) -> [String: Double] {
+        (any as? [String: Double])
+            ?? (any as? [String: Any])?
+                .compactMapValues { ($0 as? NSNumber)?.doubleValue } ?? [:]
     }
 
     /// Oldest gist whose description matches the marker ('' if none) — oldest so

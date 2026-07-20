@@ -84,6 +84,8 @@ int python_init(void) {
     return 0;
 }
 
+int python_ready(void) { return g_initialized; }
+
 // Call resolve.<func>(arg) -> str. Runs on a background thread, so acquire the GIL for
 // the whole call. Caller owns the returned C string.
 static char *call_str_func(const char *module, const char *func, const char *arg) {
@@ -169,4 +171,5 @@ char *python_translate(const char *text, const char *target) {
     return call_str_func2("resolve", "translate", text, target);
 }
 char *python_radio(const char *video_id) { return call_str_func("resolve", "radio", video_id); }
+char *python_library(void) { return call_str_func("resolve", "library", ""); }
 char *python_get_log(void) { return call_str_func("resolve", "get_log", ""); }

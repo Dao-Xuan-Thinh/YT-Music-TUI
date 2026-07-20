@@ -4,8 +4,8 @@ import WebKit
 
 /// Holds the signed-in YouTube account session. The cookie string (from the in-app web view
 /// or a paste) is verified + applied to the embedded Python (`python_set_auth` →
-/// resolve.set_auth → ytmusicapi browser auth) and persisted to Application Support so the
-/// session is re-armed at launch. Sensitive: stored outside Documents (not file-shared).
+/// resolve.set_auth → ytmusicapi browser auth) and persisted to the Keychain so the
+/// session is re-armed at launch (migrated from the old Application Support text file).
 ///
 /// Staleness: Google rotates the session cookies (__Secure-*PSIDTS) regularly, so a frozen
 /// snapshot eventually expires — the desktop app survives because it re-reads the live
@@ -22,18 +22,31 @@ final class AccountStore: ObservableObject {
     @Published private(set) var working = false
     @Published var lastError: String?
 
-    private let cookieURL: URL
+    /// Keychain key for the cookie header. Shared with BackgroundRefresher, which
+    /// keeps the session alive from background launches (AfterFirstUnlock access).
+    static let cookieKeychainKey = "account_cookie"
+    /// Desktop Safari UA — music.youtube.com serves the full (cookie-rotating)
+    /// site to this; shared with BackgroundRefresher's keep-alive request.
+    static let desktopUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+
     private var refreshWebView: WKWebView?   // retained while the silent refresh runs
 
     private init() {
+        // One-time migration: the cookie snapshot used to live in a plaintext file
+        // in Application Support — move it into the Keychain and delete the file.
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        cookieURL = dir.appendingPathComponent("yt_account_cookie.txt")
+        let legacy = dir.appendingPathComponent("yt_account_cookie.txt")
+        if Keychain.get(Self.cookieKeychainKey) == nil,
+           let old = try? String(contentsOf: legacy, encoding: .utf8), !old.isEmpty {
+            Keychain.set(Self.cookieKeychainKey, old)
+            DebugLog.shared.log("auth", "migrated cookie snapshot to Keychain")
+        }
+        try? FileManager.default.removeItem(at: legacy)
     }
 
     private var storedCookie: String? {
-        let s = try? String(contentsOf: cookieURL, encoding: .utf8)
-        return (s?.isEmpty == false) ? s : nil
+        Keychain.get(Self.cookieKeychainKey)
     }
 
     /// Re-arm the Python session from the stored cookie at launch, then silently refresh
@@ -48,7 +61,7 @@ final class AccountStore: ObservableObject {
     func signIn(cookie: String) { apply(cookie, persist: true) }
 
     func signOut() {
-        try? FileManager.default.removeItem(at: cookieURL)
+        Keychain.delete(Self.cookieKeychainKey)
         name = ""
         signedIn = false
         lastError = nil
@@ -71,8 +84,7 @@ final class AccountStore: ObservableObject {
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = .default()
         let wv = WKWebView(frame: .zero, configuration: cfg)
-        wv.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+        wv.customUserAgent = Self.desktopUA
         refreshWebView = wv
         DebugLog.shared.log("auth", "silent session refresh: loading music.youtube.com")
         wv.load(URLRequest(url: URL(string: "https://music.youtube.com/")!))
@@ -121,7 +133,7 @@ final class AccountStore: ObservableObject {
                     self.lastError = nil
                     DebugLog.shared.log("auth", "signed in as \(nm)")
                     if persist {
-                        try? cookie.write(to: self.cookieURL, atomically: true, encoding: .utf8)
+                        Keychain.set(Self.cookieKeychainKey, cookie)
                     }
                 } else {
                     self.signedIn = false

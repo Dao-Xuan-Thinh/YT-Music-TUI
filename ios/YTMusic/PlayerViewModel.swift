@@ -4,7 +4,19 @@ import Foundation
 enum RepeatMode: String { case off, all }
 enum SearchSource: String, CaseIterable { case ytm, yt, both }
 enum Tab { case search, queue, library, foryou }
-enum LibrarySection: String, CaseIterable { case liked, playlists, recent, resume }
+enum LibrarySection: String, CaseIterable {
+    case liked, playlists, recent, resume
+    case ytm = "yt music"   // the signed-in account's real YTM library
+}
+
+/// One playlist from the signed-in account's YouTube Music library.
+struct YTMPlaylist: Identifiable, Decodable {
+    let name: String
+    let playlistId: String
+    let count: Int
+    let thumbnail: String
+    var id: String { playlistId }
+}
 
 /// Owns the search results AND the play queue (kept separate so searching never disturbs
 /// what's currently playing). Search/resolution run off-main via the Python bridge.
@@ -98,6 +110,7 @@ final class PlayerViewModel: ObservableObject {
                 if let n = openedPlaylist, let p = library.playlist(named: n) { return p.tracks }
                 return []
             case .resume: return []
+            case .ytm:    return []   // renders its own playlist rows
             }
         }
     }
@@ -637,6 +650,47 @@ final class PlayerViewModel: ObservableObject {
     // MARK: - View-first collections (playlists / albums)
 
     /// Open an album (browseId, from an artist album row) — view first, don't auto-play.
+    // MARK: - YT Music account library (LIBRARY → yt music)
+
+    @Published var ytmPlaylists: [YTMPlaylist] = []
+    @Published var ytmLibLoading = false
+    @Published var ytmLibError: String?
+    private var ytmLibLoaded = false
+
+    /// Fetch the signed-in account's YTM library playlists (cached per run;
+    /// force to refresh). Signed out → cleared with no error (the UI shows a
+    /// sign-in hint).
+    func loadYTMLibrary(force: Bool = false) {
+        guard AccountStore.shared.signedIn else {
+            ytmPlaylists = []; ytmLibLoaded = false; ytmLibError = nil
+            return
+        }
+        guard force || !ytmLibLoaded else { return }
+        ytmLibLoaded = true
+        ytmLibLoading = true
+        ytmLibError = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let c = python_library()
+            let json = c.map { String(cString: $0) } ?? "{}"
+            if let c { free(c) }
+            struct Resp: Decodable {
+                let ok: Bool
+                let playlists: [YTMPlaylist]
+                let reason: String?
+            }
+            let resp = try? JSONDecoder().decode(Resp.self, from: Data(json.utf8))
+            DispatchQueue.main.async {
+                self.ytmLibLoading = false
+                if let resp, resp.ok {
+                    self.ytmPlaylists = resp.playlists
+                } else {
+                    self.ytmLibLoaded = false   // allow a retry
+                    self.ytmLibError = resp?.reason ?? "couldn't load library"
+                }
+            }
+        }
+    }
+
     func openAlbum(id: String, title: String) {
         loadCollection(title: title) { python_album(id) }
     }

@@ -9,13 +9,141 @@ import UIKit
 struct DeviceStats: Codable {
     var device: String
     var days: [String: Double]   // "yyyy-MM-dd" (local time) → listened seconds
+    // "yyyy-MM" → "<id>|<title>|<uploader>" → seconds (monthly top charts)
+    var top: [String: [String: Double]]? = nil
 }
 
 struct StatsFile: Codable {
     var days: [String: Double] = [:]            // this install's own counters
+    var top: [String: [String: Double]] = [:]   // own monthly attribution
     var remote: [String: DeviceStats] = [:]     // last gist pull, keyed by device id
     var lastSync: Date? = nil
     var deviceID: String? = nil                 // ours — lets the widget dedup exactly
+}
+
+// MARK: - Cross-device library sync (wire format shared with desktop stats.py)
+//
+// Each device's gist file carries a "library" blob: liked + playlists +
+// newest sessions, with per-entry timestamps and deletion tombstones. The
+// merge below MUST mirror desktop `library.merge_sync` exactly: newest ts
+// wins; a removal beats an older add and loses ties to an add; tombstones
+// expire after 90 days.
+
+struct SyncTrack: Codable {
+    var id: String
+    var title: String
+    var uploader: String
+    var duration: Int
+}
+
+struct SyncLikedEntry: Codable {
+    var t: SyncTrack
+    var ts: Double
+}
+
+struct SyncPlaylist: Codable {
+    var name: String
+    var tracks: [SyncTrack]
+    var ts: Double
+}
+
+struct SyncSession: Codable {
+    var id: String
+    var title: String
+    var queue: [SyncTrack]
+    var queueIdx: Int
+    var position: Double
+    var shuffle: Bool?
+    var repeatMode: String?
+    var ts: Double
+    var device: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, queue, position, shuffle, ts, device
+        case queueIdx = "queue_idx"
+        case repeatMode = "repeat"
+    }
+}
+
+struct LibraryBlob: Codable {
+    var liked: [SyncLikedEntry] = []
+    var likedRM: [String: Double] = [:]
+    var playlists: [SyncPlaylist] = []
+    var playlistsRM: [String: Double] = [:]
+    var sessions: [SyncSession] = []
+    var sessionsRM: [String: Double] = [:]
+
+    enum CodingKeys: String, CodingKey {
+        case liked, playlists, sessions
+        case likedRM = "liked_rm"
+        case playlistsRM = "playlists_rm"
+        case sessionsRM = "sessions_rm"
+    }
+}
+
+enum LibrarySync {
+    static let tombstoneTTL: Double = 90 * 86400
+    static let sessionCap = 10
+
+    /// Merge every device's blob into one authoritative state (pure).
+    static func merge(_ blobs: [LibraryBlob], now: Double = Date().timeIntervalSince1970) -> LibraryBlob {
+        let cutoff = now - tombstoneTTL
+
+        // liked: id -> (ts, track?) — adds use >=, removals use > (ties → liked)
+        var liked: [String: (ts: Double, t: SyncTrack?)] = [:]
+        for b in blobs {
+            for e in b.liked where !e.t.id.isEmpty {
+                if liked[e.t.id] == nil || e.ts >= liked[e.t.id]!.ts {
+                    liked[e.t.id] = (e.ts, e.t)
+                }
+            }
+            for (id, ts) in b.likedRM where ts >= cutoff {
+                if liked[id] == nil || ts > liked[id]!.ts {
+                    liked[id] = (ts, nil)
+                }
+            }
+        }
+
+        var pls: [String: (ts: Double, tracks: [SyncTrack]?)] = [:]
+        for b in blobs {
+            for p in b.playlists where !p.name.isEmpty {
+                if pls[p.name] == nil || p.ts >= pls[p.name]!.ts {
+                    pls[p.name] = (p.ts, p.tracks)
+                }
+            }
+            for (name, ts) in b.playlistsRM where ts >= cutoff {
+                if pls[name] == nil || ts > pls[name]!.ts {
+                    pls[name] = (ts, nil)
+                }
+            }
+        }
+
+        var sess: [String: SyncSession] = [:]
+        var sessRM: [String: Double] = [:]
+        for b in blobs {
+            for s in b.sessions where !s.id.isEmpty {
+                if sess[s.id] == nil || s.ts > sess[s.id]!.ts { sess[s.id] = s }
+            }
+            for (id, ts) in b.sessionsRM where ts >= cutoff {
+                sessRM[id] = max(ts, sessRM[id] ?? 0)
+            }
+        }
+        for (id, ts) in sessRM where sess[id] != nil && ts >= sess[id]!.ts {
+            sess[id] = nil
+        }
+
+        var out = LibraryBlob()
+        out.liked = liked.compactMap { _, v in v.t.map { SyncLikedEntry(t: $0, ts: v.ts) } }
+            .sorted { $0.ts > $1.ts }
+        out.likedRM = liked.filter { $0.value.t == nil }.mapValues { $0.ts }
+        out.playlists = pls.compactMap { name, v in
+            v.tracks.map { SyncPlaylist(name: name, tracks: $0, ts: v.ts) }
+        }.sorted { $0.name < $1.name }
+        out.playlistsRM = pls.filter { $0.value.tracks == nil }.mapValues { $0.ts }
+        out.sessions = Array(sess.values.sorted { $0.ts > $1.ts }.prefix(sessionCap))
+        out.sessionsRM = sessRM
+        return out
+    }
 }
 
 enum StatsShared {
@@ -107,6 +235,56 @@ enum StatsShared {
             .map { ($0.device, $0.days.values.reduce(0, +)) }
             .sorted { $0.1 > $1.1 }
         return out
+    }
+
+    static func monthKey(_ date: Date = Date()) -> String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = .current
+        fmt.dateFormat = "yyyy-MM"
+        return fmt.string(from: date)
+    }
+
+    /// One month's attribution map merged across devices (own copy max-deduped,
+    /// others summed — same rule as the day counters).
+    static func mergedTop(_ f: StatsFile, month: String) -> [String: Double] {
+        var remote = f.remote.mapValues { ($0.top ?? [:])[month] ?? [:] }
+        let own = f.deviceID.flatMap { remote.removeValue(forKey: $0) } ?? [:]
+        let local = f.top[month] ?? [:]
+        var merged: [String: Double] = [:]
+        for k in Set(local.keys).union(own.keys) {
+            merged[k] = max(local[k] ?? 0, own[k] ?? 0)
+        }
+        for dev in remote.values {
+            for (k, secs) in dev { merged[k, default: 0] += secs }
+        }
+        return merged
+    }
+
+    /// [(title, artist, seconds)] — most-listened tracks this month.
+    static func topTracks(_ f: StatsFile, n: Int = 5,
+                          month: String = monthKey()) -> [(String, String, Double)] {
+        mergedTop(f, month: month)
+            .sorted { $0.value > $1.value }.prefix(n)
+            .map { key, secs in
+                let parts = key.split(separator: "|", maxSplits: 2,
+                                      omittingEmptySubsequences: false)
+                return (parts.count > 1 ? String(parts[1]) : key,
+                        parts.count > 2 ? String(parts[2]) : "", secs)
+            }
+    }
+
+    /// [(artist, seconds)] — most-listened artists this month.
+    static func topArtists(_ f: StatsFile, n: Int = 5,
+                           month: String = monthKey()) -> [(String, Double)] {
+        var agg: [String: Double] = [:]
+        for (key, secs) in mergedTop(f, month: month) {
+            let parts = key.split(separator: "|", maxSplits: 2,
+                                  omittingEmptySubsequences: false)
+            let artist = parts.count > 2 ? String(parts[2]) : ""
+            if !artist.isEmpty { agg[artist, default: 0] += secs }
+        }
+        return agg.sorted { $0.value > $1.value }.prefix(n).map { ($0.key, $0.value) }
     }
 
     /// 132 → "2m", 9876 → "2h 44m".

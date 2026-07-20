@@ -4,6 +4,7 @@ import Foundation
 import MediaPlayer
 import QuartzCore
 import UIKit
+import WidgetKit
 
 /// Owns all audio playback: AVPlayer + AVAudioSession (background mode) +
 /// MPNowPlayingInfoCenter / MPRemoteCommandCenter (lock-screen / Control-Center / AirPods).
@@ -242,7 +243,9 @@ final class PlaybackService: ObservableObject {
             // changes reset statsLastPos or exceed the clamp — none of them count.
             if self.isPlaying, let last = self.statsLastPos {
                 let d = self.position - last
-                if d > 0 && d <= 0.75 { StatsStore.shared.tick(d) }
+                if d > 0 && d <= 0.75 {
+                    StatsStore.shared.tick(d, track: self.current)
+                }
             }
             self.statsLastPos = self.position
             self.updateNowPlaying()
@@ -335,6 +338,29 @@ final class PlaybackService: ObservableObject {
         ]
         if let art = artwork { info[MPMediaItemPropertyArtwork] = art }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        publishWidgetSnapshot(t)
+    }
+
+    // MARK: - Now Playing widget feed
+
+    private var lastSnapshotKey = ""      // (track id, isPlaying) — change gate
+    private var lastWidgetReload = Date.distantPast
+
+    /// Write the Now Playing widget's snapshot into the App Group — only when
+    /// the track or play state actually changed (never on 0.5s position ticks),
+    /// and reload that widget kind at most every 30s (plus on backgrounding,
+    /// which piggybacks StatsStore.flush's reloadAllTimelines).
+    private func publishWidgetSnapshot(_ t: Track) {
+        let key = "\(t.id)|\(isPlaying)"
+        guard key != lastSnapshotKey, !t.title.isEmpty else { return }
+        lastSnapshotKey = key
+        NowPlayingShared.write(NowPlayingSnapshot(
+            title: t.title, uploader: t.uploader,
+            isPlaying: isPlaying, updated: Date()))
+        if Date().timeIntervalSince(lastWidgetReload) > 30 {
+            lastWidgetReload = Date()
+            WidgetCenter.shared.reloadTimelines(ofKind: "YTMusicNowPlaying")
+        }
     }
 
     private func loadArtwork(_ track: Track) {
@@ -343,10 +369,19 @@ final class PlaybackService: ObservableObject {
             guard let self, let data, let raw = UIImage(data: data) else { return }
             let img = raw.squareCropped()   // YouTube thumbs are 16:9; lock screen wants 1:1
             let art = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
+            // Cache a small copy for the Now Playing widget (widgets can't
+            // fetch remote images; ~400px JPEG stays under archival limits).
+            let side = min(img.size.width, 400)
+            let thumb = UIGraphicsImageRenderer(size: CGSize(width: side, height: side))
+                .jpegData(withCompressionQuality: 0.8) { _ in
+                    img.draw(in: CGRect(x: 0, y: 0, width: side, height: side))
+                }
+            try? thumb.write(to: NowPlayingShared.thumbURL(), options: .atomic)
             DispatchQueue.main.async {
                 guard self.current?.id == track.id else { return }
                 self.artwork = art
                 self.updateNowPlaying()
+                WidgetCenter.shared.reloadTimelines(ofKind: "YTMusicNowPlaying")
             }
         }.resume()
     }

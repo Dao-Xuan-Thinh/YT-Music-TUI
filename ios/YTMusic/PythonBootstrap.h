@@ -6,6 +6,9 @@
 /// Initialize the embedded CPython runtime (isolated config, bundled stdlib +
 /// app_packages + app). Safe to call once; returns 0 on success, non-zero on error.
 int python_init(void);
+/// 1 once python_init has completed — lets callers (background refresh) skip
+/// work that would otherwise cold-start the interpreter.
+int python_ready(void);
 
 /// Resolve a YouTube URL/ID to a JSON track dict (with a direct m4a stream_url).
 /// Caller owns the returned C string (free it). Never returns NULL.
@@ -51,6 +54,8 @@ char *python_translate(const char *text, const char *target);
 
 /// Endless mix seeded from a videoId → JSON list of lite track dicts. Caller owns it.
 char *python_radio(const char *video_id);
+/// Signed-in account's YTM library playlists (JSON {ok, playlists, reason?}).
+char *python_library(void);
 
 /// The recent Python-side engine log as plain text (newest last). Caller owns it.
 char *python_get_log(void);
