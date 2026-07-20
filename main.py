@@ -1145,7 +1145,11 @@ class HomeScreen(Screen):
         for s in self._lib.sessions():
             title = s.get('title') or 'session'
             n = len(s.get('queue', []))
-            it = ListItem(Label(f"▸ {title}  ·  {n} tracks  ·  {_ago(s.get('ts'))}"))
+            # Sessions synced in from another device carry its name.
+            dev = f"  ·  {s['device']}" if s.get('device') else ''
+            it = ListItem(Label(
+                f"▸ {title}  ·  {n} tracks  ·  {_ago(s.get('ts'))}{dev}",
+                markup=False))
             it.payload = {'kind': 'session', 'id': s.get('id')}
             items.append(it)
         return items or [self._empty_item()]
@@ -1437,6 +1441,12 @@ class HomeScreen(Screen):
             if ok:
                 on_yes()
         self.app.push_screen(ConfirmScreen(message), _cb)
+
+    def refresh_library(self) -> None:
+        """Re-render the library-backed tabs after a cross-device sync applied
+        remote changes (new likes/playlists/sessions from other devices)."""
+        for pane in ('tab-resume', 'tab-folders', 'tab-liked'):
+            self._reload_tab(pane)
 
     def _reload_tab(self, pane_id) -> None:
         """Rebuild a single tab's ListView from the current library state."""
@@ -1836,9 +1846,13 @@ class YTMApp(App):
                          daemon=True).start()
 
     def _stats_sync_worker(self, announce: bool = False) -> None:
-        ok, msg, new_id = self._stats.sync(
+        # The library blob (liked/playlists/sessions + tombstones) rides in our
+        # gist file; the sync returns everyone's merged state to apply locally.
+        ok, msg, new_id, merged_lib = self._stats.sync(
             self._config.stats_token, self._config.stats_device_id,
-            self._config.stats_device_name, self._config.stats_gist_id)
+            self._config.stats_device_name, self._config.stats_gist_id,
+            library_export=self._lib.export_sync(
+                device_name=self._config.stats_device_name))
 
         def _apply():
             self._stats_syncing = False
@@ -1848,6 +1862,13 @@ class YTMApp(App):
             if announce:
                 self._set_status('Stats sync: connected ✓' if ok
                                  else f'Stats sync: {msg}')
+            # Apply the merged library on the UI thread (Library isn't
+            # thread-safe) and refresh any home tabs showing it.
+            if ok and merged_lib is not None:
+                changed = self._lib.apply_sync(
+                    merged_lib, own_device_name=self._config.stats_device_name)
+                if changed and isinstance(self.screen, HomeScreen):
+                    self.screen.refresh_library()
             if isinstance(self.screen, HomeScreen):
                 self.screen.refresh_stats()
             # Live-refresh the sync panel's graph if it's open.
@@ -3255,15 +3276,18 @@ class YTMApp(App):
     def _finalize_quit(self) -> None:
         self._save_session()
         self._stats.flush()
-        # Best-effort final sync: the data is already safe on disk, so never
-        # hold the quit hostage — 2s max, then exit regardless.
+        # Best-effort final sync (stats + the just-saved session, so another
+        # device can resume it): data is already safe on disk, so never hold
+        # the quit hostage — 3s max, then exit regardless.
         if self._config.stats_token:
             t = threading.Thread(target=self._stats.sync, args=(
                 self._config.stats_token, self._config.stats_device_id,
                 self._config.stats_device_name, self._config.stats_gist_id),
+                kwargs={'library_export': self._lib.export_sync(
+                    device_name=self._config.stats_device_name)},
                 daemon=True)
             t.start()
-            t.join(2.0)
+            t.join(3.0)
         try:
             self._config.flush()
         except Exception:

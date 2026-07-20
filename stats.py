@@ -164,13 +164,17 @@ class StatsStore:
 
     # ── Gist sync (blocking; run on a daemon thread) ───────────────────────
 
-    def sync(self, token, device_id, device_name, gist_id=''):
+    def sync(self, token, device_id, device_name, gist_id='', library_export=None):
         """Full cycle: resolve gist → pull all device files → merge-max our own
         → push our file → persist snapshot. Returns (ok, status_msg, gist_id
-        or None if unchanged). Never raises."""
+        or None if unchanged, merged_library or None). Never raises.
+
+        `library_export` (Library.export_sync output) rides in our device file
+        and, when given, the pull side merges every device's library blob via
+        library.merge_sync — the caller applies the result on the UI thread."""
         import requests
         if not (token and device_id):
-            return False, 'not configured', None
+            return False, 'not configured', None, None
         headers = {
             'Authorization': f'Bearer {token}',
             'Accept': 'application/vnd.github+json',
@@ -194,6 +198,7 @@ class StatsStore:
                 gist_id = self._create_gist(headers, device_id, device_name)
                 r = None
             remote = {}
+            remote_libs = []      # other devices' library blobs (ours excluded)
             if r is not None:
                 for fname, finfo in (r.json().get('files') or {}).items():
                     if not (fname.startswith('ytm-stats-') and fname.endswith('.json')):
@@ -203,8 +208,15 @@ class StatsStore:
                         parsed = json.loads(finfo.get('content') or '{}')
                         remote[dev] = {'device': parsed.get('device') or dev[:8],
                                        'days': dict(parsed.get('days') or {})}
+                        if dev != device_id and isinstance(parsed.get('library'), dict):
+                            remote_libs.append(parsed['library'])
                     except Exception:
                         continue  # one bad file must not kill the merge
+            # Cross-device library merge: our fresh export + everyone else's.
+            merged_library = None
+            if library_export is not None:
+                import library as _library
+                merged_library = _library.merge_sync([library_export] + remote_libs)
             # Merge-max our own remote copy into local (protects a wiped store).
             with self._lock:
                 own = remote.get(device_id, {}).get('days', {})
@@ -214,8 +226,12 @@ class StatsStore:
                             self._data['days'][day] = float(secs)
                     except (TypeError, ValueError):
                         pass
-                payload = json.dumps({'device': device_name,
-                                      'days': self._data['days']}, indent=1)
+                body = {'device': device_name, 'days': self._data['days']}
+                if merged_library is not None:
+                    # Publish the MERGED state, so this file already reflects
+                    # everyone's edits the next time another device pulls.
+                    body['library'] = merged_library
+                payload = json.dumps(body, indent=1)
             # Push only our file.
             pr = requests.patch(
                 f'{_API}/gists/{gist_id}', headers=headers, timeout=_TIMEOUT,
@@ -232,18 +248,19 @@ class StatsStore:
             # Report the gist id back whenever it changed (created, or the cached
             # one was deleted and a fresh one was rediscovered) so the caller
             # persists it and stops re-resolving every cycle.
-            return True, 'synced', (gist_id if gist_id != orig_id else None)
+            return (True, 'synced', (gist_id if gist_id != orig_id else None),
+                    merged_library)
         except _AuthError:
             self._last_error = 'token rejected'
-            return False, 'token rejected', None
+            return False, 'token rejected', None, None
         except _RateLimited:
             self._last_error = 'rate limited'
-            return False, 'rate limited', None
+            return False, 'rate limited', None, None
         except Exception:
             # Network / GitHub hiccup: keep last-success status, retry later.
             if not self._last_error:
                 self._last_error = 'offline?'
-            return False, 'network error', None
+            return False, 'network error', None, None
 
     def _find_gist(self, headers):
         import requests
