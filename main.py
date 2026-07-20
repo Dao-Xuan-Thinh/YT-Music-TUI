@@ -28,6 +28,7 @@ from textual.theme import Theme
 import youtube
 import player as player_module
 import updater
+import mediakeys
 import stats as stats_module
 from config import Config, _expand
 from library import Library
@@ -193,6 +194,7 @@ KEYS_HELP = [
     ('Enter',    'Play selected track'),
     ('Space',    'Pause / Resume'),
     ('n',        'Next track'),
+    ('b',        'Previous track (restarts first when mid-song)'),
     ('p',        'Play highlighted track next'),
     ('a',        'Add highlighted track to queue'),
     ('x',        'Stop playback'),
@@ -1590,6 +1592,7 @@ class YTMApp(App):
         Binding('f', 'filter', 'Filter', show=False),
         Binding('space', 'toggle_pause', 'Pause', show=False),
         Binding('n', 'next_track', 'Next', show=False),
+        Binding('b', 'prev_track', 'Previous', show=False),
         Binding('a', 'add_queue', '+Queue', show=False),
         Binding('p', 'play_next', 'Play next', show=False),
         Binding('x', 'stop', 'Stop', show=False),
@@ -1650,6 +1653,7 @@ class YTMApp(App):
             import platform
             self._config.stats_device_name = platform.node().split('.')[0] or 'desktop'
         self._stats_last = None   # (queue_idx, position) at the previous poll tick
+        self._mediakeys = None    # OS media-keys backend (set by _init_player)
         self._stats_syncing = False   # a gist sync is in flight (footer ⟳)
         # One-time migration: earlier builds stored the YTM account cookie dump in
         # `cookies_file`, which is ALSO the yt-dlp/mpv streaming cookie file. An
@@ -1801,6 +1805,15 @@ class YTMApp(App):
             )
         self._player._ensure_mpv_running()
         self._apply_volume(save=False)
+        # OS media keys + now-playing panel (Control Center / MPRIS / SMTC).
+        # Optional: returns None when the per-OS dep isn't installed — the app
+        # behaves exactly as before. Callbacks arrive on backend threads.
+        self._mediakeys = mediakeys.start({
+            'toggle_pause': lambda: self.call_from_thread(self.action_toggle_pause),
+            'next': lambda: self.call_from_thread(self.action_next_track),
+            'previous': lambda: self.call_from_thread(self.action_prev_track),
+            'stop': lambda: self.call_from_thread(self.action_stop),
+        })
 
     # ── Self-update ────────────────────────────────────────────────────────
 
@@ -2464,6 +2477,15 @@ class YTMApp(App):
             return
         self._last_bar_sig = sig
         self._update_player_bar()
+        # Feed the OS now-playing panel (media keys backend); cheap + coalescing.
+        if self._mediakeys is not None:
+            if self.now_playing and 0 <= self._queue_idx < len(self._queue):
+                t = self._queue[self._queue_idx]
+                self._mediakeys.set_now_playing(
+                    t.get('title', ''), t.get('uploader', ''),
+                    self.duration, self.position, not self.is_paused)
+            else:
+                self._mediakeys.set_now_playing('', '', 0, 0, False)
 
     def _update_player_bar(self) -> None:
         pos = self.position
@@ -2621,6 +2643,16 @@ class YTMApp(App):
             else:
                 return
         self._play_queue_item(nxt)
+
+    def action_prev_track(self) -> None:
+        """Previous-track semantics like every player: restart the current
+        track when it's more than a few seconds in, else go back one."""
+        if not self._queue or self._queue_idx < 0:
+            return
+        if self.position > 3 or self._queue_idx == 0:
+            self._play_queue_item(self._queue_idx)
+        else:
+            self._play_queue_item(self._queue_idx - 1)
 
     def action_stop(self) -> None:
         self._player.stop()
@@ -3292,6 +3324,8 @@ class YTMApp(App):
             self._config.flush()
         except Exception:
             pass
+        if self._mediakeys is not None:
+            self._mediakeys.stop()
         self._player.quit()
         self.exit()
 
