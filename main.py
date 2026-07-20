@@ -13,7 +13,7 @@ import threading
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
 from textual.reactive import reactive
@@ -325,7 +325,8 @@ class SettingsScreen(ModalScreen):
         with Vertical(id='settings-box'):
             yield Label('Listen-stats sync', id='settings-title')
             if self._stats is not None:
-                yield Static(Text(_stats_report(self._stats, self._cfg)),
+                yield Static(Text(_stats_report(self._stats, self._cfg,
+                                                top=False)),
                              id='sync-stats')
             yield Label('GitHub token (classic: gist scope · fine-grained: '
                         'Gists read & write):')
@@ -345,7 +346,7 @@ class SettingsScreen(ModalScreen):
             return
         try:
             self.query_one('#sync-stats', Static).update(
-                Text(_stats_report(self._stats, self._cfg)))
+                Text(_stats_report(self._stats, self._cfg, top=False)))
         except NoMatches:
             pass
 
@@ -1048,9 +1049,10 @@ class AccountScreen(ModalScreen):
 
 # ── Home screen ─────────────────────────────────────────────────────────────────
 
-def _stats_report(stats, cfg, width=34):
+def _stats_report(stats, cfg, width=34, top=True):
     """Multi-line plain-text listen-time report: 7-day bar graph, totals,
-    per-device split, sync status. Shared by the home Stats tab and the
+    per-device split, monthly top charts (top=False skips them — the sync
+    panel stays compact), sync status. Shared by the home Stats tab and the
     sync panel (s)."""
     dev_id = cfg.stats_device_id if cfg else ''
     dev_name = (cfg.stats_device_name if cfg else '') or 'this device'
@@ -1075,6 +1077,18 @@ def _stats_report(stats, cfg, width=34):
     if devices:
         lines.append('  ·  '.join(f'{name} {fmt(total)}'
                                   for name, total in devices))
+    top_artists = stats.top_artists(5, own_device_id=dev_id) if top else []
+    top_tracks = stats.top_tracks(5, own_device_id=dev_id) if top else []
+    if top_artists or top_tracks:
+        lines.append('')
+        lines.append('Top this month')
+        for i, (artist, secs) in enumerate(top_artists, 1):
+            lines.append(f'  {i}. {artist[:34]:<34}  {fmt(secs)}')
+        if top_tracks:
+            lines.append('')
+        for i, (title, artist, secs) in enumerate(top_tracks, 1):
+            label = f'{title} — {artist}' if artist else title
+            lines.append(f'  {i}. {label[:34]:<34}  {fmt(secs)}')
     lines.append('')
     lines.append(stats.status_line(bool(cfg and cfg.stats_token)))
     return '\n'.join(lines)
@@ -1207,7 +1221,8 @@ class HomeScreen(Screen):
                 with TabPane('Recent', id='tab-recent'):
                     yield ListView(*self._recent_items(), id='list-recent')
                 with TabPane('Stats', id='tab-stats'):
-                    yield Static('', id='stats-view')
+                    with VerticalScroll():
+                        yield Static('', id='stats-view')
 
             yield Button('Search / Browse', id='home-search', variant='primary')
             yield Label('', id='home-status')
@@ -2446,7 +2461,9 @@ class YTMApp(App):
             if prev is not None and prev[0] == self._queue_idx:
                 delta = self.position - prev[1]
                 if 0 < delta <= 2.0:
-                    self._stats.add(delta)
+                    track = (self._queue[self._queue_idx]
+                             if 0 <= self._queue_idx < len(self._queue) else None)
+                    self._stats.add(delta, track=track)
             self._stats_last = (self._queue_idx, self.position)
         else:
             self._stats_last = None

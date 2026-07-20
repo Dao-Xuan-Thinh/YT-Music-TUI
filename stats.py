@@ -29,13 +29,21 @@ _TIMEOUT = 10
 
 _DEFAULTS = {
     'days': {},
+    'top': {},        # {'YYYY-MM': {'<id>|<title>|<uploader>': seconds}}
     'remote': {},
     'last_sync': 0.0,
 }
 
+TOP_CAP = 300      # keys kept per month (trimmed at flush)
+TOP_MONTHS = 12    # months of attribution history kept
+
 
 def _today():
     return time.strftime('%Y-%m-%d')
+
+
+def _month():
+    return time.strftime('%Y-%m')
 
 
 def _day_keys(n):
@@ -69,14 +77,21 @@ class StatsStore:
 
     # ── Local accumulation ─────────────────────────────────────────────────
 
-    def add(self, seconds):
-        """Accumulate listened seconds into today's counter (memory only)."""
+    def add(self, seconds, track=None):
+        """Accumulate listened seconds into today's counter, and attribute
+        them to `track` (dict with id/title/uploader) for the monthly top
+        charts. Memory only — flush() persists."""
         if seconds <= 0:
             return
         with self._lock:
             day = _today()
             days = self._data['days']
             days[day] = float(days.get(day, 0)) + seconds
+            if track and track.get('id'):
+                key = (f"{track['id']}|{track.get('title', '')}"
+                       f"|{track.get('uploader', '')}")
+                month = self._data.setdefault('top', {}).setdefault(_month(), {})
+                month[key] = float(month.get(key, 0)) + seconds
             self._dirty = True
 
     def flush(self):
@@ -84,6 +99,7 @@ class StatsStore:
         with self._lock:
             if not self._dirty:
                 return
+            self._prune_top_locked()
             data = json.loads(json.dumps(self._data))  # snapshot
             self._dirty = False
         try:
@@ -91,6 +107,17 @@ class StatsStore:
                 json.dump(data, f, indent=2)
         except Exception:
             pass
+
+    def _prune_top_locked(self):
+        """Trim attribution maps (call with the lock held): newest TOP_MONTHS
+        months, top TOP_CAP keys per month."""
+        top = self._data.get('top') or {}
+        for month in sorted(top, reverse=True)[TOP_MONTHS:]:
+            del top[month]
+        for month, entries in top.items():
+            if len(entries) > TOP_CAP:
+                keep = sorted(entries.items(), key=lambda kv: -float(kv[1]))
+                top[month] = dict(keep[:TOP_CAP])
 
     # ── Merged views (local + remote devices) ──────────────────────────────
 
@@ -146,6 +173,47 @@ class StatsStore:
             except (TypeError, ValueError):
                 pass
         return out
+
+    def _merged_top(self, month, own_device_id=''):
+        """key -> seconds for one month across devices (own copy max-deduped,
+        others summed — same rule as the day counters)."""
+        with self._lock:
+            local = dict((self._data.get('top') or {}).get(month, {}))
+            remote = {dev: dict((v.get('top') or {}).get(month, {}))
+                      for dev, v in self._data['remote'].items()
+                      if isinstance(v, dict)}
+        own = remote.pop(own_device_id, {}) if own_device_id else {}
+        merged = {}
+        for k in set(local) | set(own):
+            merged[k] = max(float(local.get(k, 0)), float(own.get(k, 0)))
+        for entries in remote.values():
+            for k, secs in entries.items():
+                try:
+                    merged[k] = merged.get(k, 0.0) + float(secs)
+                except (TypeError, ValueError):
+                    pass
+        return merged
+
+    def top_tracks(self, n=5, own_device_id='', month=None):
+        """[(title, artist, seconds)] — most-listened tracks this month."""
+        merged = self._merged_top(month or _month(), own_device_id)
+        out = []
+        for key, secs in sorted(merged.items(), key=lambda kv: -kv[1])[:n]:
+            parts = key.split('|', 2)
+            out.append((parts[1] if len(parts) > 1 else key,
+                        parts[2] if len(parts) > 2 else '', secs))
+        return out
+
+    def top_artists(self, n=5, own_device_id='', month=None):
+        """[(artist, seconds)] — most-listened artists this month."""
+        merged = self._merged_top(month or _month(), own_device_id)
+        agg = {}
+        for key, secs in merged.items():
+            parts = key.split('|', 2)
+            artist = parts[2] if len(parts) > 2 else ''
+            if artist:
+                agg[artist] = agg.get(artist, 0.0) + secs
+        return sorted(agg.items(), key=lambda kv: -kv[1])[:n]
 
     def last_sync(self):
         with self._lock:
@@ -207,7 +275,8 @@ class StatsStore:
                     try:
                         parsed = json.loads(finfo.get('content') or '{}')
                         remote[dev] = {'device': parsed.get('device') or dev[:8],
-                                       'days': dict(parsed.get('days') or {})}
+                                       'days': dict(parsed.get('days') or {}),
+                                       'top': dict(parsed.get('top') or {})}
                         if dev != device_id and isinstance(parsed.get('library'), dict):
                             remote_libs.append(parsed['library'])
                     except Exception:
@@ -226,7 +295,9 @@ class StatsStore:
                             self._data['days'][day] = float(secs)
                     except (TypeError, ValueError):
                         pass
-                body = {'device': device_name, 'days': self._data['days']}
+                self._prune_top_locked()
+                body = {'device': device_name, 'days': self._data['days'],
+                        'top': self._data.get('top', {})}
                 if merged_library is not None:
                     # Publish the MERGED state, so this file already reflects
                     # everyone's edits the next time another device pulls.
@@ -239,7 +310,8 @@ class StatsStore:
             self._check(pr)
             with self._lock:
                 remote[device_id] = {'device': device_name,
-                                     'days': dict(self._data['days'])}
+                                     'days': dict(self._data['days']),
+                                     'top': dict(self._data.get('top', {}))}
                 self._data['remote'] = remote
                 self._data['last_sync'] = time.time()
                 self._dirty = True
