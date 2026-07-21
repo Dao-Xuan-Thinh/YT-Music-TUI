@@ -163,24 +163,27 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
   calls `python_set_auth` when `python_ready()` is already 1 (never cold-start
   CPython in a ~30s budget). Test with lldb
   `_simulateLaunchForTaskWithIdentifier:`.
-- **watchOS remote is a frame, NOT wired into the build.** `ios/WatchApp/` +
-  the `YTMusicWatch` target exist, and the phone half (`WatchLink`, WCSession
-  status/playpause/next/prev) ships in the app. The target is deliberately left
-  out of the app's `dependencies`: embedding it makes xcodebuild refuse EVERY
-  iOS build unless the watch app can be built AND signed, so any hiccup there
-  breaks device installs. Two prerequisites, in order:
-  1. watchOS *runtime* (not just the SDK): `xcodebuild -downloadPlatform watchOS`
-     (~4 GB). **Done on this Mac (watchOS 26.5, 2026-07-20).**
-  2. A live Apple ID session in Xcode. `com.ytmtui.YTMusic.watchkitapp` is a NEW
-     App ID and automatic signing must mint it via the developer portal; the
-     cached profiles for `.YTMusic`/`.Widget` don't help. With no account token
-     in the keychain the build fails with "No Accounts: Add a new account in
-     Accounts settings" + "No profiles for '…watchkitapp' were found" — even
-     though `IDEProvisioningTeamByIdentifier` still lists the team. Fix: Xcode →
-     Settings → Accounts → sign in (free team, counts against the 10-App-IDs-per
-     -7-days quota).
-  Then re-add `- target: YTMusicWatch` + `embed: true` under the app target and
-  bump all THREE targets' versions together.
+- **watchOS remote** (`ios/WatchApp/` + the `YTMusicWatch` target, embedded under
+  `Watch/`): phone half is `WatchLink` (WCSession — status/playpause/next/prev
+  routed through the same paths as the lock-screen controls); watch half polls
+  status every 3 s while on screen. `sendMessage` needs the phone app reachable,
+  so it's live-session only (no complication, no background control). All THREE
+  targets' versions MUST move together (app + widget + watch) or the install is
+  rejected. Two things this setup depends on, both hard-won:
+  1. **`type: application`, NOT `application.watchapp2`.** watchapp2 is the legacy
+     stub-app product type — it COPIES its binary from Apple's WatchKitStub via
+     `CopyAndPreserveArchs`, which collides with the `Ld` step the moment the
+     watch app has its own `@main` Swift sources ("Multiple commands produce
+     …/YTMusicWatch"). A modern single-target watch app (`WKApplication: true` +
+     `WKCompanionAppBundleIdentifier`) is a plain `application` on the watchOS
+     platform; that links its own binary with no stub copy.
+  2. **The watchOS runtime + a signed-in Xcode account.** Embedding the watch app
+     makes xcodebuild refuse EVERY iOS build unless the watch app builds AND
+     signs — so a missing runtime ("watchOS X must be installed…") or a lapsed
+     Xcode account ("No Accounts" / "No profiles for '…watchkitapp'") breaks
+     device installs too. Fixes: `xcodebuild -downloadPlatform watchOS` (~4 GB),
+     and Xcode → Settings → Accounts → sign in. `.watchkitapp` is a NEW App ID
+     (one of the free team's 10-per-7-days), minted on demand once signed in.
 - **`./build.sh sim` never exits**: its last step is `simctl launch --console-pty`,
   which attaches to the app console forever. The build itself is done well before
   that — don't wait on the script. Also `simctl`/`devicectl` need

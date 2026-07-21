@@ -11,6 +11,9 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.10", date: "2026-07", notes: [
+            "Apple Watch remote: see what's playing and control it (play/pause, next, previous) from your wrist while the phone app is reachable",
+        ]),
         ChangelogEntry(version: "1.9", date: "2026-07", notes: [
             "YT MUSIC library section: your real account playlists + Your Likes",
             "Full cross-device sync: likes, playlists and resume sessions travel between desktop and mobile (deletions too)",

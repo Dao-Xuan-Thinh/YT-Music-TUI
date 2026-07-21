@@ -28,12 +28,12 @@ targets:
       # Stats widget rides inside the app bundle (PlugIns/YTMusicWidget.appex).
       - target: YTMusicWidget
         embed: true
-      # NOTE: the watch app is deliberately NOT embedded here. Embedding makes
-      # the iOS scheme require the watchOS *runtime* (not just the SDK) —
-      # xcodebuild then refuses every phone build with "watchOS X must be
-      # installed in order to run the scheme", breaking device installs. To
-      # ship the watch app: `xcodebuild -downloadPlatform watchOS`, then
-      # re-add `- target: YTMusicWatch` + `embed: true` here.
+      # Watch remote, embedded under Watch/ (xcodegen places watchapp2 there).
+      # Requires BOTH the watchOS runtime (`xcodebuild -downloadPlatform
+      # watchOS`) AND a signed-in Xcode account (the .watchkitapp App ID is
+      # minted on demand) — without either, EVERY iOS build fails. See CLAUDE.md.
+      - target: YTMusicWatch
+        embed: true
     # App Group shared with the widget (stats.json lives there). xcodegen
     # regenerates the .entitlements plist from these properties at `generate`.
     entitlements:
@@ -48,8 +48,8 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         ITSAppUsesNonExemptEncryption: false
-        CFBundleShortVersionString: "1.9"
-        CFBundleVersion: "11"
+        CFBundleShortVersionString: "1.10"
+        CFBundleVersion: "12"
         # Deep link used by the Now Playing widget's iOS-16 fallback.
         CFBundleURLTypes:
           - CFBundleURLName: com.ytmtui.YTMusic
@@ -88,11 +88,14 @@ targets:
           install_python Support/Python.xcframework app app_packages
 
   # watchOS remote: control what the phone is playing (no audio of its own,
-  # no Python). Single-target watch app (WKApplication) — needs the companion
-  # bundle id to pair. Builds with no watch present; installing the watch app
-  # itself needs a paired watch (the iOS app installs regardless).
+  # no Python). Modern single-target watch app: type `application` (NOT
+  # `application.watchapp2` — that legacy stub type COPIES its binary from
+  # Apple's WatchKitStub via CopyAndPreserveArchs, which collides with the Ld
+  # step once the app has its own @main Swift sources: "Multiple commands
+  # produce …/YTMusicWatch"). `WKApplication: true` + the companion bundle id
+  # below are what make this a paired watch app.
   YTMusicWatch:
-    type: application.watchapp2
+    type: application
     platform: watchOS
     sources:
       - path: WatchApp
@@ -103,8 +106,8 @@ targets:
         WKCompanionAppBundleIdentifier: com.ytmtui.YTMusic
         CFBundleDisplayName: YT Music
         # MUST match the app (and widget) or the install is rejected.
-        CFBundleShortVersionString: "1.9"
-        CFBundleVersion: "11"
+        CFBundleShortVersionString: "1.10"
+        CFBundleVersion: "12"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ytmtui.YTMusic.watchkitapp
@@ -138,8 +141,8 @@ targets:
       properties:
         CFBundleDisplayName: YT Music Stats
         # MUST match the app's versions or the install is rejected.
-        CFBundleShortVersionString: "1.9"
-        CFBundleVersion: "11"
+        CFBundleShortVersionString: "1.10"
+        CFBundleVersion: "12"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
