@@ -217,6 +217,7 @@ KEYS_HELP = [
     ('s',        'Listen-stats sync settings (GitHub token + device name)'),
     ('g',        'YouTube account / sign in (For You feed)'),
     ('u',        'Check for updates / update the app'),
+    ('V',        "Changelog (what's new)"),
     ('?',        'This help'),
     ('q',        'Quit'),
 ]
@@ -440,6 +441,109 @@ class KeybindingsScreen(ModalScreen):
             yield Label('Keyboard shortcuts  (Esc to close)', id='keys-title')
             lines = '\n'.join(f'  [bold]{k:<9}[/]  {desc}' for k, desc in KEYS_HELP)
             yield Static(lines)
+
+
+# ── Changelog ─────────────────────────────────────────────────────────────────
+# Curated from the project's git history (newest first). Kept as data (not a
+# runtime `git log`) so it works on non-git installs. The mobile app mirrors
+# this list so the desktop history is viewable there too.
+CHANGELOG = [
+    ('1.6', '2026-07-21 09:00', [
+        'App no longer goes unresponsive after sitting idle — audio self-recovers with no restart',
+        'Expanded stats: all-time top artists/tracks, listening streak, this-year total, most-active weekday',
+        'This changelog (press V)',
+    ]),
+    ('1.5', '2026-07-20 14:30', [
+        'Gapless auto-advance — the next track is pre-resolved so there is no gap',
+        'YT Music tab: your real account playlists + Your Likes on the home screen',
+        'Cross-device sync of liked songs, playlists and resume sessions via a private gist',
+        'Monthly top charts in the Stats tab',
+        'Media keys + OS now-playing panel (macOS / Linux / Windows)',
+    ]),
+    ('1.4', '2026-07-15 12:13', [
+        'Listen-time stats: daily counters + a home Stats tab, synced across devices',
+        'Settings (s) is now the sync panel; streaming cookies moved to Account (g)',
+    ]),
+    ('1.3', '2026-07-13 20:56', [
+        'Reorder the queue with K / J (or Shift+↑/↓)',
+        'Radio keeps the currently-playing song going instead of restarting it',
+        '4 new themes + animated light themes + per-theme glyph spinners; update toast',
+        "Fixed silent queue-wide skipping (failure detection uses 'audio never started')",
+    ]),
+    ('1.2', '2026-07-04 11:33', [
+        'Play Music-Premium-only tracks with your signed-in account',
+        'Removed the dead OAuth backend (YouTube rejects those tokens)',
+        "Fixed songs stuck 'fetching' forever (timeouts + watchdog)",
+    ]),
+    ('1.1', '2026-07-01 10:05', [
+        'Artist pages, radio (endless mix) and synced lyrics with follow + translation',
+        'Artist and album rows in search results',
+    ]),
+    ('1.0', '2026-06-27 10:26', [
+        'Durable "Sign in from browser" using live cookies (no more silent expiry)',
+        'Fixed the cookie sign-in input freeze; live cookie verification at boot',
+    ]),
+    ('0.5', '2026-06-26 16:30', [
+        'Anti-hang pass: serialized ytmusicapi with per-request timeouts',
+        'Fixed the mpv --no-terminal input freeze; added a freeze watchdog',
+    ]),
+    ('0.4', '2026-06-25 15:11', [
+        'Home-screen library management (delete / rename) + a Resume tab',
+    ]),
+    ('0.3', '2026-06-24 12:48', [
+        'Sign in to YouTube + a personalized For You feed',
+        '14 custom themes with the animated color-wave; cookie/browser auth',
+    ]),
+    ('0.2', '2026-06-22 14:44', [
+        'Home screen, library/sessions, shuffle/repeat, resume',
+        'In-app self-update via git (u); monochrome glyphs; scroll-stutter fix',
+    ]),
+    ('0.1', '2026-06-21 19:39', [
+        'Baseline TUI: YouTube Music via ytmusicapi (full playlists + artists)',
+        'Queue, in-list filter, theme switching; per-process mpv IPC',
+        'Cross-platform mpv IPC (macOS / Linux / Windows)',
+    ]),
+]
+
+
+class ChangelogScreen(ModalScreen):
+    """Read-only version history of the desktop app."""
+    BINDINGS = [
+        Binding('escape', 'dismiss_modal', 'Close'),
+        Binding('q', 'dismiss_modal', 'Close'),
+        Binding('V', 'dismiss_modal', 'Close'),
+    ]
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
+    CSS = """
+    ChangelogScreen { align: center middle; }
+    #changelog-box {
+        width: 76; height: 30;
+        border: round $accent; padding: 1 2; background: $surface;
+    }
+    #changelog-title { text-style: bold; color: $accent; margin-bottom: 1; }
+    #changelog-scroll { height: 1fr; }
+    """
+
+    def compose(self) -> ComposeResult:
+        rev = ''
+        try:
+            rev = updater.current_revision() or ''
+        except Exception:
+            pass
+        with Vertical(id='changelog-box'):
+            yield Label(f'Changelog{("  ·  " + rev) if rev else ""}   (Esc to close)',
+                        id='changelog-title')
+            lines = []
+            for version, date, notes in CHANGELOG:
+                lines.append(f'[bold]v{version}[/]   [dim]{date}[/]')
+                for n in notes:
+                    lines.append(f'  · {n}')
+                lines.append('')
+            with VerticalScroll(id='changelog-scroll'):
+                yield Static(Text.from_markup('\n'.join(lines)))
 
 
 # ── Lyrics screen ─────────────────────────────────────────────────────────────
@@ -1659,6 +1763,7 @@ class YTMApp(App):
         Binding('s', 'settings', 'Settings', show=False),
         Binding('g', 'account', 'Account', show=False),
         Binding('u', 'update', 'Update', show=False),
+        Binding('V', 'changelog', 'Changelog', show=False),
         Binding('escape', 'clear_filter', 'Clear filter', show=False),
         Binding('question_mark', 'show_keys', 'Keys', show=True),
         Binding('q', 'quit', 'Quit', show=False),
@@ -3184,6 +3289,9 @@ class YTMApp(App):
 
     def action_show_keys(self) -> None:
         self.push_screen(KeybindingsScreen())
+
+    def action_changelog(self) -> None:
+        self.push_screen(ChangelogScreen())
 
     def action_settings(self) -> None:
         def _after(result):
