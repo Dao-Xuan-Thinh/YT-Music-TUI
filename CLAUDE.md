@@ -98,11 +98,23 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
   `DebugLog.shared.log` (Swift) surface in Settings → DEBUG → debug log (copyable).
   Never log cookie values.
 - **Version + changelog discipline:** with every user-facing change, bump
-  `CFBundleShortVersionString`/`CFBundleVersion` in `ios/project.yml` AND append an entry
-  to `Changelog.entries` (`ios/YTMusic/ChangelogScreen.swift`). `UpdateChecker` compares
-  the build's baked-in sha (`BuildInfo.generated.swift`, written by build.sh, gitignored)
-  against GitHub's mobile-fork head — commit+push, then rebuild, or the app will report
-  itself out of date.
+  `CFBundleShortVersionString`/`CFBundleVersion` in `ios/project.yml` (ALL THREE targets —
+  app, widget, watch — must match) AND append an entry to `Changelog.entries`
+  (`ios/YTMusic/ChangelogScreen.swift`; the changelog has a Mobile/Desktop toggle —
+  `desktopEntries` mirrors the desktop app's `main.py` CHANGELOG by hand). `UpdateChecker`
+  compares the build's baked-in sha (`BuildInfo.generated.swift`, written by build.sh,
+  gitignored) against GitHub's mobile-fork head — commit+push, then rebuild, or the app
+  will report itself out of date.
+- **Now-Playing is device-local; only own-device sessions arm the bar.** The now-playing
+  snapshot (`nowplaying.json`) and widget are per-device (never in the gist). But resume
+  `Session`s ARE gist-synced, so `PlayerViewModel.armResume()` filters to
+  `sessions.first(where: { $0.device == nil })` — otherwise a synced remote session
+  (sorted first by time) hijacks the now-playing bar on the other device. Cross-device
+  resume is explicit in Library → resume (remote rows marked `↩ … from <device>`).
+- **Audio-only AVPlayer:** `PlaybackService` sets `player.allowsExternalPlayback = false`
+  in init. Without it, moving output to a Continuity/AirPlay *video* route (iPhone → Mac)
+  makes AVPlayer show the system external-playback placeholder — a gray box over the app.
+  There is no AVPlayerLayer in the app; the gray box was purely that default.
 - **Sheet/cover presentation:** SwiftUI cannot present two sibling
   `fullScreenCover`s from the same view. All root-level covers live in ContentView; a
   cover that must appear *on top of* another presented screen must be attached *inside*

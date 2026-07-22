@@ -48,8 +48,8 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         ITSAppUsesNonExemptEncryption: false
-        CFBundleShortVersionString: "1.10"
-        CFBundleVersion: "12"
+        CFBundleShortVersionString: "1.11"
+        CFBundleVersion: "13"
         # Deep link used by the Now Playing widget's iOS-16 fallback.
         CFBundleURLTypes:
           - CFBundleURLName: com.ytmtui.YTMusic
@@ -106,8 +106,8 @@ targets:
         WKCompanionAppBundleIdentifier: com.ytmtui.YTMusic
         CFBundleDisplayName: YT Music
         # MUST match the app (and widget) or the install is rejected.
-        CFBundleShortVersionString: "1.10"
-        CFBundleVersion: "12"
+        CFBundleShortVersionString: "1.11"
+        CFBundleVersion: "13"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ytmtui.YTMusic.watchkitapp
@@ -141,8 +141,8 @@ targets:
       properties:
         CFBundleDisplayName: YT Music Stats
         # MUST match the app's versions or the install is rejected.
-        CFBundleShortVersionString: "1.10"
-        CFBundleVersion: "12"
+        CFBundleShortVersionString: "1.11"
+        CFBundleVersion: "13"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:

@@ -28,3 +28,4 @@ ios/YTMusicWidget/Info.plist
 ios/WatchApp/Info.plist
 ios/YTMusic/YTMusic.entitlements
 ios/YTMusicWidget/YTMusicWidget.entitlements
+ios/build-watchreg/

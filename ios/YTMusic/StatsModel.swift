@@ -261,11 +261,35 @@ enum StatsShared {
         return merged
     }
 
-    /// [(title, artist, seconds)] — most-listened tracks this month.
+    /// Attribution merged across ALL retained months and devices (own copy
+    /// max-deduped across its months, other devices summed). "All time" is
+    /// practically the retained ~12-month window (older months are pruned).
+    static func mergedTopAll(_ f: StatsFile) -> [String: Double] {
+        func flatten(_ months: [String: [String: Double]]?) -> [String: Double] {
+            var agg: [String: Double] = [:]
+            for mv in (months ?? [:]).values {
+                for (k, v) in mv { agg[k, default: 0] += v }
+            }
+            return agg
+        }
+        var remote = f.remote.mapValues { flatten($0.top) }
+        let own = f.deviceID.flatMap { remote.removeValue(forKey: $0) } ?? [:]
+        let local = flatten(f.top)
+        var merged: [String: Double] = [:]
+        for k in Set(local.keys).union(own.keys) {
+            merged[k] = max(local[k] ?? 0, own[k] ?? 0)
+        }
+        for dev in remote.values {
+            for (k, secs) in dev { merged[k, default: 0] += secs }
+        }
+        return merged
+    }
+
+    /// [(title, artist, seconds)] — most-listened tracks (this month or all time).
     static func topTracks(_ f: StatsFile, n: Int = 5,
-                          month: String = monthKey()) -> [(String, String, Double)] {
-        mergedTop(f, month: month)
-            .sorted { $0.value > $1.value }.prefix(n)
+                          allTime: Bool = false) -> [(String, String, Double)] {
+        let map = allTime ? mergedTopAll(f) : mergedTop(f, month: monthKey())
+        return map.sorted { $0.value > $1.value }.prefix(n)
             .map { key, secs in
                 let parts = key.split(separator: "|", maxSplits: 2,
                                       omittingEmptySubsequences: false)
@@ -274,17 +298,81 @@ enum StatsShared {
             }
     }
 
-    /// [(artist, seconds)] — most-listened artists this month.
+    /// [(artist, seconds)] — most-listened artists (this month or all time).
     static func topArtists(_ f: StatsFile, n: Int = 5,
-                           month: String = monthKey()) -> [(String, Double)] {
+                           allTime: Bool = false) -> [(String, Double)] {
+        let map = allTime ? mergedTopAll(f) : mergedTop(f, month: monthKey())
         var agg: [String: Double] = [:]
-        for (key, secs) in mergedTop(f, month: month) {
+        for (key, secs) in map {
             let parts = key.split(separator: "|", maxSplits: 2,
                                   omittingEmptySubsequences: false)
             let artist = parts.count > 2 ? String(parts[2]) : ""
             if !artist.isEmpty { agg[artist, default: 0] += secs }
         }
         return agg.sorted { $0.value > $1.value }.prefix(n).map { ($0.key, $0.value) }
+    }
+
+    // ── Derived day-based stats (from the never-pruned day counters) ─────────
+
+    static let weekdayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    private static func parseDay(_ key: String) -> Date? {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = .current
+        fmt.dateFormat = "yyyy-MM-dd"
+        return fmt.date(from: key)
+    }
+
+    /// (current, longest) run of consecutive days with any listening.
+    static func streak(_ f: StatsFile) -> (current: Int, longest: Int) {
+        let days = Set(mergedDayMap(f).filter { $0.value > 0 }.keys)
+        guard !days.isEmpty else { return (0, 0) }
+        let cal = Calendar.current
+        let parsed = days.compactMap(parseDay).map { cal.startOfDay(for: $0) }.sorted()
+        var longest = 1, cur = 1
+        for i in 1..<max(parsed.count, 1) where parsed.count > 1 {
+            let gap = cal.dateComponents([.day], from: parsed[i-1], to: parsed[i]).day ?? 0
+            cur = gap == 1 ? cur + 1 : 1
+            longest = max(longest, cur)
+        }
+        // current run ending today or yesterday
+        var current = 0
+        var d = cal.startOfDay(for: Date())
+        if !days.contains(dayKey(d)) {
+            d = cal.date(byAdding: .day, value: -1, to: d)!
+        }
+        while days.contains(dayKey(d)) {
+            current += 1
+            d = cal.date(byAdding: .day, value: -1, to: d)!
+        }
+        return (current, longest)
+    }
+
+    /// (dayKey, seconds) of the single biggest listening day.
+    static func bestDay(_ f: StatsFile) -> (day: String, secs: Double) {
+        guard let best = mergedDayMap(f).max(by: { $0.value < $1.value }) else {
+            return ("", 0)
+        }
+        return (best.key, best.value)
+    }
+
+    static func yearTotal(_ f: StatsFile) -> Double {
+        let yr = String(dayKey().prefix(4))
+        return mergedDayMap(f).filter { $0.key.hasPrefix(yr) }.values.reduce(0, +)
+    }
+
+    /// [seconds]*7, Monday..Sunday.
+    static func weekdayTotals(_ f: StatsFile) -> [Double] {
+        var out = [Double](repeating: 0, count: 7)
+        let cal = Calendar.current
+        for (key, secs) in mergedDayMap(f) {
+            guard let d = parseDay(key) else { continue }
+            // Calendar weekday: 1=Sun..7=Sat → index 0=Mon..6=Sun
+            let idx = (cal.component(.weekday, from: d) + 5) % 7
+            out[idx] += secs
+        }
+        return out
     }
 
     /// 132 → "2m", 9876 → "2h 44m".

@@ -19,6 +19,7 @@ struct SettingsScreen: View {
     @State private var showDebugLog = false
     @State private var showChangelog = false
     @State private var showThemes = false
+    @State private var topAllTime = false   // stats top-charts scope toggle
 
     enum ClearTarget: String, Identifiable {
         case liked, recent, playlists, sessions
@@ -211,12 +212,23 @@ struct SettingsScreen: View {
                     }
                 }
             }
-            // Monthly top charts (merged across devices).
-            let topArtists = StatsShared.topArtists(stats.file, n: 5)
-            let topTracks = StatsShared.topTracks(stats.file, n: 5)
+            // Extras: streak / this-year / biggest day / most-active weekday.
+            statsExtras
+            // Top charts (merged across devices) — this month or all time.
+            let topArtists = StatsShared.topArtists(stats.file, n: 5, allTime: topAllTime)
+            let topTracks = StatsShared.topTracks(stats.file, n: 5, allTime: topAllTime)
             if !topArtists.isEmpty {
-                Text("top this month").font(TUI.mono(11, .bold))
-                    .foregroundStyle(TUI.dim).padding(.top, 4)
+                HStack {
+                    Text(topAllTime ? "top all time" : "top this month")
+                        .font(TUI.mono(11, .bold)).foregroundStyle(TUI.dim)
+                    Spacer()
+                    Picker("", selection: $topAllTime) {
+                        Text("month").tag(false)
+                        Text("all time").tag(true)
+                    }
+                    .pickerStyle(.segmented).frame(width: 160)
+                }
+                .padding(.top, 4)
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(topArtists.enumerated()), id: \.offset) { i, a in
                         HStack(spacing: 8) {
@@ -301,6 +313,34 @@ struct SettingsScreen: View {
 
     private var statsTotals: (today: Double, week: Double, all: Double) {
         StatsShared.totals(stats.file)
+    }
+
+    /// Streak · this-year · biggest day · most-active weekday (from day counters).
+    private var statsExtraChips: [String] {
+        let streak = StatsShared.streak(stats.file)
+        let best = StatsShared.bestDay(stats.file)
+        let year = StatsShared.yearTotal(stats.file)
+        let wk = StatsShared.weekdayTotals(stats.file)
+        var chips: [String] = []
+        if streak.current > 0 {
+            chips.append("streak \(streak.current)d (best \(streak.longest))")
+        }
+        if year > 0 { chips.append("this year \(StatsShared.fmtMins(year))") }
+        if best.secs > 0 { chips.append("biggest day \(StatsShared.fmtMins(best.secs))") }
+        if let mx = wk.indices.max(by: { wk[$0] < wk[$1] }), wk[mx] > 0 {
+            chips.append("most active \(StatsShared.weekdayNames[mx])")
+        }
+        return chips
+    }
+
+    @ViewBuilder private var statsExtras: some View {
+        let chips = statsExtraChips
+        if !chips.isEmpty {
+            Text(chips.joined(separator: "  ·  "))
+                .font(TUI.mono(11)).foregroundStyle(TUI.dim)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 2)
+        }
     }
 
     private var debugSection: some View {

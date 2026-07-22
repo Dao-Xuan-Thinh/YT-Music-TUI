@@ -58,6 +58,11 @@ final class PlaybackService: ObservableObject {
     }
 
     private init() {
+        // Audio-only: never route to an external *video* surface. Without this,
+        // moving the output to a Continuity/AirPlay video route (iPhone → Mac)
+        // makes AVPlayer show the system external-playback placeholder — a gray
+        // box over the app while audio keeps playing.
+        player.allowsExternalPlayback = false
         configureAudioSession()
         configureRemoteCommands()
         observePlayer()

@@ -744,8 +744,13 @@ final class PlayerViewModel: ObservableObject {
     /// Arm the most recent session at launch: restore the queue silently, WITHOUT
     /// autoplaying — the now-playing bar shows a resume chip; tapping it starts playback.
     func armResume() {
+        // Only THIS device's own sessions arm the now-playing bar. Sessions
+        // synced in from another device (device != nil) sort by time and could
+        // otherwise hijack the bar — they live in Library → resume, resumed
+        // explicitly, instead.
         guard playback.current == nil, queue.isEmpty,
-              let s = library.sessions.first, !s.queue.isEmpty else { return }
+              let s = library.sessions.first(where: { $0.device == nil }),
+              !s.queue.isEmpty else { return }
         queue = s.queue
         queueIndex = min(max(0, s.index), s.queue.count - 1)
         pendingResume = s

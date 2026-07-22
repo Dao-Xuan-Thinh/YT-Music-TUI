@@ -184,11 +184,12 @@ struct ContentView: View {
         GeometryReader { geo in
             let leftW = geo.size.width * 0.38
             // On iPad leave room below the cover for the equalizer + extra control rows.
-            let coverSide = min(leftW - 8, geo.size.height * (isPad ? 0.42 : 0.5))
+            let coverSide = min(leftW - 8, geo.size.height * (isPad ? 0.46 : 0.5))
             VStack(spacing: 6) {
                 HStack(alignment: .top, spacing: 16) {
                     nowPlayingLandscape(coverSide: coverSide)
                         .frame(width: leftW)
+                        .frame(maxHeight: .infinity)
                     VStack(spacing: 6) {
                         if isPad && showLyricsPanel {
                             lyricsSidePanel
@@ -208,7 +209,7 @@ struct ContentView: View {
     /// Landscape now-playing: a square (1:1) cover, then title, scrubber, and transport.
     /// iPad adds the fullscreen player's remaining features inline.
     private func nowPlayingLandscape(coverSide: CGFloat) -> some View {
-        VStack(spacing: 10) {
+        VStack(spacing: isPad ? 12 : 10) {
             AsyncImage(url: playback.current?.thumbnailURL) { phase in
                 if case .success(let img) = phase { img.resizable().scaledToFill() }
                 else { TUI.panel.overlay(Text("♪").font(.system(size: 56)).foregroundStyle(TUI.dim)) }
@@ -225,6 +226,9 @@ struct ContentView: View {
                 Equalizer(playback: playback, active: playback.isPlaying,
                           palette: theme.current.wave ?? [TUI.accent])
                     .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30)
+                // Flexible gap: anchors the cover up top and the controls below,
+                // so the column fills the tall iPad area instead of bunching.
+                Spacer(minLength: 8)
             }
 
             HStack(spacing: 8) {
@@ -266,6 +270,10 @@ struct ContentView: View {
             .foregroundStyle(TUI.accent).disabled(playback.current == nil)
 
             if isPad {
+                // Second flexible gap: pushes the secondary controls toward the
+                // bottom, giving the three zones (cover / transport / extras)
+                // even breathing room down the column.
+                Spacer(minLength: 8)
                 HStack(spacing: 30) {
                     Text("shuffle")
                         .foregroundStyle(vm.shuffle ? TUI.accent : TUI.dim)
@@ -691,11 +699,12 @@ struct ContentView: View {
         }
         ForEach(library.sessions) { s in
             HStack(spacing: 8) {
-                Text("⏵").foregroundStyle(TUI.accent)
+                // ↩ marks a session that came from another device (resume it here).
+                Text(s.device == nil ? "⏵" : "↩").foregroundStyle(TUI.accent)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(s.title).foregroundStyle(TUI.fg).lineLimit(1).font(TUI.mono(13))
                     Text("\(s.queue.count) tracks · \(timeString(s.position))"
-                         + (s.device.map { " · \($0)" } ?? ""))
+                         + (s.device.map { " · from \($0)" } ?? ""))
                         .foregroundStyle(TUI.dim).font(TUI.mono(10))
                 }
                 Spacer(minLength: 6)
