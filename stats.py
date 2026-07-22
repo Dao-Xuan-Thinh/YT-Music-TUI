@@ -46,6 +46,13 @@ def _month():
     return time.strftime('%Y-%m')
 
 
+def _valid_day(d):
+    return isinstance(d, str) and len(d) == 10 and d[4] == '-' and d[7] == '-'
+
+
+WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+
 def _day_keys(n):
     """The last n local dates, oldest first, ending today."""
     now = time.time()
@@ -194,9 +201,42 @@ class StatsStore:
                     pass
         return merged
 
-    def top_tracks(self, n=5, own_device_id='', month=None):
-        """[(title, artist, seconds)] — most-listened tracks this month."""
-        merged = self._merged_top(month or _month(), own_device_id)
+    @staticmethod
+    def _flatten_months(months):
+        agg = {}
+        for mv in (months or {}).values():
+            for k, secs in mv.items():
+                try:
+                    agg[k] = agg.get(k, 0.0) + float(secs)
+                except (TypeError, ValueError):
+                    pass
+        return agg
+
+    def _merged_top_all(self, own_device_id=''):
+        """key -> seconds across ALL retained months and devices (own copy
+        max-deduped across its months, other devices summed). 'All time' is
+        practically the last TOP_MONTHS months, since older ones are pruned."""
+        with self._lock:
+            local = self._flatten_months(self._data.get('top'))
+            remote = {dev: self._flatten_months(v.get('top'))
+                      for dev, v in self._data['remote'].items()
+                      if isinstance(v, dict)}
+        own = remote.pop(own_device_id, {}) if own_device_id else {}
+        merged = {}
+        for k in set(local) | set(own):
+            merged[k] = max(float(local.get(k, 0)), float(own.get(k, 0)))
+        for entries in remote.values():
+            for k, secs in entries.items():
+                merged[k] = merged.get(k, 0.0) + float(secs)
+        return merged
+
+    def _top_map(self, own_device_id, scope):
+        return (self._merged_top(_month(), own_device_id) if scope == 'month'
+                else self._merged_top_all(own_device_id))
+
+    def top_tracks(self, n=5, own_device_id='', scope='month'):
+        """[(title, artist, seconds)] — most-listened tracks. scope 'month'|'all'."""
+        merged = self._top_map(own_device_id, scope)
         out = []
         for key, secs in sorted(merged.items(), key=lambda kv: -kv[1])[:n]:
             parts = key.split('|', 2)
@@ -204,9 +244,9 @@ class StatsStore:
                         parts[2] if len(parts) > 2 else '', secs))
         return out
 
-    def top_artists(self, n=5, own_device_id='', month=None):
-        """[(artist, seconds)] — most-listened artists this month."""
-        merged = self._merged_top(month or _month(), own_device_id)
+    def top_artists(self, n=5, own_device_id='', scope='month'):
+        """[(artist, seconds)] — most-listened artists. scope 'month'|'all'."""
+        merged = self._top_map(own_device_id, scope)
         agg = {}
         for key, secs in merged.items():
             parts = key.split('|', 2)
@@ -214,6 +254,51 @@ class StatsStore:
             if artist:
                 agg[artist] = agg.get(artist, 0.0) + secs
         return sorted(agg.items(), key=lambda kv: -kv[1])[:n]
+
+    # ── Derived day-based stats (from the never-pruned day counters) ─────────
+
+    def streak(self, own_device_id=''):
+        """(current, longest) run of consecutive days with any listening."""
+        import datetime as _dt
+        days = {d for d, s in self._merged_day_map(own_device_id).items()
+                if s > 0}
+        if not days:
+            return (0, 0)
+        parsed = sorted(_dt.date.fromisoformat(d) for d in days
+                        if _valid_day(d))
+        longest = cur = 1
+        for a, b in zip(parsed, parsed[1:]):
+            cur = cur + 1 if (b - a).days == 1 else 1
+            longest = max(longest, cur)
+        today = _dt.date.today()
+        d = today if today.isoformat() in days else today - _dt.timedelta(days=1)
+        current = 0
+        while d.isoformat() in days:
+            current += 1
+            d -= _dt.timedelta(days=1)
+        return (current, longest)
+
+    def best_day(self, own_device_id=''):
+        """(date_str, seconds) of the single biggest listening day."""
+        merged = self._merged_day_map(own_device_id)
+        if not merged:
+            return ('', 0.0)
+        d = max(merged, key=lambda k: merged[k])
+        return (d, merged[d])
+
+    def year_total(self, own_device_id=''):
+        yr = _today()[:4]
+        return sum(s for d, s in self._merged_day_map(own_device_id).items()
+                   if d.startswith(yr))
+
+    def weekday_totals(self, own_device_id=''):
+        """[seconds]*7, Monday..Sunday."""
+        import datetime as _dt
+        out = [0.0] * 7
+        for d, s in self._merged_day_map(own_device_id).items():
+            if _valid_day(d):
+                out[_dt.date.fromisoformat(d).weekday()] += s
+        return out
 
     def last_sync(self):
         with self._lock:

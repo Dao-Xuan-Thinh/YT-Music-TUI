@@ -24,6 +24,12 @@ import queue
 _IS_WINDOWS = os.name == 'nt'
 _PID = os.getpid()
 
+# Consecutive send() timeouts before the IPC is declared dead (→ recovery rebuilds
+# the whole mpv+IPC). Control/loadfile commands are local mpv ops answered instantly
+# regardless of network, so a single 5s no-response means the socket is genuinely
+# gone — not transient. With App Nap suppressed, healthy sends never time out.
+_IPC_DEAD_AFTER_TIMEOUTS = 1
+
 if _IS_WINDOWS:
     import ctypes
     import msvcrt
@@ -231,6 +237,11 @@ class _MpvIPC:
         self._req_id    = 0
         self._pending   = {}                     # req_id -> {'evt', 'result'}
 
+        # Health: set once the socket stops responding (send timeout) or a
+        # transport write fails. Sticky — recovery replaces the whole instance.
+        self._dead            = False
+        self._consec_timeouts = 0
+
         self.position      = 0.0
         self.duration      = 0.0
         self.on_end        = None
@@ -275,6 +286,10 @@ class _MpvIPC:
                 except Exception:
                     if not self._running:
                         return
+                    # Broken pipe / closed socket while still running: mpv is
+                    # gone or the socket is dead. Flag it so a control call or
+                    # the poll backstop triggers recovery instead of hanging.
+                    self._dead = True
 
             # 2. Non-blocking: read a line if one is ready
             try:
@@ -333,7 +348,14 @@ class _MpvIPC:
         self._cmd_q.put(msg)
 
     def send(self, cmd, timeout=5.0):
-        """Enqueue command and block until response arrives (or timeout)."""
+        """Enqueue command and block until response arrives (or timeout).
+
+        A real response is always a truthy dict, so `result is None` is an
+        unambiguous failure (timeout / disconnect). Enough of those in a row
+        marks the IPC dead so the app can rebuild it instead of freezing on
+        every subsequent 5s wait."""
+        if not self._running:
+            return None
         with self._req_lock:
             self._req_id += 1
             req_id = self._req_id
@@ -343,7 +365,17 @@ class _MpvIPC:
         self._cmd_q.put(msg)
         entry['evt'].wait(timeout)
         self._pending.pop(req_id, None)
-        return entry.get('result')
+        result = entry.get('result')
+        if result is None:
+            self._consec_timeouts += 1
+            if self._consec_timeouts >= _IPC_DEAD_AFTER_TIMEOUTS:
+                self._dead = True
+        else:
+            self._consec_timeouts = 0
+        return result
+
+    def is_healthy(self):
+        return self._running and not self._dead
 
     def set_property(self, prop, value):
         self.send(['set_property', prop, value])
@@ -397,8 +429,15 @@ class Player:
         if self.backend != 'mpv':
             return
         with self._start_lock:
-            if self._proc and self._proc.poll() is None:
+            proc_alive = bool(self._proc and self._proc.poll() is None)
+            ipc_alive  = self._ipc is not None and self._ipc.is_healthy()
+            if proc_alive and ipc_alive:
                 return
+            # Proc died OR the socket went stale (send marked the IPC dead):
+            # tear the whole backend down and rebuild a fresh _MpvIPC (new loop
+            # thread) below, so even the normal next-track path self-heals.
+            if self._proc or self._ipc:
+                self._shutdown_mpv()
             cmd = [
                 'mpv', '--no-video', '--ytdl=yes',
                 f'--input-ipc-server={_IPC_ARG}',
@@ -631,6 +670,15 @@ class Player:
 
     def is_paused(self):
         return self._paused
+
+    def ipc_healthy(self):
+        """False only when an existing mpv IPC has stopped responding (stale
+        socket / hung daemon). True for a fresh/no IPC (nothing to recover) or
+        a responsive one; True for ffplay (no IPC to recover)."""
+        if self.backend != 'mpv':
+            return True
+        ipc = self._ipc
+        return ipc is None or ipc.is_healthy()
 
     @property
     def current_url(self):

@@ -6,6 +6,7 @@ Press ? at any time for the full key list.
 """
 
 import os
+import sys
 import time
 import random
 import threading
@@ -216,6 +217,7 @@ KEYS_HELP = [
     ('s',        'Listen-stats sync settings (GitHub token + device name)'),
     ('g',        'YouTube account / sign in (For You feed)'),
     ('u',        'Check for updates / update the app'),
+    ('V',        "Changelog (what's new)"),
     ('?',        'This help'),
     ('q',        'Quit'),
 ]
@@ -439,6 +441,109 @@ class KeybindingsScreen(ModalScreen):
             yield Label('Keyboard shortcuts  (Esc to close)', id='keys-title')
             lines = '\n'.join(f'  [bold]{k:<9}[/]  {desc}' for k, desc in KEYS_HELP)
             yield Static(lines)
+
+
+# ── Changelog ─────────────────────────────────────────────────────────────────
+# Curated from the project's git history (newest first). Kept as data (not a
+# runtime `git log`) so it works on non-git installs. The mobile app mirrors
+# this list so the desktop history is viewable there too.
+CHANGELOG = [
+    ('1.6', '2026-07-21 09:00', [
+        'App no longer goes unresponsive after sitting idle — audio self-recovers with no restart',
+        'Expanded stats: all-time top artists/tracks, listening streak, this-year total, most-active weekday',
+        'This changelog (press V)',
+    ]),
+    ('1.5', '2026-07-20 14:30', [
+        'Gapless auto-advance — the next track is pre-resolved so there is no gap',
+        'YT Music tab: your real account playlists + Your Likes on the home screen',
+        'Cross-device sync of liked songs, playlists and resume sessions via a private gist',
+        'Monthly top charts in the Stats tab',
+        'Media keys + OS now-playing panel (macOS / Linux / Windows)',
+    ]),
+    ('1.4', '2026-07-15 12:13', [
+        'Listen-time stats: daily counters + a home Stats tab, synced across devices',
+        'Settings (s) is now the sync panel; streaming cookies moved to Account (g)',
+    ]),
+    ('1.3', '2026-07-13 20:56', [
+        'Reorder the queue with K / J (or Shift+↑/↓)',
+        'Radio keeps the currently-playing song going instead of restarting it',
+        '4 new themes + animated light themes + per-theme glyph spinners; update toast',
+        "Fixed silent queue-wide skipping (failure detection uses 'audio never started')",
+    ]),
+    ('1.2', '2026-07-04 11:33', [
+        'Play Music-Premium-only tracks with your signed-in account',
+        'Removed the dead OAuth backend (YouTube rejects those tokens)',
+        "Fixed songs stuck 'fetching' forever (timeouts + watchdog)",
+    ]),
+    ('1.1', '2026-07-01 10:05', [
+        'Artist pages, radio (endless mix) and synced lyrics with follow + translation',
+        'Artist and album rows in search results',
+    ]),
+    ('1.0', '2026-06-27 10:26', [
+        'Durable "Sign in from browser" using live cookies (no more silent expiry)',
+        'Fixed the cookie sign-in input freeze; live cookie verification at boot',
+    ]),
+    ('0.5', '2026-06-26 16:30', [
+        'Anti-hang pass: serialized ytmusicapi with per-request timeouts',
+        'Fixed the mpv --no-terminal input freeze; added a freeze watchdog',
+    ]),
+    ('0.4', '2026-06-25 15:11', [
+        'Home-screen library management (delete / rename) + a Resume tab',
+    ]),
+    ('0.3', '2026-06-24 12:48', [
+        'Sign in to YouTube + a personalized For You feed',
+        '14 custom themes with the animated color-wave; cookie/browser auth',
+    ]),
+    ('0.2', '2026-06-22 14:44', [
+        'Home screen, library/sessions, shuffle/repeat, resume',
+        'In-app self-update via git (u); monochrome glyphs; scroll-stutter fix',
+    ]),
+    ('0.1', '2026-06-21 19:39', [
+        'Baseline TUI: YouTube Music via ytmusicapi (full playlists + artists)',
+        'Queue, in-list filter, theme switching; per-process mpv IPC',
+        'Cross-platform mpv IPC (macOS / Linux / Windows)',
+    ]),
+]
+
+
+class ChangelogScreen(ModalScreen):
+    """Read-only version history of the desktop app."""
+    BINDINGS = [
+        Binding('escape', 'dismiss_modal', 'Close'),
+        Binding('q', 'dismiss_modal', 'Close'),
+        Binding('V', 'dismiss_modal', 'Close'),
+    ]
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
+    CSS = """
+    ChangelogScreen { align: center middle; }
+    #changelog-box {
+        width: 76; height: 30;
+        border: round $accent; padding: 1 2; background: $surface;
+    }
+    #changelog-title { text-style: bold; color: $accent; margin-bottom: 1; }
+    #changelog-scroll { height: 1fr; }
+    """
+
+    def compose(self) -> ComposeResult:
+        rev = ''
+        try:
+            rev = updater.current_revision() or ''
+        except Exception:
+            pass
+        with Vertical(id='changelog-box'):
+            yield Label(f'Changelog{("  ·  " + rev) if rev else ""}   (Esc to close)',
+                        id='changelog-title')
+            lines = []
+            for version, date, notes in CHANGELOG:
+                lines.append(f'[bold]v{version}[/]   [dim]{date}[/]')
+                for n in notes:
+                    lines.append(f'  · {n}')
+                lines.append('')
+            with VerticalScroll(id='changelog-scroll'):
+                yield Static(Text.from_markup('\n'.join(lines)))
 
 
 # ── Lyrics screen ─────────────────────────────────────────────────────────────
@@ -1077,18 +1182,40 @@ def _stats_report(stats, cfg, width=34, top=True):
     if devices:
         lines.append('  ·  '.join(f'{name} {fmt(total)}'
                                   for name, total in devices))
-    top_artists = stats.top_artists(5, own_device_id=dev_id) if top else []
-    top_tracks = stats.top_tracks(5, own_device_id=dev_id) if top else []
-    if top_artists or top_tracks:
-        lines.append('')
-        lines.append('Top this month')
-        for i, (artist, secs) in enumerate(top_artists, 1):
-            lines.append(f'  {i}. {artist[:34]:<34}  {fmt(secs)}')
-        if top_tracks:
+    if top:
+        # Extras: streak / this-year / biggest day / most-active weekday.
+        cur_streak, best_streak = stats.streak(own_device_id=dev_id)
+        bd_day, bd_secs = stats.best_day(own_device_id=dev_id)
+        yr = stats.year_total(own_device_id=dev_id)
+        wk = stats.weekday_totals(own_device_id=dev_id)
+        extras = []
+        if cur_streak:
+            extras.append(f'Streak {cur_streak}d (best {best_streak})')
+        if yr:
+            extras.append(f'This year {fmt(yr)}')
+        if bd_secs:
+            extras.append(f'Biggest day {bd_day} {fmt(bd_secs)}')
+        if any(wk):
+            extras.append('Most active ' +
+                          stats_module.WEEKDAY_NAMES[max(range(7), key=lambda i: wk[i])])
+        if extras:
             lines.append('')
-        for i, (title, artist, secs) in enumerate(top_tracks, 1):
-            label = f'{title} — {artist}' if artist else title
-            lines.append(f'  {i}. {label[:34]:<34}  {fmt(secs)}')
+            lines.append('  ·  '.join(extras))
+        # Top charts, this month AND all time (the tab scrolls).
+        for scope, heading in (('month', 'Top this month'), ('all', 'Top all time')):
+            t_artists = stats.top_artists(5, own_device_id=dev_id, scope=scope)
+            t_tracks = stats.top_tracks(5, own_device_id=dev_id, scope=scope)
+            if not (t_artists or t_tracks):
+                continue
+            lines.append('')
+            lines.append(heading)
+            for i, (artist, secs) in enumerate(t_artists, 1):
+                lines.append(f'  {i}. {artist[:34]:<34}  {fmt(secs)}')
+            if t_tracks:
+                lines.append('')
+            for i, (title, artist, secs) in enumerate(t_tracks, 1):
+                label = f'{title} — {artist}' if artist else title
+                lines.append(f'  {i}. {label[:34]:<34}  {fmt(secs)}')
     lines.append('')
     lines.append(stats.status_line(bool(cfg and cfg.stats_token)))
     return '\n'.join(lines)
@@ -1636,6 +1763,7 @@ class YTMApp(App):
         Binding('s', 'settings', 'Settings', show=False),
         Binding('g', 'account', 'Account', show=False),
         Binding('u', 'update', 'Update', show=False),
+        Binding('V', 'changelog', 'Changelog', show=False),
         Binding('escape', 'clear_filter', 'Clear filter', show=False),
         Binding('question_mark', 'show_keys', 'Keys', show=True),
         Binding('q', 'quit', 'Quit', show=False),
@@ -1669,6 +1797,9 @@ class YTMApp(App):
             self._config.stats_device_name = platform.node().split('.')[0] or 'desktop'
         self._stats_last = None   # (queue_idx, position) at the previous poll tick
         self._mediakeys = None    # OS media-keys backend (set by _init_player)
+        self._recovering = False       # one mpv/IPC recovery in flight
+        self._last_recover_ts = 0.0    # monotonic; cooldown to avoid respawn storms
+        self._app_nap_token = None     # macOS NSProcessInfo activity (held for life)
         self._stats_syncing = False   # a gist sync is in flight (footer ⟳)
         # One-time migration: earlier builds stored the YTM account cookie dump in
         # `cookies_file`, which is ALSO the yt-dlp/mpv streaming cookie file. An
@@ -1770,6 +1901,7 @@ class YTMApp(App):
         self.set_interval(60.0, self._stats_flush)
         self.set_interval(600.0, self._stats_sync_maybe)
         self.set_timer(8.0, self._stats_sync_maybe)   # boot pull of other devices
+        self._begin_app_nap_suppression()   # macOS: keep our IPC loop off App Nap
         self._update_mode_ui()
         self._update_footer()
         threading.Thread(target=self._init_player, daemon=True).start()
@@ -2450,12 +2582,79 @@ class YTMApp(App):
         threading.Thread(target=_run, daemon=True).start()
         return True
 
+    # ── mpv/IPC recovery (stale socket after idle/sleep) ────────────────────
+
+    def _maybe_recover(self) -> None:
+        """Start ONE mpv/IPC recovery when the socket has died while a track
+        should be playing. UI-thread only (Textual is single-threaded), so the
+        _recovering check-and-set is atomic; a 15s cooldown bounds retries."""
+        if self._recovering or not self.now_playing:
+            return
+        if self._player.ipc_healthy():
+            return
+        if not (0 <= self._queue_idx < len(self._queue)):
+            return
+        if time.monotonic() - self._last_recover_ts < 15:
+            return
+        self._recovering = True
+        self._last_recover_ts = time.monotonic()
+        idx = self._queue_idx
+        pos = max(0.0, self.position)
+        self._set_status('Reconnecting to audio…')
+        threading.Thread(target=self._recover_worker, args=(idx, pos),
+                         daemon=True).start()
+
+    def _recover_worker(self, idx, pos) -> None:
+        # Tear down the stale mpv+IPC (blocking kill) off the UI thread, then
+        # reload the current track at its position — _play_queue_item → play →
+        # _ensure_mpv_running spawns a fresh mpv + fresh _MpvIPC.
+        try:
+            self._player.quit()
+        except Exception:
+            pass
+
+        def _finish():
+            self._recovering = False
+            self._play_queue_item(idx, start=pos)
+
+        try:
+            self.call_from_thread(_finish)
+        except Exception:
+            self._recovering = False
+
+    def _begin_app_nap_suppression(self) -> None:
+        """macOS: stop App Nap from throttling our event/IPC loop while idle —
+        that throttling is what stales the mpv socket after the app sits idle.
+        No-op off macOS or without pyobjc (the media-keys macOS extra); the
+        token is held on self so it isn't GC'd (releasing re-enables App Nap)."""
+        if sys.platform != 'darwin':
+            return
+        try:
+            from Foundation import (NSProcessInfo,
+                                    NSActivityUserInitiatedAllowingIdleSystemSleep)
+        except Exception:
+            return
+        try:
+            self._app_nap_token = NSProcessInfo.processInfo() \
+                .beginActivityWithOptions_reason_(
+                    NSActivityUserInitiatedAllowingIdleSystemSleep,
+                    'ytm-tui audio playback')
+        except Exception:
+            self._app_nap_token = None
+
     # ── Player polling ────────────────────────────────────────────────────
 
     def _poll_player(self) -> None:
         self.position  = self._player.get_position()
         self.duration  = self._player.get_duration()
         self.is_paused = self._player.is_paused()
+        # Backstop: a socket that died with no key pressed (passive stall after
+        # sleep/App Nap) still self-heals within ~1s. ipc_healthy() reads a bool
+        # (no IPC send), so the poll stays non-blocking on the UI thread.
+        if (self.now_playing and not self.is_paused
+                and not self._player.ipc_healthy()):
+            self._maybe_recover()
+            return
         # Listen-time accumulator: count only real forward audio progress on the
         # SAME track — pauses/buffering (position frozen), seeks (delta outside
         # 0..2s for a 1s poll) and track changes all contribute nothing.
@@ -2650,10 +2849,26 @@ class YTMApp(App):
         self.query_one('#search-input', Input).focus()
 
     def action_toggle_pause(self) -> None:
-        self._player.toggle_pause()
-        self.is_paused = self._player.is_paused()
+        if not self.now_playing:
+            return
+        # Optimistic: flip the bar instantly so a keypress never waits on a
+        # stalled IPC socket. The mpv round-trip runs off the UI thread; the
+        # optimistic value is authoritative (Player.pause/resume set _paused
+        # before the blocking set_property, and _poll_player re-reads it 1/s).
+        self.is_paused = not self.is_paused
         self._last_bar_sig = None      # force an immediate bar redraw
         self._update_player_bar()
+        self._sync_animation()
+        want_paused = self.is_paused
+
+        def _run():
+            try:
+                self._player.pause() if want_paused else self._player.resume()
+            finally:
+                if not self._player.ipc_healthy():
+                    self.call_from_thread(self._maybe_recover)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def action_next_track(self) -> None:
         nxt = self._queue_idx + 1
@@ -2675,11 +2890,16 @@ class YTMApp(App):
             self._play_queue_item(self._queue_idx - 1)
 
     def action_stop(self) -> None:
-        self._player.stop()
+        # Clear the UI instantly; the blocking IPC 'stop' runs off-thread. No
+        # recovery on stop — the user wants silence, and the next play rebuilds
+        # mpv via _ensure_mpv_running if the socket had died.
         self.now_playing = ''
+        self.is_paused = False
         self._set_status('Stopped')
         self._render_table()
         self._update_footer()
+        self._sync_animation()
+        threading.Thread(target=self._player.stop, daemon=True).start()
 
     # ── Queue ─────────────────────────────────────────────────────────────
 
@@ -3033,20 +3253,45 @@ class YTMApp(App):
         self._apply_volume()
 
     def _apply_volume(self, save=True) -> None:
-        self._player.set_volume(self.volume)
+        vol = self.volume
         if save:
-            self._config.update(volume=self.volume)
+            self._config.update(volume=vol)
             self._schedule_config_flush()
-        self._update_footer()
+        self._update_footer()      # footer shows volume — reflect it now
+        # The mpv set_property round-trip runs off the UI thread (blocks on a
+        # stale socket otherwise). Recover if it reveals a dead IPC mid-playback.
+        def _run():
+            try:
+                self._player.set_volume(vol)
+            finally:
+                if self.now_playing and not self._player.ipc_healthy():
+                    self.call_from_thread(self._maybe_recover)
+        threading.Thread(target=_run, daemon=True).start()
 
     def action_seek_back(self) -> None:
-        self._player.seek(-10)
+        self._seek(-10)
 
     def action_seek_fwd(self) -> None:
-        self._player.seek(10)
+        self._seek(10)
+
+    def _seek(self, delta) -> None:
+        # mpv corrects self.position via observe_property on the next poll, so
+        # no optimistic nudge is needed — just don't block the UI thread.
+        if not self.now_playing:
+            return
+        def _run():
+            try:
+                self._player.seek(delta)
+            finally:
+                if not self._player.ipc_healthy():
+                    self.call_from_thread(self._maybe_recover)
+        threading.Thread(target=_run, daemon=True).start()
 
     def action_show_keys(self) -> None:
         self.push_screen(KeybindingsScreen())
+
+    def action_changelog(self) -> None:
+        self.push_screen(ChangelogScreen())
 
     def action_settings(self) -> None:
         def _after(result):
@@ -3346,6 +3591,12 @@ class YTMApp(App):
             pass
         if self._mediakeys is not None:
             self._mediakeys.stop()
+        if self._app_nap_token is not None:
+            try:
+                from Foundation import NSProcessInfo
+                NSProcessInfo.processInfo().endActivity_(self._app_nap_token)
+            except Exception:
+                pass
         self._player.quit()
         self.exit()
 
