@@ -1078,18 +1078,40 @@ def _stats_report(stats, cfg, width=34, top=True):
     if devices:
         lines.append('  ·  '.join(f'{name} {fmt(total)}'
                                   for name, total in devices))
-    top_artists = stats.top_artists(5, own_device_id=dev_id) if top else []
-    top_tracks = stats.top_tracks(5, own_device_id=dev_id) if top else []
-    if top_artists or top_tracks:
-        lines.append('')
-        lines.append('Top this month')
-        for i, (artist, secs) in enumerate(top_artists, 1):
-            lines.append(f'  {i}. {artist[:34]:<34}  {fmt(secs)}')
-        if top_tracks:
+    if top:
+        # Extras: streak / this-year / biggest day / most-active weekday.
+        cur_streak, best_streak = stats.streak(own_device_id=dev_id)
+        bd_day, bd_secs = stats.best_day(own_device_id=dev_id)
+        yr = stats.year_total(own_device_id=dev_id)
+        wk = stats.weekday_totals(own_device_id=dev_id)
+        extras = []
+        if cur_streak:
+            extras.append(f'Streak {cur_streak}d (best {best_streak})')
+        if yr:
+            extras.append(f'This year {fmt(yr)}')
+        if bd_secs:
+            extras.append(f'Biggest day {bd_day} {fmt(bd_secs)}')
+        if any(wk):
+            extras.append('Most active ' +
+                          stats_module.WEEKDAY_NAMES[max(range(7), key=lambda i: wk[i])])
+        if extras:
             lines.append('')
-        for i, (title, artist, secs) in enumerate(top_tracks, 1):
-            label = f'{title} — {artist}' if artist else title
-            lines.append(f'  {i}. {label[:34]:<34}  {fmt(secs)}')
+            lines.append('  ·  '.join(extras))
+        # Top charts, this month AND all time (the tab scrolls).
+        for scope, heading in (('month', 'Top this month'), ('all', 'Top all time')):
+            t_artists = stats.top_artists(5, own_device_id=dev_id, scope=scope)
+            t_tracks = stats.top_tracks(5, own_device_id=dev_id, scope=scope)
+            if not (t_artists or t_tracks):
+                continue
+            lines.append('')
+            lines.append(heading)
+            for i, (artist, secs) in enumerate(t_artists, 1):
+                lines.append(f'  {i}. {artist[:34]:<34}  {fmt(secs)}')
+            if t_tracks:
+                lines.append('')
+            for i, (title, artist, secs) in enumerate(t_tracks, 1):
+                label = f'{title} — {artist}' if artist else title
+                lines.append(f'  {i}. {label[:34]:<34}  {fmt(secs)}')
     lines.append('')
     lines.append(stats.status_line(bool(cfg and cfg.stats_token)))
     return '\n'.join(lines)
