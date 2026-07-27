@@ -48,6 +48,20 @@ final class PlaybackService: ObservableObject {
     private var stallSince: Date?
     private var stallNudged = false
     private var stallTimer: Timer?
+    // Silence watchdog: clock advancing normally but the audio tap stops being fed =
+    // a wedged render pipeline that the stall watchdog can't see (position is fine).
+    // One automatic pause/play nudge per item — the same thing a manual pause/resume does.
+    private var tapArmed = false     // this item got an audioMix, so the tap should be feeding
+    private var silentSince: Date?
+    private var silenceNudged = false
+    // Hand-over bookkeeping: `playGen` invalidates in-flight item preparation when a newer
+    // play()/beginLoading() supersedes it; `startedGen` makes the hand-over run exactly once.
+    private var playGen: UInt64 = 0
+    private var startedGen: UInt64 = 0
+    // Transport *intent*, as opposed to `isPlaying` (which mirrors the player and is set
+    // asynchronously by the rate KVO — during hand-over it can still be reporting the
+    // previous item's .paused, which would leave a prepared item sitting there unstarted).
+    private var intendsPlayback = false
 
     // Real-time audio spectrum for the now-playing equalizer (MTAudioProcessingTap → FFT).
     let levelProcessor = AudioLevelProcessor(bands: 16)
@@ -87,53 +101,77 @@ final class PlaybackService: ObservableObject {
         artwork = nil
         statsLastPos = nil   // new track: next observer tick re-seeds the baseline
         stallPos = -1; stallSince = nil; stallNudged = false
+        tapArmed = false; silentSince = nil; silenceNudged = false
         // Applied once the item reaches `.readyToPlay` (seeking before then is unreliable).
         pendingSeek = startAt > 0 ? startAt : nil
 
         activateSession()
-        let item = AVPlayerItem(url: url)
-        installLevelTap(on: item)
-        player.replaceCurrentItem(with: item)
-        player.play()
-        isPlaying = true
+        playGen &+= 1
+        let gen = playGen
+        let asset = AVURLAsset(url: url)
+        let item = AVPlayerItem(asset: asset)
+        intendsPlayback = true
+        isPlaying = true          // optimistic: the UI must not flicker during hand-over
         loadArtwork(track)
         updateNowPlaying()
         NSLog("[playback] play \"%@\" (%@)", track.title, url.host ?? "?")
+
+        // Attach the equalizer tap BEFORE the item reaches the player (see installLevelTap),
+        // then hand over. The asset load this waits on is work the player must do anyway.
+        installLevelTap(asset: asset, item: item, gen: gen)
+        // …but never let it gate audio: if the load is slow, start without the tap.
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.tapLoadDeadline) { [weak self] in
+            self?.beginItem(item, gen: gen)
+        }
     }
 
-    /// Attach the FFT audio tap to the item's audio track (async load) so the equalizer gets
-    /// real levels. Best-effort: on any failure the equalizer falls back to decorative motion.
-    private func installLevelTap(on item: AVPlayerItem) {
-        let asset = item.asset
-        Task { [weak self, weak item] in
-            guard let tracks = try? await asset.loadTracks(withMediaType: .audio),
-                  let audio = tracks.first,
-                  let self, let item else { return }
-            if let mix = makeLevelAudioMix(track: audio, processor: self.levelProcessor) {
-                await MainActor.run {
-                    // Never mutate an item that's already rendering: swapping the
-                    // audioMix mid-play can wedge the pipeline (silent audio,
-                    // frozen position — the "muted until pause/unpause" bug, most
-                    // common on prefetched auto-advance where playback starts
-                    // before this async load lands). Skipping just means this
-                    // track's equalizer uses the decorative fallback.
-                    guard item.currentTime() == .zero
-                            || self.player.timeControlStatus != .playing else { return }
+    /// Longest we'll wait for the asset's audio track before starting playback tapless.
+    private static let tapLoadDeadline: TimeInterval = 1.5
+
+    /// Attach the FFT audio tap to the item's audio track, then hand the item to the player.
+    ///
+    /// The mix MUST be installed while the item is still detached: setting `audioMix` on an
+    /// item the player has already started prerolling wedges the audio render pipeline — the
+    /// track plays silently while the clock advances normally, and only a pause/resume (which
+    /// rebuilds the pipeline) brings the sound back. That is the "muted on auto-advance" bug;
+    /// prefetched tracks hit it most because playback starts before this async load lands.
+    /// Best-effort: on any failure the equalizer just falls back to decorative motion.
+    private func installLevelTap(asset: AVURLAsset, item: AVPlayerItem, gen: UInt64) {
+        Task {   // strong self: PlaybackService is the app-lifetime singleton
+            let tracks = try? await asset.loadTracks(withMediaType: .audio)
+            await MainActor.run {
+                // startedGen == gen means the deadline above already handed this item
+                // over — too late to touch audioMix, so play on without the tap.
+                if let audio = tracks?.first, gen == self.playGen, self.startedGen != gen,
+                   let mix = makeLevelAudioMix(track: audio, processor: self.levelProcessor) {
                     item.audioMix = mix
+                    self.tapArmed = true
                 }
+                self.beginItem(item, gen: gen)
             }
         }
+    }
+
+    /// Hand a prepared item to the player. Runs once per play() generation, and never for a
+    /// generation a newer play()/beginLoading() has superseded.
+    private func beginItem(_ item: AVPlayerItem, gen: UInt64) {
+        guard gen == playGen, startedGen != gen else { return }
+        startedGen = gen
+        player.replaceCurrentItem(with: item)
+        if intendsPlayback { player.play() }   // a pause during hand-over stays paused
     }
 
     /// Immediately stop the old item and show a loading placeholder for the next selection
     /// (so old audio never lingers while the new stream resolves over the network).
     func beginLoading(title: String, uploader: String, thumbnail: String, duration dur: Int) {
+        playGen &+= 1        // an item still being prepared must not land on top of this
         player.replaceCurrentItem(with: nil)
         isPlaying = false
         ready = false
         endedFired = false
         failFired = false
         stallPos = -1; stallSince = nil; stallNudged = false
+        tapArmed = false; silentSince = nil; silenceNudged = false
         position = 0
         duration = Double(dur)
         artwork = nil
@@ -160,6 +198,7 @@ final class PlaybackService: ObservableObject {
     func togglePlayPause() { isPlaying ? pause() : resume() }
 
     func pause() {
+        intendsPlayback = false
         player.pause()
         isPlaying = false
         updateNowPlaying()
@@ -167,6 +206,7 @@ final class PlaybackService: ObservableObject {
 
     func resume() {
         guard current != nil else { return }
+        intendsPlayback = true
         activateSession()
         player.play()
         isPlaying = true
@@ -267,12 +307,40 @@ final class PlaybackService: ObservableObject {
         rateObs = observeRate()
     }
 
+    /// Detect the *other* wedged pipeline: the clock advances normally but no audio comes
+    /// out. Invisible to the stall watchdog (position is fine) and it never self-heals —
+    /// only a pause/resume rebuilds the render pipeline, which is exactly what this does.
+    ///
+    /// The signal is the equalizer tap: when a mix is installed the process callback is fed
+    /// continuously while audio renders (silent passages included), so a tap that has gone
+    /// quiet for seconds while `timeControlStatus == .playing` means the pipeline is dead.
+    /// Scoped to the first 20s of a track (where the wedge originates) and one nudge per
+    /// item, so a route that legitimately starves the tap can't cause repeated hiccups.
+    private func checkForSilence() {
+        let pos = player.currentTime().seconds
+        guard tapArmed, ready, isPlaying, !silenceNudged,
+              player.timeControlStatus == .playing,
+              pos.isFinite, pos < 20 else { silentSince = nil; return }
+        guard CACurrentMediaTime() - levelProcessor.snapshot().time > 1.0 else {
+            silentSince = nil; return
+        }
+        guard let since = silentSince else { silentSince = Date(); return }
+        guard Date().timeIntervalSince(since) > 2.5 else { return }
+        silenceNudged = true
+        silentSince = nil
+        DebugLog.shared.log("playback", "audio silent while playing — nudging pipeline")
+        player.pause()
+        player.playImmediately(atRate: 1.0)
+        isPlaying = true
+    }
+
     /// Detect a wedged render pipeline: "playing" but the clock isn't moving.
     /// First try the manual fix automatically (pause + playImmediately) once per
     /// item; if the position is still frozen 5s later, treat it as a dead item.
     /// Runs on its own Timer and reads the player clock directly — a wedged
     /// pipeline can stop the periodic time observer from firing at all.
     private func checkForStall() {
+        checkForSilence()
         let pos = player.currentTime().seconds
         guard ready, current != nil, pos.isFinite,
               player.timeControlStatus == .playing,

@@ -135,9 +135,22 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
   position; a second failure skips, 3 consecutive dead tracks stop the queue.
   `resolve.py` also keeps a 30-min `_prefer_default_until` latch (armed by retriable
   mobile-client failures and by playback 403s) that reverses the resolve order so
-  every track doesn't pay the doomed 3-8s anonymous attempt. Never mutate a playing
-  item's `audioMix` (the level-tap is skipped once rendering started — that race
-  wedged the pipeline: silent audio, frozen position).
+  every track doesn't pay the doomed 3-8s anonymous attempt.
+- **NEVER set `audioMix` on an item the player already holds** — the equalizer tap must
+  be attached while the item is still detached. Mutating it after `replaceCurrentItem`
+  wedges the audio render pipeline: the track plays **silently while the clock advances
+  normally**, and only a pause/resume (which rebuilds the pipeline) restores sound. That
+  was the "muted after auto-advance" bug; prefetched tracks hit it most because playback
+  starts before the async `loadTracks` lands. Guarding on "not rendering yet"
+  (`currentTime == .zero`) was NOT enough — that window is mid-preroll, i.e. the worst
+  moment. So `play()` now creates the item, awaits the tap attach, and hands it over via
+  `beginItem()`; `playGen`/`startedGen` make the hand-over exactly-once and cancel it when
+  a newer `play()`/`beginLoading()` supersedes it, and a 1.5s deadline starts playback
+  tapless rather than let a slow asset load gate audio. Because the player must load that
+  asset anyway, the wait costs ~nothing. `intendsPlayback` (not `isPlaying`, which the rate
+  KVO writes asynchronously from the *previous* item's state) decides whether the handed-over
+  item starts playing. Backstop: `checkForSilence()` (1 Hz, first 20s, one nudge per item)
+  pause/plays if the tap goes quiet while `timeControlStatus == .playing`.
 - **Listen-time stats + widget:** `PlaybackService`'s 0.5s time observer feeds real
   forward-progress deltas to `StatsStore.tick()` (pauses/seeks/track changes count
   nothing); counters flush to `stats.json` in the App Group

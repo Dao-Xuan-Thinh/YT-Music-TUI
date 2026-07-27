@@ -11,6 +11,10 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.12", date: "2026-07-27 16:20", notes: [
+            "Fixed tracks sometimes playing silently after an automatic advance — no more pause/resume to get the sound back",
+            "Added a safety net that revives the audio on its own if a track ever goes quiet while still playing",
+        ]),
         ChangelogEntry(version: "1.11", date: "2026-07-22 12:00", notes: [
             "Now-Playing bar is per-device again — resume another device's session from Library → resume (marked ↩)",
             "Fixed the gray box when moving audio output to a Mac",
