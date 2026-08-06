@@ -20,7 +20,24 @@ DEVICES=(
 )
 
 LIST="$(xcrun devicectl list devices 2>/dev/null || true)"
-reachable() { echo "$LIST" | grep "$1" | grep -q "available"; }
+
+# devicectl's State column has several healthy values — "available (paired)"
+# when it's reachable over the network, "connected" while a tunnel is actually
+# up (which is what you get right after Xcode has talked to the device). Only
+# "unavailable" means we can't install. Matching on the substring "available"
+# alone got this backwards twice over: it rejected connected devices AND
+# accepted unavailable ones. Compare the state that follows the identifier, and
+# rule out "unavailable" first so the substring can't fool us.
+reachable() {
+  local line state
+  line="$(echo "$LIST" | grep -F "$1")" || return 1
+  state="${line#*"$1"}"
+  case "$state" in
+    *unavailable*)             return 1 ;;
+    *available*|*connected*)   return 0 ;;
+    *)                         return 1 ;;
+  esac
+}
 
 # Build against the generic iOS destination: no device needs to be awake for
 # the build, and -allowProvisioningUpdates still refreshes the profile for all
