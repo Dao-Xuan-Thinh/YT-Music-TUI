@@ -45,8 +45,13 @@ elif [ "$MODE" = "device" ]; then
   echo "Building for device with team $TEAM (dest: $DEST) ..."
   # -allowProvisioningUpdates lets xcodebuild create the dev cert + provisioning
   # profile and register the device (required for a free Apple ID).
+  # -allowProvisioningDeviceRegistration additionally lets it ADD the destination
+  # device to the team. Needed whenever the team's device list is empty ("Your team
+  # has no devices from which to generate a provisioning profile") — which happens
+  # every time the Xcode account is removed and re-added. No-op once registered.
   xcodebuild -project YTMusic.xcodeproj -scheme YTMusic -configuration Debug \
     -destination "$DEST" -derivedDataPath build -allowProvisioningUpdates \
+    -allowProvisioningDeviceRegistration \
     DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic \
     ARCHS=arm64 ONLY_ACTIVE_ARCH=YES build
   echo "Built. Install on the connected device with:"

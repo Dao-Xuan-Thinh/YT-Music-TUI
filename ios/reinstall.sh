@@ -24,9 +24,51 @@ reachable() { echo "$LIST" | grep "$1" | grep -q "available"; }
 
 # Build against the generic iOS destination: no device needs to be awake for
 # the build, and -allowProvisioningUpdates still refreshes the profile for all
-# already-registered devices. (Registering a NEW device still needs a one-off
-# `./build.sh device <team> <device_id>` with that device unlocked.)
-./build.sh device "$TEAM"
+# already-registered devices.
+#
+# A generic build can only refresh profiles for devices the TEAM already knows.
+# Removing and re-adding the Xcode account empties that list, and then every
+# target fails with "Your team has no devices from which to generate a
+# provisioning profile". The cure is one build per device with an explicit
+# destination (that's what registers it), so do exactly that, then rebuild
+# generic so the final profile carries all of them. Each device must be
+# UNLOCKED and reachable for its registration build.
+BUILD_LOG="$(mktemp -t ytm-build)"
+trap 'rm -f "$BUILD_LOG"' EXIT
+
+if ! ./build.sh device "$TEAM" 2>&1 | tee "$BUILD_LOG"; then
+  if grep -q "no devices from which to generate" "$BUILD_LOG"; then
+    echo
+    echo "Team device list is empty — registering each reachable device."
+    echo "(they must be unlocked; this takes one build apiece)"
+    registered=0
+    for d in "${DEVICES[@]}"; do
+      id="${d%%|*}"; name="${d##*|}"
+      if reachable "$id"; then
+        echo
+        echo "→ registering $name ..."
+        if ./build.sh device "$TEAM" "$id"; then
+          registered=$((registered + 1))
+        else
+          echo "  ! $name could not be registered (locked?)"
+        fi
+      else
+        echo "→ skipping $name (unreachable)"
+      fi
+    done
+    [ "$registered" -gt 0 ] || {
+      echo
+      echo "No device could be registered. Unlock one, keep it on this network,"
+      echo "and run this again."
+      exit 1
+    }
+    echo
+    echo "→ rebuilding with all registered devices in the profile ..."
+    ./build.sh device "$TEAM"
+  else
+    exit 1
+  fi
+fi
 
 ok=0; skipped=""
 for d in "${DEVICES[@]}"; do
