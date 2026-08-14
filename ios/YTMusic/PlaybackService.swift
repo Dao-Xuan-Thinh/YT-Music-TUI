@@ -102,6 +102,9 @@ final class PlaybackService: ObservableObject {
         statsLastPos = nil   // new track: next observer tick re-seeds the baseline
         stallPos = -1; stallSince = nil; stallNudged = false
         tapArmed = false; silentSince = nil; silenceNudged = false
+        // Starts a fresh play for the play COUNT (seconds accrue per tick anyway).
+        // Without this a repeat-one loop would only ever count as a single play.
+        StatsStore.shared.beginTrack(track)
         // Applied once the item reaches `.readyToPlay` (seeking before then is unreliable).
         pendingSeek = startAt > 0 ? startAt : nil
 

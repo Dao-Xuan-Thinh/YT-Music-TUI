@@ -6,11 +6,59 @@ import UIKit
 /// this file is compiled into BOTH the app and the widget extension, and it is
 /// the only source they share. The widget never talks to the network — it only
 /// reads the JSON the app writes here.
+/// One all-time counter: seconds listened, play count, first and last listen
+/// (epoch seconds). Wire-identical to the desktop's dicts in `stats.py`, which is
+/// why the keys are terse — these maps are the bulk of the synced file.
+struct StatRecord: Codable, Equatable {
+    var s: Double = 0     // seconds listened
+    var n: Int = 0        // plays (a play counts once past min(30s, half the track))
+    var f: Double = 0     // first listened, epoch seconds
+    var l: Double = 0     // last listened, epoch seconds
+
+    init(s: Double = 0, n: Int = 0, f: Double = 0, l: Double = 0) {
+        self.s = s; self.n = n; self.f = f; self.l = l
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        s = (try? c.decodeIfPresent(Double.self, forKey: .s)) as? Double ?? 0
+        n = (try? c.decodeIfPresent(Int.self, forKey: .n)) as? Int ?? 0
+        f = (try? c.decodeIfPresent(Double.self, forKey: .f)) as? Double ?? 0
+        l = (try? c.decodeIfPresent(Double.self, forKey: .l)) as? Double ?? 0
+    }
+
+    /// Same device seen twice (local vs its own gist copy): take the ahead-most
+    /// value per field rather than adding, so a re-pull can never double-count.
+    func maxed(_ o: StatRecord) -> StatRecord {
+        StatRecord(s: Swift.max(s, o.s), n: Swift.max(n, o.n),
+                   f: nonZeroMin(f, o.f), l: Swift.max(l, o.l))
+    }
+
+    /// Different devices: real independent listening, so add.
+    func added(_ o: StatRecord) -> StatRecord {
+        StatRecord(s: s + o.s, n: n + o.n,
+                   f: nonZeroMin(f, o.f), l: Swift.max(l, o.l))
+    }
+
+    private func nonZeroMin(_ a: Double, _ b: Double) -> Double {
+        if a == 0 { return b }
+        if b == 0 { return a }
+        return Swift.min(a, b)
+    }
+}
+
+typealias StatRecords = [String: StatRecord]
+
 struct DeviceStats: Codable {
     var device: String
     var days: [String: Double]   // "yyyy-MM-dd" (local time) → listened seconds
     // "yyyy-MM" → "<id>|<title>|<uploader>" → seconds (monthly top charts)
     var top: [String: [String: Double]]? = nil
+    // All-time counters (added in 1.14; absent on files written by older clients).
+    var artists: StatRecords? = nil        // artist name → record
+    var tracks: StatRecords? = nil         // "<id>|<title>|<uploader>" → record
+    var albums: StatRecords? = nil         // "<album>|<artist>" → record
+    var clock: [String: Double]? = nil     // "<weekday 0=Mon>-<hour>" → seconds
 }
 
 struct StatsFile: Codable {
@@ -19,6 +67,32 @@ struct StatsFile: Codable {
     var remote: [String: DeviceStats] = [:]     // last gist pull, keyed by device id
     var lastSync: Date? = nil
     var deviceID: String? = nil                 // ours — lets the widget dedup exactly
+    var artists: StatRecords = [:]              // all-time, never pruned
+    var tracks: StatRecords = [:]               // all-time, capped at flush
+    var albums: StatRecords = [:]               // all-time, fills from 1.14 onward
+    var clock: [String: Double] = [:]           // weekday×hour heatmap buckets
+
+    init() {}
+
+    /// Hand-written so a file missing ANY key still loads. `StatsShared.load()`
+    /// falls back to an empty StatsFile when decoding throws, so one unknown-shape
+    /// field would silently wipe the user's local counters — that already happened
+    /// once (see the date-strategy note on load()). Every field is optional here so
+    /// adding the next one can never repeat it.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        days = (try? c.decodeIfPresent([String: Double].self, forKey: .days)) as? [String: Double] ?? [:]
+        top = (try? c.decodeIfPresent([String: [String: Double]].self, forKey: .top))
+            as? [String: [String: Double]] ?? [:]
+        remote = (try? c.decodeIfPresent([String: DeviceStats].self, forKey: .remote))
+            as? [String: DeviceStats] ?? [:]
+        lastSync = (try? c.decodeIfPresent(Date.self, forKey: .lastSync)) as? Date
+        deviceID = (try? c.decodeIfPresent(String.self, forKey: .deviceID)) as? String
+        artists = (try? c.decodeIfPresent(StatRecords.self, forKey: .artists)) as? StatRecords ?? [:]
+        tracks = (try? c.decodeIfPresent(StatRecords.self, forKey: .tracks)) as? StatRecords ?? [:]
+        albums = (try? c.decodeIfPresent(StatRecords.self, forKey: .albums)) as? StatRecords ?? [:]
+        clock = (try? c.decodeIfPresent([String: Double].self, forKey: .clock)) as? [String: Double] ?? [:]
+    }
 }
 
 // MARK: - Cross-device library sync (wire format shared with desktop stats.py)
@@ -180,6 +254,16 @@ enum StatsShared {
         fmt.timeZone = .current
         fmt.dateFormat = "yyyy-MM-dd"
         return fmt.string(from: date)
+    }
+
+    /// Most all-time track keys kept (matches desktop stats.py's TRACK_CAP).
+    static let trackCap = 2000
+
+    /// "<weekday>-<hour>" bucket for the heatmap, weekday 0=Mon..6=Sun.
+    static func clockKey(_ date: Date = Date()) -> String {
+        let cal = Calendar.current
+        let dow = (cal.component(.weekday, from: date) + 5) % 7
+        return "\(dow)-\(cal.component(.hour, from: date))"
     }
 
     /// The last n local dates, oldest first, ending today.
@@ -373,6 +457,204 @@ enum StatsShared {
             out[idx] += secs
         }
         return out
+    }
+
+    // MARK: - All-time records (artists / tracks / albums / clock)
+
+    /// Which map on a device file a query wants.
+    enum RecordKind {
+        case artists, tracks, albums
+
+        func of(_ f: StatsFile) -> StatRecords {
+            switch self {
+            case .artists: return f.artists
+            case .tracks:  return f.tracks
+            case .albums:  return f.albums
+            }
+        }
+
+        func of(_ d: DeviceStats) -> StatRecords {
+            switch self {
+            case .artists: return d.artists ?? [:]
+            case .tracks:  return d.tracks ?? [:]
+            case .albums:  return d.albums ?? [:]
+            }
+        }
+    }
+
+    /// Merge one record map across devices, using the same rule the day and top
+    /// maps use: our own device's local vs gist copy is de-duplicated (max per
+    /// field), every OTHER device is genuinely separate listening and adds.
+    static func mergedRecords(_ f: StatsFile, _ kind: RecordKind) -> StatRecords {
+        var remote = f.remote.mapValues { kind.of($0) }
+        let own = f.deviceID.flatMap { remote.removeValue(forKey: $0) } ?? [:]
+        let local = kind.of(f)
+        var merged: StatRecords = [:]
+        for k in Set(local.keys).union(own.keys) {
+            merged[k] = (local[k] ?? StatRecord()).maxed(own[k] ?? StatRecord())
+        }
+        for dev in remote.values {
+            for (k, rec) in dev {
+                merged[k] = (merged[k] ?? StatRecord()).added(rec)
+            }
+        }
+        return merged
+    }
+
+    /// How a chart is ordered.
+    enum RankBy { case time, plays }
+
+    /// Ranked entries of one kind. Keys are returned as-is; use `displayName`.
+    static func ranked(_ f: StatsFile, _ kind: RecordKind, by: RankBy = .time,
+                       n: Int = 50) -> [(key: String, rec: StatRecord)] {
+        mergedRecords(f, kind)
+            .sorted { a, b in
+                by == .time ? a.value.s > b.value.s : (a.value.n, a.value.s) > (b.value.n, b.value.s)
+            }
+            .prefix(n)
+            .map { (key: $0.key, rec: $0.value) }
+    }
+
+    /// Track keys are "<id>|<title>|<uploader>" and album keys "<album>|<artist>";
+    /// artist keys are the bare name. Returns (primary, secondary) for display.
+    static func displayName(_ key: String, _ kind: RecordKind) -> (String, String) {
+        let parts = key.components(separatedBy: "|")
+        switch kind {
+        case .artists: return (key, "")
+        case .tracks:  return (parts.count > 1 ? parts[1] : key,
+                               parts.count > 2 ? parts[2] : "")
+        case .albums:  return (parts.first ?? key, parts.count > 1 ? parts[1] : "")
+        }
+    }
+
+    /// Everything the artist detail page shows.
+    static func artistDetail(_ f: StatsFile, name: String)
+        -> (rec: StatRecord, tracks: [(key: String, rec: StatRecord)]) {
+        let rec = mergedRecords(f, .artists)[name] ?? StatRecord()
+        let tracks = mergedRecords(f, .tracks)
+            .filter { $0.key.components(separatedBy: "|").last == name }
+            .sorted { $0.value.s > $1.value.s }
+            .map { (key: $0.key, rec: $0.value) }
+        return (rec, tracks)
+    }
+
+    /// Artists whose FIRST listen falls inside [from, to) — "discovered" then.
+    static func discovered(_ f: StatsFile, from: Double, to: Double) -> [String] {
+        mergedRecords(f, .artists)
+            .filter { $0.value.f >= from && $0.value.f < to }
+            .sorted { $0.value.s > $1.value.s }
+            .map(\.key)
+    }
+
+    /// 7×24 grid of seconds (row 0 = Monday), plus the busiest bucket for scaling.
+    static func clockHeatmap(_ f: StatsFile) -> (grid: [[Double]], peak: Double) {
+        var merged: [String: Double] = [:]
+        var remote = f.remote.mapValues { $0.clock ?? [:] }
+        let own = f.deviceID.flatMap { remote.removeValue(forKey: $0) } ?? [:]
+        for k in Set(f.clock.keys).union(own.keys) {
+            merged[k] = max(f.clock[k] ?? 0, own[k] ?? 0)
+        }
+        for dev in remote.values {
+            for (k, secs) in dev { merged[k, default: 0] += secs }
+        }
+        var grid = [[Double]](repeating: [Double](repeating: 0, count: 24), count: 7)
+        var peak: Double = 0
+        for (key, secs) in merged {
+            let parts = key.components(separatedBy: "-")
+            guard parts.count == 2, let d = Int(parts[0]), let h = Int(parts[1]),
+                  (0..<7).contains(d), (0..<24).contains(h) else { continue }
+            grid[d][h] = secs
+            peak = max(peak, secs)
+        }
+        return (grid, peak)
+    }
+
+    struct Recap {
+        var label = ""            // "Aug 2026" / "2026"
+        var total: Double = 0     // seconds in the period
+        var previous: Double = 0  // seconds in the period before it
+        var topArtist = ""
+        var topTrack = ""
+        var newArtists: [String] = []
+    }
+
+    /// Month recap when `month` is "yyyy-MM", year recap when it is "yyyy".
+    /// Per-period tops come from the monthly `top` map (the all-time records have
+    /// no month dimension), so they cover the same 12-month window as those charts.
+    static func recap(_ f: StatsFile, period: String) -> Recap {
+        let isYear = period.count == 4
+        var r = Recap()
+        let days = mergedDayMap(f)
+        let prevPrefix: String
+        if isYear {
+            r.label = period
+            prevPrefix = String(format: "%04d", (Int(period) ?? 0) - 1)
+        } else {
+            let fmt = DateFormatter()
+            fmt.locale = Locale(identifier: "en_US_POSIX")
+            fmt.dateFormat = "yyyy-MM"
+            let out = DateFormatter()
+            out.locale = Locale(identifier: "en_US_POSIX")
+            out.dateFormat = "MMM yyyy"
+            r.label = fmt.date(from: period).map { out.string(from: $0) } ?? period
+            let parts = period.components(separatedBy: "-")
+            let y = Int(parts.first ?? "") ?? 0, m = Int(parts.count > 1 ? parts[1] : "") ?? 1
+            prevPrefix = m == 1 ? String(format: "%04d-12", y - 1)
+                                : String(format: "%04d-%02d", y, m - 1)
+        }
+        for (day, secs) in days {
+            if day.hasPrefix(period) { r.total += secs }
+            if day.hasPrefix(prevPrefix) { r.previous += secs }
+        }
+        // Tops: sum every month whose key falls in the period.
+        var agg: [String: Double] = [:]
+        for month in monthsIn(f, period: period) {
+            for (k, v) in mergedTop(f, month: month) { agg[k, default: 0] += v }
+        }
+        if let best = agg.max(by: { $0.value < $1.value }) {
+            let parts = best.key.components(separatedBy: "|")
+            r.topTrack = parts.count > 1 ? parts[1] : best.key
+        }
+        var byArtist: [String: Double] = [:]
+        for (k, v) in agg {
+            let a = k.components(separatedBy: "|").last ?? ""
+            if !a.isEmpty { byArtist[a, default: 0] += v }
+        }
+        r.topArtist = byArtist.max(by: { $0.value < $1.value })?.key ?? ""
+        if let (from, to) = periodBounds(period) {
+            r.newArtists = discovered(f, from: from, to: to)
+        }
+        return r
+    }
+
+    /// Month keys present anywhere in the data that fall inside `period`.
+    private static func monthsIn(_ f: StatsFile, period: String) -> [String] {
+        var months = Set(f.top.keys)
+        for d in f.remote.values { months.formUnion((d.top ?? [:]).keys) }
+        return months.filter { $0.hasPrefix(period) }.sorted()
+    }
+
+    /// [start, end) epoch bounds of a "yyyy-MM" or "yyyy" period.
+    private static func periodBounds(_ period: String) -> (Double, Double)? {
+        var comp = DateComponents()
+        let parts = period.components(separatedBy: "-")
+        comp.year = Int(parts.first ?? "")
+        comp.month = parts.count > 1 ? Int(parts[1]) : 1
+        comp.day = 1
+        let cal = Calendar.current
+        guard let start = cal.date(from: comp) else { return nil }
+        let unit: Calendar.Component = parts.count > 1 ? .month : .year
+        guard let end = cal.date(byAdding: unit, value: 1, to: start) else { return nil }
+        return (start.timeIntervalSince1970, end.timeIntervalSince1970)
+    }
+
+    /// "Aug 2026" style label for an epoch timestamp; "" when never listened.
+    static func dateLabel(_ ts: Double) -> String {
+        guard ts > 0 else { return "" }
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "d MMM yyyy"
+        return fmt.string(from: Date(timeIntervalSince1970: ts))
     }
 
     /// 132 → "2m", 9876 → "2h 44m".

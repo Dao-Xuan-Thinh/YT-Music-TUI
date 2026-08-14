@@ -22,6 +22,10 @@ final class StatsStore: ObservableObject {
 
     private var dirty = false
     private var lastWrite = Date.distantPast
+    // Current play, for play counting only (never persisted).
+    private var playSeconds: Double = 0
+    private var playCounted = false
+    private var playDuration: Double = 0
     private var lastSyncAttempt = Date.distantPast
     private var syncing = false
 
@@ -36,17 +40,52 @@ final class StatsStore: ObservableObject {
 
     // MARK: - Accumulation
 
+    /// Announce that a new play started. Play COUNTS (as opposed to seconds) need
+    /// this: without it a repeat-one loop looks like one endless play, since the
+    /// track identity never changes between ticks.
+    func beginTrack(_ track: Track?) {
+        playSeconds = 0
+        playCounted = false
+        playDuration = Double(track?.duration ?? 0)
+    }
+
     /// Add listened seconds (called every 0.5s while audio actually advances),
-    /// attributed to `track` for the monthly top charts.
+    /// attributed to `track` for the monthly top charts and the all-time records.
     func tick(_ delta: Double, track: Track? = nil) {
         guard delta > 0 else { return }
+        let now = Date().timeIntervalSince1970
         file.days[StatsShared.dayKey(), default: 0] += delta
+        file.clock[StatsShared.clockKey(), default: 0] += delta
         if let t = track, !t.id.isEmpty {
             let key = "\(t.id)|\(t.title)|\(t.uploader)"
             file.top[StatsShared.monthKey(), default: [:]][key, default: 0] += delta
+
+            // A play is credited once the listen passes half the track, capped at
+            // 30s — so a skipped intro never counts and a long track doesn't have
+            // to finish. Seconds accrue regardless.
+            playSeconds += delta
+            let threshold = playDuration > 0 ? min(30, playDuration / 2) : 30
+            let credit = !playCounted && playSeconds >= threshold
+            if credit { playCounted = true }
+
+            bump(&file.tracks, key, delta, credit, now)
+            if !t.uploader.isEmpty { bump(&file.artists, t.uploader, delta, credit, now) }
+            if let album = t.album, !album.isEmpty {
+                bump(&file.albums, "\(album)|\(t.uploader)", delta, credit, now)
+            }
         }
         dirty = true
         if Date().timeIntervalSince(lastWrite) > 60 { flush() }
+    }
+
+    private func bump(_ map: inout StatRecords, _ key: String, _ delta: Double,
+                      _ countPlay: Bool, _ now: Double) {
+        var rec = map[key] ?? StatRecord()
+        rec.s += delta
+        if countPlay { rec.n += 1 }
+        if rec.f == 0 { rec.f = now }
+        rec.l = now
+        map[key] = rec
     }
 
     func flush(reloadWidget: Bool = false) {
@@ -60,6 +99,9 @@ final class StatsStore: ObservableObject {
     }
 
     /// Newest 12 months, top 300 keys per month (matches desktop stats.py).
+    /// The all-time track map is capped too — it is the only one that grows without
+    /// bound. Artists and albums are left alone: there are orders of magnitude fewer
+    /// of them, and dropping one would lose its "first listened" date forever.
     private func pruneTop() {
         for month in file.top.keys.sorted(by: >).dropFirst(12) {
             file.top[month] = nil
@@ -67,6 +109,11 @@ final class StatsStore: ObservableObject {
         for (month, entries) in file.top where entries.count > 300 {
             file.top[month] = Dictionary(uniqueKeysWithValues:
                 entries.sorted { $0.value > $1.value }.prefix(300).map { ($0, $1) })
+        }
+        if file.tracks.count > StatsShared.trackCap {
+            file.tracks = Dictionary(uniqueKeysWithValues:
+                file.tracks.sorted { $0.value.s > $1.value.s }
+                    .prefix(StatsShared.trackCap).map { ($0, $1) })
         }
     }
 
@@ -109,6 +156,8 @@ final class StatsStore: ObservableObject {
         file.deviceID = deviceID
         let localDays = file.days
         let localTop = file.top
+        let localRecords = LocalRecords(artists: file.artists, tracks: file.tracks,
+                                        albums: file.albums, clock: file.clock)
         // The library blob (liked/playlists/sessions + tombstones) rides in our
         // gist file; the merged state comes back and is applied below.
         let libraryBlob = LibraryStore.shared.exportSync(deviceName: deviceName)
@@ -117,6 +166,7 @@ final class StatsStore: ObservableObject {
             let result = Self.runSync(token: token, deviceID: deviceID,
                                       deviceName: deviceName, gistID: gistID,
                                       localDays: localDays, localTop: localTop,
+                                      localRecords: localRecords,
                                       libraryBlob: libraryBlob)
             DispatchQueue.main.async {
                 defer { completion?() }
@@ -132,6 +182,19 @@ final class StatsStore: ObservableObject {
                     for (day, secs) in outcome.mergedDays
                     where secs > (self.file.days[day] ?? 0) {
                         self.file.days[day] = secs
+                    }
+                    // Same protection for the all-time maps: take whichever side is
+                    // ahead field-by-field, so seconds ticked DURING the sync survive
+                    // and a re-pulled copy of our own file can't double-count.
+                    self.file.artists = Self.maxRecords(self.file.artists,
+                                                        outcome.mergedRecords.artists)
+                    self.file.tracks = Self.maxRecords(self.file.tracks,
+                                                       outcome.mergedRecords.tracks)
+                    self.file.albums = Self.maxRecords(self.file.albums,
+                                                       outcome.mergedRecords.albums)
+                    for (k, v) in outcome.mergedRecords.clock
+                    where v > (self.file.clock[k] ?? 0) {
+                        self.file.clock[k] = v
                     }
                     self.file.remote = outcome.remote
                     self.file.lastSync = Date()
@@ -168,6 +231,15 @@ final class StatsStore: ObservableObject {
         let mergedDays: [String: Double]
         let newGistID: String?
         let mergedLibrary: LibraryBlob
+        let mergedRecords: LocalRecords
+    }
+
+    /// The all-time maps, passed to the background sync and merged back after.
+    struct LocalRecords {
+        var artists: StatRecords = [:]
+        var tracks: StatRecords = [:]
+        var albums: StatRecords = [:]
+        var clock: [String: Double] = [:]
     }
 
     /// Blocking sync (background queue only): pull all device files, merge the
@@ -175,7 +247,7 @@ final class StatsStore: ObservableObject {
     private static func runSync(
         token: String, deviceID: String, deviceName: String, gistID: String,
         localDays: [String: Double], localTop: [String: [String: Double]],
-        libraryBlob: LibraryBlob
+        localRecords: LocalRecords, libraryBlob: LibraryBlob
     ) -> Result<SyncOutcome, SyncError> {
         do {
             var id = gistID
@@ -212,7 +284,11 @@ final class StatsStore: ObservableObject {
                     }
                     remote[dev] = DeviceStats(
                         device: parsed["device"] as? String ?? String(dev.prefix(8)),
-                        days: days, top: top)
+                        days: days, top: top,
+                        artists: recordMap(parsed["artists"]),
+                        tracks: recordMap(parsed["tracks"]),
+                        albums: recordMap(parsed["albums"]),
+                        clock: doubleMap(parsed["clock"]))
                     if dev != deviceID, let lib = parsed["library"],
                        let libData = try? JSONSerialization.data(withJSONObject: lib),
                        let blob = try? JSONDecoder().decode(LibraryBlob.self, from: libData) {
@@ -228,8 +304,23 @@ final class StatsStore: ObservableObject {
             where secs > (days[day] ?? 0) {
                 days[day] = secs
             }
+            // Same merge-max as days, per field: our own gist copy can be ahead of
+            // a wiped local store, but re-pulling it must never inflate the counts.
+            var records = localRecords
+            if let own = remote[deviceID] {
+                records.artists = maxRecords(records.artists, own.artists ?? [:])
+                records.tracks = maxRecords(records.tracks, own.tracks ?? [:])
+                records.albums = maxRecords(records.albums, own.albums ?? [:])
+                for (k, v) in own.clock ?? [:] where v > (records.clock[k] ?? 0) {
+                    records.clock[k] = v
+                }
+            }
             var payload: [String: Any] = ["device": deviceName, "days": days,
-                                          "top": localTop]
+                                          "top": localTop,
+                                          "artists": recordPayload(records.artists),
+                                          "tracks": recordPayload(records.tracks),
+                                          "albums": recordPayload(records.albums),
+                                          "clock": records.clock]
             // Publish the MERGED library so this file already reflects
             // everyone's edits the next time another device pulls.
             if let libData = try? JSONEncoder().encode(mergedLibrary),
@@ -251,15 +342,45 @@ final class StatsStore: ObservableObject {
                 _ = try request("PATCH", "/gists/\(id)", token: token, body: fileBody)
             }
             remote[deviceID] = DeviceStats(device: deviceName, days: days,
-                                           top: localTop)
+                                           top: localTop,
+                                           artists: records.artists,
+                                           tracks: records.tracks,
+                                           albums: records.albums,
+                                           clock: records.clock)
             return .success(SyncOutcome(remote: remote, mergedDays: days,
                                         newGistID: id == gistID ? nil : id,
-                                        mergedLibrary: mergedLibrary))
+                                        mergedLibrary: mergedLibrary,
+                                        mergedRecords: records))
         } catch let err as SyncError {
             return .failure(err)
         } catch {
             return .failure(.network)
         }
+    }
+
+    /// {"key": {"s":…,"n":…,"f":…,"l":…}} → StatRecords. Missing/odd fields read
+    /// as 0 so a file written by a different client version can never throw.
+    private static func recordMap(_ any: Any?) -> StatRecords {
+        guard let raw = any as? [String: Any] else { return [:] }
+        var out: StatRecords = [:]
+        for (k, v) in raw {
+            guard let d = v as? [String: Any] else { continue }
+            out[k] = StatRecord(s: (d["s"] as? NSNumber)?.doubleValue ?? 0,
+                                n: (d["n"] as? NSNumber)?.intValue ?? 0,
+                                f: (d["f"] as? NSNumber)?.doubleValue ?? 0,
+                                l: (d["l"] as? NSNumber)?.doubleValue ?? 0)
+        }
+        return out
+    }
+
+    private static func recordPayload(_ recs: StatRecords) -> [String: Any] {
+        recs.mapValues { ["s": $0.s, "n": $0.n, "f": $0.f, "l": $0.l] }
+    }
+
+    private static func maxRecords(_ a: StatRecords, _ b: StatRecords) -> StatRecords {
+        var out = a
+        for (k, rec) in b { out[k] = (out[k] ?? StatRecord()).maxed(rec) }
+        return out
     }
 
     private static func doubleMap(_ any: Any?) -> [String: Double] {

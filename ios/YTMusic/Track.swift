@@ -12,9 +12,12 @@ struct Track: Codable, Identifiable, Equatable {
     let thumbnail: String
     let ok: Bool
     let error: String?
+    /// Album name when the resolver knew one — optional everywhere, because most
+    /// sources (and every track stored before 1.14) simply don't carry it.
+    var album: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, title, uploader, duration, url, thumbnail
+        case id, title, uploader, duration, url, thumbnail, album
         case streamURL = "stream_url"
         case ok = "_ok"
         case error = "_error"

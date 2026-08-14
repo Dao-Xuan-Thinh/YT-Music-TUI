@@ -181,6 +181,9 @@ def _entry_to_dict(e: dict) -> dict:
         "acodec": e.get("acodec"),
         "abr": e.get("abr"),
         "thumbnail": e.get("thumbnail") or "",
+        # yt-dlp fills this for YouTube Music tracks; plain videos have no album.
+        # Feeds the album listening stats — absent is normal, never an error.
+        "album": e.get("album") or "",
     }
 
 

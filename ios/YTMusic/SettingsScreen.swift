@@ -20,6 +20,7 @@ struct SettingsScreen: View {
     @State private var showChangelog = false
     @State private var showThemes = false
     @State private var topAllTime = false   // stats top-charts scope toggle
+    @State private var showStats = false     // full-screen stats browser
 
     enum ClearTarget: String, Identifiable {
         case liked, recent, playlists, sessions
@@ -58,6 +59,7 @@ struct SettingsScreen: View {
         .sheet(isPresented: $showAccount) { AccountScreen(vm: vm) }
         .sheet(isPresented: $showDebugLog) { DebugLogScreen() }
         .sheet(isPresented: $showChangelog) { ChangelogScreen() }
+        .sheet(isPresented: $showStats) { StatsScreen() }
         .sheet(isPresented: $showThemes) { ThemePickerSheet() }
     }
 
@@ -181,7 +183,13 @@ struct SettingsScreen: View {
 
     private var statsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("LISTEN STATS")
+            HStack {
+                sectionTitle("LISTEN STATS")
+                Spacer()
+                Button { showStats = true } label: {
+                    Text("▸ SEE ALL").font(TUI.mono(11, .bold)).foregroundStyle(TUI.accent)
+                }
+            }
             // Totals as three tiles: value pops in accent, label stays dim.
             HStack(spacing: 0) {
                 statTile("today", statsTotals.today)
