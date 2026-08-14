@@ -123,6 +123,7 @@ CUSTOM_THEMES = [
           warning='#d8ff5e', error='#c33bff'),
 ]
 
+#test
 # Themes whose now-playing track gets an animated color-wave. The value is a list
 # of colors the wave interpolates through (2-3 = a cohesive gradient, a long list
 # = a rainbow). Only these themes animate; all others use a static accent.
@@ -189,37 +190,67 @@ else:
     _EG_FOLDER  = 'e.g. ~/Music'
 
 # Full key reference (shown by the ? screen — the only "help" in the UI).
+# Grouped so the help screen can render sections. Sections that only apply on a
+# particular screen say so in their title — the old flat list mixed them in with
+# the global keys, which is half of why it was hard to read.
 KEYS_HELP = [
-    ('/',        'Search or paste a URL / playlist'),
-    ('f / Esc',  'Filter the loaded list / clear filter'),
-    ('Enter',    'Play selected track'),
-    ('Space',    'Pause / Resume'),
-    ('n',        'Next track'),
-    ('b',        'Previous track (restarts first when mid-song)'),
-    ('p',        'Play highlighted track next'),
-    ('a',        'Add highlighted track to queue'),
-    ('x',        'Stop playback'),
-    ('Q',        'Toggle Library / Queue view'),
-    ('K / J',    'Move the highlighted queue track up / down (also Shift+↑/↓)'),
-    ('z',        'Shuffle queue'),
-    ('r',        'Cycle repeat (off / one / all)'),
-    ('l',        'Like / unlike track'),
-    ('L',        'Lyrics for the current track'),
-    ('A',        'Open the artist page (search or current track)'),
-    ('R',        'Start radio (endless mix) from the track'),
-    ('w',        'Save current list as a playlist'),
-    ('h',        'Home screen'),
-    ('t',        'Cycle search source (online)'),
-    ('o',        'Toggle online / offline mode'),
-    ('c / C',    'Theme picker / cycle theme'),
-    ('+ / -',    'Volume up / down'),
-    ('← / →',    'Seek -10s / +10s'),
-    ('s',        'Listen-stats sync settings (GitHub token + device name)'),
-    ('g',        'YouTube account / sign in (For You feed)'),
-    ('u',        'Check for updates / update the app'),
-    ('V',        "Changelog (what's new)"),
-    ('?',        'This help'),
-    ('q',        'Quit'),
+    ('Playback', [
+        ('Space',    'Pause / resume'),
+        ('n / b',    'Next / previous track (b restarts the song first when mid-play)'),
+        ('← / →',    'Seek -10s / +10s'),
+        ('+ / -',    'Volume up / down (= works as +)'),
+        ('x',        'Stop playback'),
+        ('r',        'Cycle repeat: off / one / all'),
+        ('z',        'Shuffle the queue'),
+        ('R',        'Radio — endless mix from the current track'),
+    ]),
+    ('Queue', [
+        ('Enter',    'Play the highlighted track (loads the whole list as the queue)'),
+        ('p',        'Play the highlighted track next'),
+        ('a',        'Add the highlighted track to the queue'),
+        ('Q',        'Switch between the Library and Queue views'),
+        ('K / J',    'Move the highlighted queue track up / down'),
+        ('Shift+↑/↓', 'Same as K / J'),
+    ]),
+    ('Library', [
+        ('l',        'Like / unlike the current track'),
+        ('w',        'Save the current list as a playlist'),
+        ('A',        'Artist page (for the search box, or the current track)'),
+        ('L',        'Lyrics for the current track'),
+    ]),
+    ('Search & browse', [
+        ('/',        'Search, or paste a URL / playlist link'),
+        ('f',        'Filter the loaded list'),
+        ('Esc',      'Clear the filter'),
+        ('t',        'Cycle the search source (YT Music / YouTube / both)'),
+        ('o',        'Toggle online / offline mode'),
+    ]),
+    ('Screens', [
+        ('h',        'Home screen'),
+        ('s',        'Listen-stats sync settings (GitHub token + device name)'),
+        ('g',        'YouTube account / sign in (unlocks the For You feed)'),
+        ('c / C',    'Theme picker / cycle to the next theme'),
+        ('u',        'Check for updates and update the app'),
+        ('V',        "Changelog — what's new"),
+        ('?',        'This help'),
+        ('q',        'Quit (asks first when something is playing)'),
+    ]),
+    ('On the home screen', [
+        ('← / →',    'Previous / next tab'),
+        ('Enter',    'Open, play or resume the highlighted entry'),
+        ('d',        'Delete it — unlike, unpin, or drop a playlist or session'),
+        ('r',        'Rename the highlighted playlist'),
+        ('Esc  /',   'Leave home for search & browse'),
+    ]),
+    ('In the lyrics view (L)', [
+        ('t',        'Toggle the translation'),
+        ('g',        'Change the translation language'),
+        ('Esc q L',  'Close'),
+    ]),
+    ('In any dialog', [
+        ('Esc',      'Close / cancel'),
+        ('y / n',    'Answer a yes-no confirmation'),
+    ]),
 ]
 
 
@@ -427,20 +458,38 @@ class KeybindingsScreen(ModalScreen):
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
 
+    # Height is a percentage, not a fixed 28 rows: the old box clipped its last
+    # entries with no scrollbar and no hint that anything was below, which read as
+    # "keys are missing from the help".
     CSS = """
     KeybindingsScreen { align: center middle; }
     #keys-box {
-        width: 64; height: 28;
+        width: 78; height: 88%;
         border: round $accent; padding: 1 2; background: $surface;
     }
-    #keys-title { text-style: bold; margin-bottom: 1; }
+    #keys-title { text-style: bold; }
+    #keys-scroll { height: 1fr; scrollbar-size-vertical: 1; }
+    #keys-hint { color: $accent; }
     """
 
     def compose(self) -> ComposeResult:
         with Vertical(id='keys-box'):
-            yield Label('Keyboard shortcuts  (Esc to close)', id='keys-title')
-            lines = '\n'.join(f'  [bold]{k:<9}[/]  {desc}' for k, desc in KEYS_HELP)
-            yield Static(lines)
+            yield Label('Keyboard shortcuts', id='keys-title')
+            with VerticalScroll(id='keys-scroll'):
+                yield Static(self._keys_markup())
+            yield Label('↑ ↓ PgUp PgDn scroll   ·   Esc / q / ? close', id='keys-hint')
+
+    # NOT named _render — that shadows a Textual internal and crashes the widget
+    # with a null visual (see CLAUDE.md).
+    def _keys_markup(self) -> str:
+        lines = []
+        for section, keys in KEYS_HELP:
+            if lines:
+                lines.append('')
+            lines.append(f'[bold $accent]{section}[/]')
+            for key, desc in keys:
+                lines.append(f'  [bold]{key:<11}[/] {desc}')
+        return '\n'.join(lines)
 
 
 # ── Changelog ─────────────────────────────────────────────────────────────────
@@ -448,6 +497,10 @@ class KeybindingsScreen(ModalScreen):
 # runtime `git log`) so it works on non-git installs. The mobile app mirrors
 # this list so the desktop history is viewable there too.
 CHANGELOG = [
+    ('1.8', '2026-08-14 23:55', [
+        'Keyboard help (?) rewritten: grouped into sections and scrollable',
+        'It now lists every key — the old one silently cut off the last few and never showed the home-screen, lyrics or dialog keys at all',
+    ]),
     ('1.7', '2026-08-14 22:30', [
         'Listening stats expanded: every artist, track and album you have played, all time',
         'Play counts alongside minutes — see most-played, not just most-listened',
