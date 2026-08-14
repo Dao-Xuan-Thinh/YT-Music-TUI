@@ -32,10 +32,21 @@ _DEFAULTS = {
     'top': {},        # {'YYYY-MM': {'<id>|<title>|<uploader>': seconds}}
     'remote': {},
     'last_sync': 0.0,
+    # All-time records, added alongside (never replacing) 'top'. Each value is
+    # {'s': seconds, 'n': plays, 'f': first listened, 'l': last listened}.
+    # Wire-identical to the iOS StatRecord — the two clients share these files.
+    'artists': {},    # {'<artist>': record}
+    'tracks': {},     # {'<id>|<title>|<uploader>': record}
+    'albums': {},     # {'<album>|<artist>': record}
+    'clock': {},      # {'<weekday 0=Mon>-<hour>': seconds}
+    'seeded': 0,      # 1 once the one-time backfill from 'top' has run
 }
 
 TOP_CAP = 300      # keys kept per month (trimmed at flush)
 TOP_MONTHS = 12    # months of attribution history kept
+TRACK_CAP = 2000   # all-time track records kept (artists/albums are uncapped:
+                   # far fewer of them, and dropping one loses its 'first' date)
+RECORD_KINDS = ('artists', 'tracks', 'albums')
 
 
 def _today():
@@ -48,6 +59,40 @@ def _month():
 
 def _valid_day(d):
     return isinstance(d, str) and len(d) == 10 and d[4] == '-' and d[7] == '-'
+
+
+def _clock_key():
+    """'<weekday>-<hour>' bucket for the heatmap, weekday 0=Mon..6=Sun."""
+    lt = time.localtime()
+    return f'{lt.tm_wday}-{lt.tm_hour}'
+
+
+def _rec(d=None):
+    """Normalise a record dict read from disk/gist (any field may be missing)."""
+    d = d if isinstance(d, dict) else {}
+    def num(k):
+        try:
+            return float(d.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    return {'s': num('s'), 'n': int(num('n')), 'f': num('f'), 'l': num('l')}
+
+
+def _rec_max(a, b):
+    """Same device twice (local vs its own gist copy): take the ahead-most field,
+    never the sum, or a re-pull would double-count."""
+    a, b = _rec(a), _rec(b)
+    f = min(x for x in (a['f'], b['f']) if x) if (a['f'] or b['f']) else 0.0
+    return {'s': max(a['s'], b['s']), 'n': max(a['n'], b['n']),
+            'f': f, 'l': max(a['l'], b['l'])}
+
+
+def _rec_add(a, b):
+    """Different devices: independent listening, so add."""
+    a, b = _rec(a), _rec(b)
+    f = min(x for x in (a['f'], b['f']) if x) if (a['f'] or b['f']) else 0.0
+    return {'s': a['s'] + b['s'], 'n': a['n'] + b['n'],
+            'f': f, 'l': max(a['l'], b['l'])}
 
 
 WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -70,6 +115,10 @@ class StatsStore:
         self._last_error = ''      # sticky sync status ('' = ok / never tried)
         # Deep copy — a shallow dict(_DEFAULTS) would share the nested day/remote
         # dicts across every instance.
+        # Current play, for play counting only (never persisted).
+        self._play_seconds = 0.0
+        self._play_counted = False
+        self._play_duration = 0.0
         self._data = json.loads(json.dumps(_DEFAULTS))
         if os.path.isfile(path):
             try:
@@ -81,25 +130,111 @@ class StatsStore:
                             self._data[k] = saved[k]
             except Exception:
                 pass
+        self._seed_records()
+
+    def _seed_records(self):
+        """One-time backfill of the all-time records from the monthly 'top' map.
+
+        Without it the new artist/track charts would start empty even for someone
+        with a year of history, which reads as broken. 'top' already holds up to
+        12 months of per-track seconds keyed '<id>|<title>|<uploader>', so seconds
+        and the artist split come across exactly; play counts and first/last dates
+        can't be recovered and stay 0 (the UI shows plays only when non-zero).
+
+        Seeds from the LOCAL map only — every device seeds its own history, so the
+        cross-device sum stays right. Runs once, guarded by the 'seeded' flag.
+        """
+        with self._lock:
+            if self._data.get('seeded'):
+                return
+            top = self._data.get('top') or {}
+            self._data['seeded'] = 1
+            if not top:
+                return
+            tracks = self._data.setdefault('tracks', {})
+            artists = self._data.setdefault('artists', {})
+            for entries in top.values():
+                for key, secs in entries.items():
+                    try:
+                        secs = float(secs)
+                    except (TypeError, ValueError):
+                        continue
+                    rec = _rec(tracks.get(key))
+                    rec['s'] += secs
+                    tracks[key] = rec
+                    artist = key.rsplit('|', 1)[-1]
+                    if artist:
+                        arec = _rec(artists.get(artist))
+                        arec['s'] += secs
+                        artists[artist] = arec
+            self._dirty = True
 
     # ── Local accumulation ─────────────────────────────────────────────────
 
+    def begin_track(self, track=None):
+        """Announce a new play. Play COUNTS need this: without it a repeat-one
+        loop looks like one endless play, because the track identity never
+        changes between add() calls."""
+        with self._lock:
+            self._play_seconds = 0.0
+            self._play_counted = False
+            try:
+                self._play_duration = float((track or {}).get('duration') or 0)
+            except (TypeError, ValueError):
+                self._play_duration = 0.0
+
     def add(self, seconds, track=None):
         """Accumulate listened seconds into today's counter, and attribute
-        them to `track` (dict with id/title/uploader) for the monthly top
-        charts. Memory only — flush() persists."""
+        them to `track` (dict with id/title/uploader/album) for the monthly top
+        charts and the all-time records. Memory only — flush() persists."""
         if seconds <= 0:
             return
+        now = time.time()
         with self._lock:
             day = _today()
             days = self._data['days']
             days[day] = float(days.get(day, 0)) + seconds
+            clock = self._data.setdefault('clock', {})
+            ck = _clock_key()
+            clock[ck] = float(clock.get(ck, 0)) + seconds
             if track and track.get('id'):
                 key = (f"{track['id']}|{track.get('title', '')}"
                        f"|{track.get('uploader', '')}")
                 month = self._data.setdefault('top', {}).setdefault(_month(), {})
                 month[key] = float(month.get(key, 0)) + seconds
+
+                # A play is credited once the listen passes half the track,
+                # capped at 30s: a skipped intro never counts, and a long track
+                # doesn't have to finish. Seconds accrue regardless.
+                self._play_seconds += seconds
+                threshold = min(30.0, self._play_duration / 2) \
+                    if self._play_duration > 0 else 30.0
+                credit = (not self._play_counted
+                          and self._play_seconds >= threshold)
+                if credit:
+                    self._play_counted = True
+
+                self._bump_locked('tracks', key, seconds, credit, now)
+                artist = track.get('uploader') or ''
+                if artist:
+                    self._bump_locked('artists', artist, seconds, credit, now)
+                album = track.get('album') or ''
+                if album:
+                    self._bump_locked('albums', f'{album}|{artist}',
+                                      seconds, credit, now)
             self._dirty = True
+
+    def _bump_locked(self, kind, key, seconds, count_play, now):
+        """Add to one all-time record (call with the lock held)."""
+        recs = self._data.setdefault(kind, {})
+        rec = _rec(recs.get(key))
+        rec['s'] += seconds
+        if count_play:
+            rec['n'] += 1
+        if not rec['f']:
+            rec['f'] = now
+        rec['l'] = now
+        recs[key] = rec
 
     def flush(self):
         """Write stats.json if anything changed since the last write."""
@@ -125,6 +260,12 @@ class StatsStore:
             if len(entries) > TOP_CAP:
                 keep = sorted(entries.items(), key=lambda kv: -float(kv[1]))
                 top[month] = dict(keep[:TOP_CAP])
+        # The all-time track map is the only record map that grows without
+        # bound; artists and albums stay small enough to keep in full.
+        tracks = self._data.get('tracks') or {}
+        if len(tracks) > TRACK_CAP:
+            keep = sorted(tracks.items(), key=lambda kv: -_rec(kv[1])['s'])
+            self._data['tracks'] = dict(keep[:TRACK_CAP])
 
     # ── Merged views (local + remote devices) ──────────────────────────────
 
@@ -300,6 +441,128 @@ class StatsStore:
                 out[_dt.date.fromisoformat(d).weekday()] += s
         return out
 
+    # ── All-time records (artists / tracks / albums / clock) ───────────────
+
+    def merged_records(self, kind, own_device_id=''):
+        """key -> record, merged across devices with the same rule the day map
+        uses: our own device's local vs gist copy is de-duplicated per field,
+        every OTHER device is separate listening and adds. Mirrors the iOS
+        `StatsShared.mergedRecords`."""
+        with self._lock:
+            local = dict(self._data.get(kind) or {})
+            remote = {dev: dict((v.get(kind) or {}))
+                      for dev, v in (self._data.get('remote') or {}).items()}
+        own = remote.pop(own_device_id, {}) if own_device_id else {}
+        merged = {}
+        for key in set(local) | set(own):
+            merged[key] = _rec_max(local.get(key), own.get(key))
+        for entries in remote.values():
+            for key, rec in entries.items():
+                merged[key] = _rec_add(merged.get(key), rec)
+        return merged
+
+    def top_records(self, kind, n=10, own_device_id='', by='time'):
+        """[(key, record)] ranked by seconds ('time') or play count ('plays')."""
+        recs = self.merged_records(kind, own_device_id)
+        if by == 'plays':
+            order = sorted(recs.items(), key=lambda kv: (-kv[1]['n'], -kv[1]['s']))
+        else:
+            order = sorted(recs.items(), key=lambda kv: -kv[1]['s'])
+        return order[:n]
+
+    def artist_detail(self, name, own_device_id=''):
+        """(record, [(track key, record)]) for one artist, tracks best first."""
+        rec = self.merged_records('artists', own_device_id).get(name) or _rec()
+        tracks = [(k, v) for k, v in
+                  self.merged_records('tracks', own_device_id).items()
+                  if k.rsplit('|', 1)[-1] == name]
+        tracks.sort(key=lambda kv: -kv[1]['s'])
+        return rec, tracks
+
+    def discovered(self, start, end, own_device_id=''):
+        """Artists whose FIRST listen falls in [start, end), best first."""
+        found = [(k, v) for k, v in
+                 self.merged_records('artists', own_device_id).items()
+                 if start <= v['f'] < end]
+        found.sort(key=lambda kv: -kv[1]['s'])
+        return [k for k, _ in found]
+
+    def clock_heatmap(self, own_device_id=''):
+        """(7x24 grid of seconds starting Monday, busiest bucket)."""
+        with self._lock:
+            local = dict(self._data.get('clock') or {})
+            remote = {dev: dict(v.get('clock') or {})
+                      for dev, v in (self._data.get('remote') or {}).items()}
+        own = remote.pop(own_device_id, {}) if own_device_id else {}
+        merged = {}
+        for key in set(local) | set(own):
+            merged[key] = max(float(local.get(key) or 0), float(own.get(key) or 0))
+        for entries in remote.values():
+            for key, secs in entries.items():
+                try:
+                    merged[key] = merged.get(key, 0) + float(secs)
+                except (TypeError, ValueError):
+                    pass
+        grid = [[0.0] * 24 for _ in range(7)]
+        peak = 0.0
+        for key, secs in merged.items():
+            try:
+                d, h = (int(x) for x in key.split('-'))
+            except (ValueError, TypeError):
+                continue
+            if 0 <= d < 7 and 0 <= h < 24:
+                grid[d][h] = secs
+                peak = max(peak, secs)
+        return grid, peak
+
+    def recap(self, period, own_device_id=''):
+        """Month ('YYYY-MM') or year ('YYYY') summary. Per-period tops come from
+        the monthly 'top' map (the all-time records carry no month), so they
+        cover the same 12-month window those charts do."""
+        import calendar as _cal
+        import datetime as _dt
+        days = self._merged_day_map(own_device_id)
+        is_year = len(period) == 4
+        if is_year:
+            prev = str(int(period) - 1)
+        else:
+            y, m = (int(x) for x in period.split('-'))
+            prev = f'{y - 1:04d}-12' if m == 1 else f'{y:04d}-{m - 1:02d}'
+        total = sum(s for d, s in days.items() if d.startswith(period))
+        previous = sum(s for d, s in days.items() if d.startswith(prev))
+        # Sum every month that falls inside the period.
+        with self._lock:
+            months = set(self._data.get('top') or {})
+            for v in (self._data.get('remote') or {}).values():
+                months |= set(v.get('top') or {})
+        agg = {}
+        for month in (m for m in months if m.startswith(period)):
+            for key, secs in self._merged_top(month, own_device_id).items():
+                agg[key] = agg.get(key, 0) + secs
+        top_track = ''
+        if agg:
+            best = max(agg.items(), key=lambda kv: kv[1])[0]
+            parts = best.split('|')
+            top_track = parts[1] if len(parts) > 1 else best
+        by_artist = {}
+        for key, secs in agg.items():
+            artist = key.rsplit('|', 1)[-1]
+            if artist:
+                by_artist[artist] = by_artist.get(artist, 0) + secs
+        top_artist = max(by_artist.items(), key=lambda kv: kv[1])[0] if by_artist else ''
+        # [start, end) bounds of the period, for discovery.
+        if is_year:
+            start = _dt.datetime(int(period), 1, 1).timestamp()
+            end = _dt.datetime(int(period) + 1, 1, 1).timestamp()
+        else:
+            y, m = (int(x) for x in period.split('-'))
+            start = _dt.datetime(y, m, 1).timestamp()
+            last = _cal.monthrange(y, m)[1]
+            end = (_dt.datetime(y, m, last) + _dt.timedelta(days=1)).timestamp()
+        return {'label': period, 'total': total, 'previous': previous,
+                'top_artist': top_artist, 'top_track': top_track,
+                'new_artists': self.discovered(start, end, own_device_id)}
+
     def last_sync(self):
         with self._lock:
             return float(self._data.get('last_sync') or 0)
@@ -361,7 +624,12 @@ class StatsStore:
                         parsed = json.loads(finfo.get('content') or '{}')
                         remote[dev] = {'device': parsed.get('device') or dev[:8],
                                        'days': dict(parsed.get('days') or {}),
-                                       'top': dict(parsed.get('top') or {})}
+                                       'top': dict(parsed.get('top') or {}),
+                                       'clock': dict(parsed.get('clock') or {})}
+                        for kind in RECORD_KINDS:
+                            remote[dev][kind] = {
+                                k: _rec(v) for k, v in
+                                (parsed.get(kind) or {}).items()}
                         if dev != device_id and isinstance(parsed.get('library'), dict):
                             remote_libs.append(parsed['library'])
                     except Exception:
@@ -380,9 +648,28 @@ class StatsStore:
                             self._data['days'][day] = float(secs)
                     except (TypeError, ValueError):
                         pass
+                # Same merge-max for the all-time maps: our own gist copy can be
+                # ahead of a wiped local store, but re-pulling it must never
+                # inflate the counts.
+                own_all = remote.get(device_id, {})
+                for kind in RECORD_KINDS:
+                    mine = self._data.setdefault(kind, {})
+                    for key, rec in (own_all.get(kind) or {}).items():
+                        mine[key] = _rec_max(mine.get(key), rec)
+                own_clock = own_all.get('clock') or {}
+                clock = self._data.setdefault('clock', {})
+                for key, secs in own_clock.items():
+                    try:
+                        if float(secs) > float(clock.get(key, 0)):
+                            clock[key] = float(secs)
+                    except (TypeError, ValueError):
+                        pass
                 self._prune_top_locked()
                 body = {'device': device_name, 'days': self._data['days'],
-                        'top': self._data.get('top', {})}
+                        'top': self._data.get('top', {}),
+                        'clock': self._data.get('clock', {})}
+                for kind in RECORD_KINDS:
+                    body[kind] = self._data.get(kind, {})
                 if merged_library is not None:
                     # Publish the MERGED state, so this file already reflects
                     # everyone's edits the next time another device pulls.
@@ -396,7 +683,10 @@ class StatsStore:
             with self._lock:
                 remote[device_id] = {'device': device_name,
                                      'days': dict(self._data['days']),
-                                     'top': dict(self._data.get('top', {}))}
+                                     'top': dict(self._data.get('top', {})),
+                                     'clock': dict(self._data.get('clock', {}))}
+                for kind in RECORD_KINDS:
+                    remote[device_id][kind] = dict(self._data.get(kind, {}))
                 self._data['remote'] = remote
                 self._data['last_sync'] = time.time()
                 self._dirty = True

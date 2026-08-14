@@ -244,3 +244,116 @@ Remaining high-value / low-risk picks:
 4. **Commit the headless tests as `tests/`** (§5) — locks in current behavior.
 5. **Full-screen now-playing face** (§2 [~]) — the remaining half of the
    lyrics/now-playing headline feature.
+
+---
+
+# Cross-platform backlog (desktop · iOS · watch)
+
+Added 2026-08-14. The sections above are the desktop app's own history; this part
+covers everything, including the native iOS app on `mobile-fork`. Same legend:
+`[ ]` todo · `[x]` done · `[~]` partial.
+
+## A. Playback & audio
+
+- [ ] **Crossfade / true gapless.** Desktop: mpv `--gapless-audio` (+ optional
+  crossfade). iOS: preload the next item in an `AVQueuePlayer`. Today's "gapless"
+  only pre-resolves the URL — the gap is the decoder, not the network.
+- [ ] **Sleep timer.** Stop after N minutes or at end of track/queue.
+- [ ] **Playback speed** (0.75×–2×), useful for long mixes and podcasts.
+- [ ] **Volume normalisation** across tracks (ReplayGain-style), so a quiet studio
+  track and a loud live one don't jump.
+- [ ] **Real equaliser** (iOS: AVAudioEngine/AudioUnit). The current one only
+  *visualises* — it cannot change the sound.
+- [ ] **Skip silence / intro-outro trim.**
+- [ ] **Per-track resume** for long tracks (podcast-style), not just per-session.
+- [ ] **"Play next" vs "add to queue"** as separate actions on mobile.
+
+## B. Library & organisation
+
+- [ ] **Smart playlists**: most played, never played, recently added, "not heard
+  in 6 months" — all derivable from the stats records now in place.
+- [ ] **Playlist folders / tags.**
+- [ ] **Multi-select bulk edit** for queue and playlists.
+- [ ] **Import / export** playlists (JSON, CSV, M3U).
+- [ ] **Duplicate detection** across playlists.
+- [ ] **Local file import on iOS** (Files app).
+- [ ] **Offline downloads on iOS.** Big one — today nothing is ever written to
+  disk, which is a deliberate design property; revisit consciously.
+
+## C. Discovery
+
+- [ ] **Search suggestions / autocomplete** (deferred once over latency worries —
+  worth re-testing with a debounce).
+- [ ] **Search history**, recently searched.
+- [ ] **Browse YTM charts, new releases, moods.**
+- [ ] **Follow artists + new-release alerts.**
+- [ ] **"More like this"** from any track; similar-artist exploration.
+
+## D. Stats (beyond the 2026-08 expansion)
+
+- [ ] **Listening goals / weekly targets.**
+- [ ] **Shareable recap cards** (rendered image of your top artists).
+- [ ] **Export stats** as CSV/JSON.
+- [ ] **Last.fm / ListenBrainz scrobbling.**
+- [ ] **Session history** — "what did I play on Aug 3".
+- [ ] **Longest session / binge detection.**
+- [ ] **Backfill play counts** for pre-expansion history (only seconds could be
+  seeded; counts and first-listen dates start from v1.7).
+
+## E. UI / UX
+
+- [ ] **Drag-to-reorder queue on mobile** (desktop has K/J).
+- [ ] **Swipe between tracks** in the now-playing screen; artwork zoom.
+- [ ] **Custom theme editor** + theme sync across devices.
+- [ ] **Dynamic Type + VoiceOver pass** on iOS.
+- [ ] **Haptics** for transport actions.
+- [ ] **Search-as-you-type within the library.**
+- [ ] **iPad keyboard shortcuts** and Stage Manager sizing.
+
+## F. System integration
+
+- [ ] **Siri Shortcuts / App Intents** ("play my liked songs").
+- [ ] **CarPlay.**
+- [ ] **Live Activity / Dynamic Island** for now playing.
+- [ ] **Focus filters** (auto-switch device or playlist).
+- [ ] **Handoff** — "continue on this device" from the resume list.
+
+## G. Watch
+
+- [~] **Enrollment parked.** The app builds and installs; the physical Watch has
+  never registered. Revisit with a paid account (see I).
+- [ ] **Complications**; crown volume.
+- [ ] **Standalone playback** — needs offline downloads (B) first.
+
+## H. Widgets
+
+- [ ] **Top-artists widget**, **streak widget**.
+- [ ] **Interactive queue widget** (iOS 17 intents).
+- [ ] More graph variants for the stats widget.
+
+## I. Desktop-specific
+
+- [ ] **MPRIS (Linux) / SMTC (Windows)** parity with the macOS now-playing panel.
+- [ ] **Album art in the terminal** via kitty/iTerm image protocols.
+- [ ] **Resizable panes**, configurable keybindings.
+- [ ] **CLI mode**: `ytm play <query>` without entering the TUI.
+- [ ] **Multiple profiles / accounts.**
+- [ ] **ffplay fallback still has no transport controls** (long-standing).
+
+## J. Sync & data
+
+- [ ] **Merge-conflict visibility** — show what sync changed.
+- [ ] **Library backup / restore.**
+- [ ] **Token rotation** + expiry warning.
+- [ ] **Optional self-hosted sync endpoint** instead of a gist.
+
+## K. Reliability & infra
+
+- [ ] **Automated tests for the merge protocol** on both platforms — the rules
+  (own-device de-dup vs peer sum, removal-beats-older-add) are subtle and are
+  currently only verified by hand.
+- [ ] **CI** for desktop lint/tests.
+- [ ] **Structured debug-log export** (share a session log without screenshots).
+- [ ] **Paid Apple Developer account.** $99/yr ends the 7-day re-sign ritual
+  (1-year profiles), and would likely unblock the watch. The free-team expiry has
+  cost real time in several sessions — the single highest-leverage infra fix.
