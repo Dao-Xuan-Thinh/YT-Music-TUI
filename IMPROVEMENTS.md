@@ -320,8 +320,13 @@ covers everything, including the native iOS app on `mobile-fork`. Same legend:
 
 ## G. Watch
 
-- [~] **Enrollment parked.** The app builds and installs; the physical Watch has
-  never registered. Revisit with a paid account (see I).
+- [x] **Enrollment done (2026-08-14).** The remote runs on the wrist. The app had
+  been building fine all along; an iOS-destination build only registers the
+  iPhone/iPad, so the embedded watch app was signed for a profile that didn't list
+  the Watch, and the phone's Watch app silently declined to install it. One build
+  aimed at the watch (`-destination platform=watchOS,id=<UDID>` with
+  `-allowProvisioningDeviceRegistration`) registered it. `reinstall.sh` now
+  refreshes the Watch alongside the phone and iPad.
 - [ ] **Complications**; crown volume.
 - [ ] **Standalone playback** — needs offline downloads (B) first.
 
