@@ -123,7 +123,6 @@ CUSTOM_THEMES = [
           warning='#d8ff5e', error='#c33bff'),
 ]
 
-#test
 # Themes whose now-playing track gets an animated color-wave. The value is a list
 # of colors the wave interpolates through (2-3 = a cohesive gradient, a long list
 # = a rainbow). Only these themes animate; all others use a static accent.
