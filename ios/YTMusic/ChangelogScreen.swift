@@ -128,6 +128,10 @@ enum Changelog {
     /// viewable on mobile via the Mobile/Desktop toggle. Kept in sync with the
     /// desktop app's CHANGELOG (main.py) by hand (different language/branch).
     static let desktopEntries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.8", date: "2026-08-14 23:55", notes: [
+            "Keyboard help (?) rewritten: grouped into sections and scrollable",
+            "It now lists every key — the old one silently cut off the last few and never showed the home-screen, lyrics or dialog keys at all",
+        ]),
         ChangelogEntry(version: "1.7", date: "2026-08-14 22:30", notes: [
             "Listening stats expanded: every artist, track and album you have played, all time",
             "Play counts alongside minutes — see most-played, not just most-listened",
