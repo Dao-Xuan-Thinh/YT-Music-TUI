@@ -201,6 +201,30 @@ owns `#now-playing`, so `_update_player_bar` skips that widget (avoids a 1 Hz fl
 
 `on_mount()` spawns a background thread to call `_ensure_mpv_running()` early. This avoids the 4.5s startup delay on first play. Race condition prevented by `_start_lock` in `_ensure_mpv_running()`.
 
+### Listen-stats schema is a contract with the iOS app
+
+`stats.py` and the iOS `StatsStore`/`StatsModel` read and write the SAME per-device
+gist files, so any schema change must land on both or each client will drop the
+other's fields the next time it pushes. Alongside `days` and `top` (a 12-month,
+300-key-per-month attribution map) sit the all-time records — `artists`, `tracks`,
+`albums`, each `key -> {'s','n','f','l'}` (seconds, plays, first listened, last
+listened) — plus `clock` (`'<weekday 0=Mon>-<hour>' -> seconds`) for the heatmap.
+
+- **Merging** (`merged_records`, and the same rule in `_merged_day_map`): our OWN
+  device's local vs gist copy is de-duplicated field-by-field (max), because both
+  describe the same listening; every OTHER device is independent and adds. Callers
+  MUST pass `own_device_id` — without it our own gist copy is treated as a peer and
+  the totals inflate.
+- **Play counts** are credited once per play past `min(30s, half the track)`.
+  `_play_queue_item` calls `begin_track()`; without that a repeat-one loop counts
+  as a single endless play, since the track never changes between `add()` calls.
+- **`_seed_records`** backfills `artists`/`tracks` from `top` exactly once (guarded
+  by the `seeded` flag), seconds only — counts and dates can't be recovered. It
+  seeds from the LOCAL map so each device contributes its own history and the
+  cross-device sum stays correct.
+- `albums` only fills for tracks whose yt-dlp metadata carries an album (YouTube
+  Music tracks, not plain videos), and only from v1.7 onward.
+
 ## Cross-Platform Notes
 
 **Status:** runs on Windows, macOS, and Linux. The IPC layer auto-selects a
