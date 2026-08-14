@@ -36,6 +36,37 @@ final class StatsStore: ObservableObject {
         var f = StatsShared.load()
         f.deviceID = AppConfig.shared.statsDeviceID
         file = f
+        seedRecords()
+    }
+
+    /// One-time backfill of the all-time records from the monthly `top` map.
+    ///
+    /// Without it the new artist/track charts would start empty even for someone
+    /// with a year of history, which reads as broken. `top` already holds up to 12
+    /// months of per-track seconds keyed "<id>|<title>|<uploader>", so seconds and
+    /// the artist split carry over exactly; play counts and first/last dates can't
+    /// be recovered and stay 0 (the UI shows counts only where they're real).
+    ///
+    /// Seeds from the LOCAL map only — every device seeds its own history, so the
+    /// cross-device sum stays right. Mirrors desktop `stats._seed_records`.
+    private func seedRecords() {
+        guard !file.seeded else { return }
+        file.seeded = true
+        defer { dirty = true; flush() }
+        guard !file.top.isEmpty else { return }
+        for entries in file.top.values {
+            for (key, secs) in entries {
+                var rec = file.tracks[key] ?? StatRecord()
+                rec.s += secs
+                file.tracks[key] = rec
+                let artist = key.components(separatedBy: "|").last ?? ""
+                if !artist.isEmpty {
+                    var arec = file.artists[artist] ?? StatRecord()
+                    arec.s += secs
+                    file.artists[artist] = arec
+                }
+            }
+        }
     }
 
     // MARK: - Accumulation

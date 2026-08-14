@@ -11,6 +11,14 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.14", date: "2026-08-14 22:45", notes: [
+            "Settings → LISTEN STATS → SEE ALL: a full stats browser",
+            "Every artist, track and album you have played, all time — sort by time or by play count",
+            "Tap an artist for their own page: total time, plays, when you first and last heard them",
+            "A weekday × hour heatmap of when you actually listen",
+            "Month and year recaps: top artist/track, new artists discovered, and how it compares to the period before",
+            "Your existing history is carried into the new artist/track charts automatically",
+        ]),
         ChangelogEntry(version: "1.13", date: "2026-08-14 21:30", notes: [
             "Fixed the in-app progress bar sitting at 0:00 while the track played — it follows the song again, and can no longer get stuck after a scrub",
         ]),
@@ -117,6 +125,13 @@ enum Changelog {
     /// viewable on mobile via the Mobile/Desktop toggle. Kept in sync with the
     /// desktop app's CHANGELOG (main.py) by hand (different language/branch).
     static let desktopEntries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.7", date: "2026-08-14 22:30", notes: [
+            "Listening stats expanded: every artist, track and album you have played, all time",
+            "Play counts alongside minutes — see most-played, not just most-listened",
+            "A weekday × hour heatmap of when you actually listen",
+            "Monthly recap: top artist/track, new artists discovered, and how it compares to last month",
+            "Existing history is carried over into the new artist/track charts automatically",
+        ]),
         ChangelogEntry(version: "1.6", date: "2026-07-21 09:00", notes: [
             "App no longer goes unresponsive after sitting idle — audio self-recovers with no restart",
             "Expanded stats: all-time top artists/tracks, listening streak, this-year total, most-active weekday",

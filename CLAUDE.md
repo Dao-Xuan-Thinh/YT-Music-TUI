@@ -151,6 +151,26 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
   KVO writes asynchronously from the *previous* item's state) decides whether the handed-over
   item starts playing. Backstop: `checkForSilence()` (1 Hz, first 20s, one nudge per item)
   pause/plays if the tap goes quiet while `timeControlStatus == .playing`.
+- **Never mirror `playback.position` into `@State` for display.** Three scrubbers
+  each kept a `scrub` copy fed by `.onChange(of: playback.position) { if !scrubbing … }`,
+  so the bar froze at 0:00 whenever `scrubbing` latched true (an `onEditingChanged(true)`
+  with no matching `false`) — audio, stats and the lock-screen bar were fine because none
+  of them read the mirror. `ScrubBar.swift` is now the single scrubber: it renders
+  `playback.position` straight from the body (SwiftUI re-renders on the published change)
+  and keeps a scrub value only during a live drag, which it abandons after 1.5s of silence
+  or on a track change.
+- **All-time stat records** (`artists`/`tracks`/`albums`/`clock` in the device's gist
+  file, next to the untouched `days`/`top`): each is `key → {s, n, f, l}` = seconds,
+  plays, first listened, last listened. Wire-identical to desktop `stats.py` — change
+  BOTH or the two clients drop each other's fields on push. A play is credited once past
+  `min(30s, half the track)`, and `PlaybackService.play()` must call
+  `StatsStore.beginTrack()` or a repeat-one loop counts as one endless play. Merging
+  reuses the day-map rule: our own device de-duplicated per field (max), other devices
+  summed. `StatsFile` decodes with `decodeIfPresent` for EVERY field on purpose —
+  `StatsShared.load()` falls back to an empty file when decoding throws, so one missing
+  key silently wipes the user's counters. `seedRecords()` backfills artists/tracks from
+  `top` once (seconds only; counts/dates can't be recovered), per device, so the sum
+  across devices stays right.
 - **Listen-time stats + widget:** `PlaybackService`'s 0.5s time observer feeds real
   forward-progress deltas to `StatsStore.tick()` (pauses/seeks/track changes count
   nothing); counters flush to `stats.json` in the App Group

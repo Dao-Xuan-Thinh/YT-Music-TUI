@@ -71,6 +71,7 @@ struct StatsFile: Codable {
     var tracks: StatRecords = [:]               // all-time, capped at flush
     var albums: StatRecords = [:]               // all-time, fills from 1.14 onward
     var clock: [String: Double] = [:]           // weekday×hour heatmap buckets
+    var seeded = false                          // one-time backfill from `top` has run
 
     init() {}
 
@@ -92,6 +93,7 @@ struct StatsFile: Codable {
         tracks = (try? c.decodeIfPresent(StatRecords.self, forKey: .tracks)) as? StatRecords ?? [:]
         albums = (try? c.decodeIfPresent(StatRecords.self, forKey: .albums)) as? StatRecords ?? [:]
         clock = (try? c.decodeIfPresent([String: Double].self, forKey: .clock)) as? [String: Double] ?? [:]
+        seeded = (try? c.decodeIfPresent(Bool.self, forKey: .seeded)) as? Bool ?? false
     }
 }
 
