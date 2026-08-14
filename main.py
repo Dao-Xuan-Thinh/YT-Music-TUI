@@ -448,6 +448,13 @@ class KeybindingsScreen(ModalScreen):
 # runtime `git log`) so it works on non-git installs. The mobile app mirrors
 # this list so the desktop history is viewable there too.
 CHANGELOG = [
+    ('1.7', '2026-08-14 22:30', [
+        'Listening stats expanded: every artist, track and album you have played, all time',
+        'Play counts alongside minutes — see most-played, not just most-listened',
+        'A weekday × hour heatmap of when you actually listen',
+        'Monthly recap: top artist/track, new artists discovered, and how it compares to last month',
+        'Existing history is carried over into the new artist/track charts automatically',
+    ]),
     ('1.6', '2026-07-21 09:00', [
         'App no longer goes unresponsive after sitting idle — audio self-recovers with no restart',
         'Expanded stats: all-time top artists/tracks, listening streak, this-year total, most-active weekday',
