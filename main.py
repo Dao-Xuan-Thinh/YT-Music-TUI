@@ -1216,9 +1216,75 @@ def _stats_report(stats, cfg, width=34, top=True):
             for i, (title, artist, secs) in enumerate(t_tracks, 1):
                 label = f'{title} — {artist}' if artist else title
                 lines.append(f'  {i}. {label[:34]:<34}  {fmt(secs)}')
+        lines.extend(_stats_records_report(stats, dev_id, width))
     lines.append('')
     lines.append(stats.status_line(bool(cfg and cfg.stats_token)))
     return '\n'.join(lines)
+
+
+def _stats_records_report(stats, dev_id, width=34, n=8):
+    """The all-time record charts: artists / tracks / albums ranked by BOTH time
+    and plays, when you listen (weekday x hour), and this month's recap. Play
+    counts and album names only exist for listening tracked from v1.7 onward —
+    history seeded from the old monthly map has seconds only, so counts are shown
+    only where they are real."""
+    fmt = stats_module.fmt_mins
+    lines = []
+
+    def chart(kind, heading, label_of):
+        rows = stats.top_records(kind, n=n, own_device_id=dev_id, by='time')
+        if not rows:
+            return
+        lines.append('')
+        lines.append(heading)
+        for i, (key, rec) in enumerate(rows, 1):
+            plays = f'  {rec["n"]} plays' if rec['n'] else ''
+            lines.append(f'  {i}. {label_of(key)[:34]:<34}  {fmt(rec["s"])}{plays}')
+
+    chart('artists', 'Artists — all time', lambda k: k)
+    chart('tracks', 'Tracks — all time',
+          lambda k: (lambda p: f'{p[1]} — {p[2]}' if len(p) > 2 else k)(k.split('|')))
+    chart('albums', 'Albums — all time',
+          lambda k: (lambda p: f'{p[0]} — {p[1]}' if len(p) > 1 else k)(k.split('|')))
+
+    # Most-played (by count) is a genuinely different ranking from most-listened.
+    played = [r for r in stats.top_records('artists', n=n, own_device_id=dev_id,
+                                           by='plays') if r[1]['n']]
+    if played:
+        lines.append('')
+        lines.append('Most played artists')
+        for i, (key, rec) in enumerate(played, 1):
+            lines.append(f'  {i}. {key[:34]:<34}  {rec["n"]} plays')
+
+    grid, peak = stats.clock_heatmap(own_device_id=dev_id)
+    if peak > 0:
+        lines.append('')
+        lines.append('When you listen  (hour 0 → 23)')
+        blocks = ' ░▒▓█'
+        for d in range(7):
+            row = ''.join(
+                blocks[min(4, int(grid[d][h] / peak * 4) + (1 if grid[d][h] else 0))]
+                for h in range(24))
+            lines.append(f'  {stats_module.WEEKDAY_NAMES[d]}  {row}')
+
+    r = stats.recap(time.strftime('%Y-%m'), own_device_id=dev_id)
+    if r['total']:
+        lines.append('')
+        lines.append(f'Recap {r["label"]}')
+        delta = r['total'] - r['previous']
+        if r['previous']:
+            arrow = '↑' if delta >= 0 else '↓'
+            lines.append(f'  {fmt(r["total"])}  ({arrow} {fmt(abs(delta))} vs last month)')
+        else:
+            lines.append(f'  {fmt(r["total"])}')
+        if r['top_artist']:
+            lines.append(f'  Top artist  {r["top_artist"][:40]}')
+        if r['top_track']:
+            lines.append(f'  Top track   {r["top_track"][:40]}')
+        if r['new_artists']:
+            lines.append(f'  New artists {len(r["new_artists"])}: '
+                         + ', '.join(r['new_artists'][:4])[:52])
+    return lines
 
 
 class HomeScreen(Screen):
@@ -2454,6 +2520,9 @@ class YTMApp(App):
         self.now_playing = f'{track["title"]}  —  {track["uploader"]}'
         self._lib.add_recent(track)
         self._loading_since = time.monotonic()      # for the load watchdog in _poll_player
+        # Starts a fresh play for the play COUNT (seconds accrue per poll anyway).
+        # Without this a repeat-one loop would only ever count as a single play.
+        self._stats.begin_track(track)
         self.is_paused = False        # play un-pauses; lets the wave start at once
         self._set_status('Loading…')
         self._render_table()
