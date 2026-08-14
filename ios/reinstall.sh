@@ -12,11 +12,20 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 
 TEAM="${TEAM:-YK4NZ9U7TL}"
 APP=build/Build/Products/Debug-iphoneos/YTMusic.app
+# The generic iOS build produces the watch app too (it is embedded in YTMusic.app),
+# so the wrist can be refreshed from the same build with no extra compile.
+WATCH_APP=build/Build/Products/Debug-watchos/YTMusicWatch.app
 
 # devicectl identifier|label
 DEVICES=(
   "034EFB07-1E60-5107-A97D-BE9686A0CAEA|iPhone 16 Pro"
   "64B0EE2D-917D-56A3-A4F7-F30848A26BBB|iPad Pro 11 (:333)"
+)
+# Installed directly rather than waiting for the phone to hand the app over —
+# that path stays silent when anything is off. (The watch must be registered with
+# the team first; see the watchOS notes in CLAUDE.md.)
+WATCH_DEVICES=(
+  "6CBD754F-EE48-54C0-8F10-4954FEE57931|Apple Watch SE 3"
 )
 
 LIST="$(xcrun devicectl list devices 2>/dev/null || true)"
@@ -88,18 +97,30 @@ if ! ./build.sh device "$TEAM" 2>&1 | tee "$BUILD_LOG"; then
 fi
 
 ok=0; skipped=""
-for d in "${DEVICES[@]}"; do
-  id="${d%%|*}"; name="${d##*|}"
-  if reachable "$id"; then
-    echo "Installing on $name ..."
-    if xcrun devicectl device install app --device "$id" "$APP"; then
-      ok=$((ok + 1))
-    else
-      skipped="$skipped, $name (install failed)"
-    fi
-  else
-    skipped="$skipped, $name (unreachable)"
+
+install_to() {   # id, label, app bundle
+  local id="$1" name="$2" app="$3"
+  if [ ! -d "$app" ]; then
+    skipped="$skipped, $name (nothing built at $app)"
+    return
   fi
+  if ! reachable "$id"; then
+    skipped="$skipped, $name (unreachable)"
+    return
+  fi
+  echo "Installing on $name ..."
+  if xcrun devicectl device install app --device "$id" "$app"; then
+    ok=$((ok + 1))
+  else
+    skipped="$skipped, $name (install failed)"
+  fi
+}
+
+for d in "${DEVICES[@]}"; do
+  install_to "${d%%|*}" "${d##*|}" "$APP"
+done
+for d in "${WATCH_DEVICES[@]}"; do
+  install_to "${d%%|*}" "${d##*|}" "$WATCH_APP"
 done
 
 echo
