@@ -11,6 +11,9 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.13", date: "2026-08-14 21:30", notes: [
+            "Fixed the in-app progress bar sitting at 0:00 while the track played — it follows the song again, and can no longer get stuck after a scrub",
+        ]),
         ChangelogEntry(version: "1.12", date: "2026-07-27 16:20", notes: [
             "Fixed tracks sometimes playing silently after an automatic advance — no more pause/resume to get the sound back",
             "Added a safety net that revives the audio on its own if a track ever goes quiet while still playing",

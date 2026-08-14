@@ -16,8 +16,6 @@ struct NowPlayingScreen: View {
     /// Artwork/equalizer edge: larger in regular width (iPad) than on iPhone.
     private var artSize: CGFloat { hSize == .regular ? 200 : 128 }
 
-    @State private var scrub: Double = 0
-    @State private var scrubbing = false
     @State private var dragY: CGFloat = 0
 
     var body: some View {
@@ -47,8 +45,6 @@ struct NowPlayingScreen: View {
                 .onChanged { v in if v.translation.height > 0 { dragY = v.translation.height } }
                 .onEnded { v in if v.translation.height > 120 { dismiss() } else { dragY = 0 } }
         )
-        .onChange(of: playback.position) { p in if !scrubbing { scrub = p } }
-        .onAppear { scrub = playback.position }
     }
 
     // MARK: - Pieces
@@ -138,20 +134,7 @@ struct NowPlayingScreen: View {
         }
     }
 
-    private var scrubber: some View {
-        VStack(spacing: 4) {
-            Slider(value: $scrub, in: 0...max(playback.duration, 1)) { ed in
-                scrubbing = ed
-                if !ed { playback.seek(to: scrub) }
-            }
-            .disabled(playback.current == nil)
-            HStack {
-                Text(timeString(scrub)).font(TUI.mono(11)).foregroundStyle(TUI.dim)
-                Spacer()
-                Text(timeString(playback.duration)).font(TUI.mono(11)).foregroundStyle(TUI.dim)
-            }
-        }
-    }
+    private var scrubber: some View { ScrubBar(playback: playback) }
 
     private var transport: some View {
         HStack(spacing: 18) {

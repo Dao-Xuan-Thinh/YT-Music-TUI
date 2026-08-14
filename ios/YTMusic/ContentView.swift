@@ -12,8 +12,6 @@ struct ContentView: View {
     @State private var query = ""
     @FocusState private var searchFocused: Bool
 
-    @State private var scrub: Double = 0
-    @State private var scrubbing = false
     @State private var dragStartHighlight: Int?
     @State private var navMode = false   // true while long-press-drag owns the list
     @State private var dragQueueIndex: Int?   // queue row being drag-reordered (live index)
@@ -52,7 +50,6 @@ struct ContentView: View {
         .font(TUI.mono())
         .tint(TUI.accent)
         .preferredColorScheme(theme.current.dark ? .dark : .light)
-        .onChange(of: playback.position) { p in if !scrubbing { scrub = p } }
         .onChange(of: scenePhase) { phase in
             // .inactive too: an app-switcher swipe-kill passes through .inactive but can
             // skip .background, losing the resume snapshot.
@@ -246,19 +243,7 @@ struct ContentView: View {
                 .foregroundStyle(TUI.accent).disabled(vm.currentResult == nil)
             }
 
-            Slider(value: $scrub, in: 0...max(playback.duration, 1), onEditingChanged: { ed in
-                scrubbing = ed
-                if !ed { playback.seek(to: scrub) }
-            })
-            .disabled(playback.current == nil)
-
-            if isPad {
-                HStack {
-                    Text(timeString(scrub)).font(TUI.mono(11)).foregroundStyle(TUI.dim)
-                    Spacer()
-                    Text(timeString(playback.duration)).font(TUI.mono(11)).foregroundStyle(TUI.dim)
-                }
-            }
+            ScrubBar(playback: playback, showLabels: isPad)
 
             HStack(spacing: 44) {
                 Button { vm.playPrevious() } label: { Image(systemName: "backward.end.fill").font(.title3) }
@@ -835,17 +820,7 @@ struct ContentView: View {
                 .disabled(vm.currentResult == nil)
             }
 
-            Slider(value: $scrub, in: 0...max(playback.duration, 1), onEditingChanged: { ed in
-                scrubbing = ed
-                if !ed { playback.seek(to: scrub) }
-            })
-            .disabled(playback.current == nil)
-
-            HStack {
-                Text(timeString(scrub)).font(TUI.mono(11)).foregroundStyle(TUI.dim)
-                Spacer()
-                Text(timeString(playback.duration)).font(TUI.mono(11)).foregroundStyle(TUI.dim)
-            }
+            ScrubBar(playback: playback)
 
             HStack(spacing: 48) {
                 Button { vm.playPrevious() } label: { Image(systemName: "backward.end.fill").font(.title2) }
