@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+source "$PROJECT_DIR/Support/Python.xcframework/build/utils.sh"
+install_python Support/Python.xcframework app app_packages
+

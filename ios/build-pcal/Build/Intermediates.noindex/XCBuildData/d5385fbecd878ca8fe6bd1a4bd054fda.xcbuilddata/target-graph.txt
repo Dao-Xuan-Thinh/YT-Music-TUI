@@ -1,0 +1,6 @@
+Target dependency graph (3 targets)
+Target 'YTMusic' in project 'YTMusic'
+➜ Explicit dependency on target 'YTMusicWidget' in project 'YTMusic'
+➜ Explicit dependency on target 'YTMusicWatch' in project 'YTMusic'
+Target 'YTMusicWatch' in project 'YTMusic' (no dependencies)
+Target 'YTMusicWidget' in project 'YTMusic' (no dependencies)

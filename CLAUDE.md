@@ -229,6 +229,21 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
      device installs too. Fixes: `xcodebuild -downloadPlatform watchOS` (~4 GB),
      and Xcode → Settings → Accounts → sign in. `.watchkitapp` is a NEW App ID
      (one of the free team's 10-per-7-days), minted on demand once signed in.
+  3. **The WATCH itself must be registered with the team**, and that is what kept
+     the app off the wrist for weeks. An iOS-destination build only registers the
+     iPhone/iPad, so the embedded `Watch/YTMusicWatch.app` shipped with a profile
+     whose `ProvisionedDevices` listed only those two — the Watch app on the phone
+     then silently never offers to install it, with no error anywhere. Registering
+     it needs ONE build aimed at the watch itself:
+     `xcodebuild -scheme YTMusicWatch -destination 'platform=watchOS,id=<watch UDID>'
+     -allowProvisioningUpdates -allowProvisioningDeviceRegistration build`
+     (watch UDID via `devicectl device info details --device <devicectl id>`; the
+     two ids are different namespaces). After that the normal `./build.sh device`
+     path covers the watch too. Install straight to the wrist with
+     `devicectl device install app --device <watch devicectl id>
+     build/Build/Products/Debug-watchos/YTMusicWatch.app` — don't wait on the phone
+     to hand it over. Watch: "Do you know da way", devicectl id
+     `6CBD754F-EE48-54C0-8F10-4954FEE57931`, UDID `00008310-000C4BE60180E01E`.
 - **`./build.sh sim` never exits**: its last step is `simctl launch --console-pty`,
   which attaches to the app console forever. The build itself is done well before
   that — don't wait on the script. Also `simctl`/`devicectl` need

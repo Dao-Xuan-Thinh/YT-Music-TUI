@@ -1,0 +1,39 @@
+{
+  "" : {
+    "diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatch-primary.dia",
+    "emit-module-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatch-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatch-primary-emit-module.dia",
+    "pch" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatch-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatch-primary.swiftdeps"
+  },
+  "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/WatchApp/PhoneLink.swift" : {
+    "const-values" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/PhoneLink.swiftconstvalues",
+    "dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/PhoneLink.d",
+    "diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/PhoneLink.dia",
+    "index-unit-output-path" : "/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/PhoneLink.o",
+    "llvm-bc" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/PhoneLink.bc",
+    "object" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/PhoneLink.o",
+    "swift-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/PhoneLink.swiftdeps",
+    "swiftmodule" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/PhoneLink~partial.swiftmodule"
+  },
+  "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/WatchApp/WatchRemoteView.swift" : {
+    "const-values" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/WatchRemoteView.swiftconstvalues",
+    "dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/WatchRemoteView.d",
+    "diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/WatchRemoteView.dia",
+    "index-unit-output-path" : "/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/WatchRemoteView.o",
+    "llvm-bc" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/WatchRemoteView.bc",
+    "object" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/WatchRemoteView.o",
+    "swift-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/WatchRemoteView.swiftdeps",
+    "swiftmodule" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/WatchRemoteView~partial.swiftmodule"
+  },
+  "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/WatchApp/YTMusicWatchApp.swift" : {
+    "const-values" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatchApp.swiftconstvalues",
+    "dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatchApp.d",
+    "diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatchApp.dia",
+    "index-unit-output-path" : "/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatchApp.o",
+    "llvm-bc" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatchApp.bc",
+    "object" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatchApp.o",
+    "swift-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatchApp.swiftdeps",
+    "swiftmodule" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-watchos/YTMusicWatch.build/Objects-normal/arm64/YTMusicWatchApp~partial.swiftmodule"
+  }
+}

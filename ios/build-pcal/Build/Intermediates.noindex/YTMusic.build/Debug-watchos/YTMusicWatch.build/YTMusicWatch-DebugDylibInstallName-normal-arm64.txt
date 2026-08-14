@@ -1,0 +1,1 @@
+@rpath/YTMusicWatch.debug.dylib

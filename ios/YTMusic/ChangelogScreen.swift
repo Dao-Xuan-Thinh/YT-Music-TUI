@@ -11,6 +11,9 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.15", date: "2026-08-14 23:30", notes: [
+            "The Apple Watch remote works — see what's playing and control it (play/pause, next, previous) from your wrist while the phone app is reachable",
+        ]),
         ChangelogEntry(version: "1.14", date: "2026-08-14 22:45", notes: [
             "Settings → LISTEN STATS → SEE ALL: a full stats browser",
             "Every artist, track and album you have played, all time — sort by time or by play count",

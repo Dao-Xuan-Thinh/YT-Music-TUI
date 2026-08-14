@@ -1,0 +1,69 @@
+{
+  "" : {
+    "diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget-primary.dia",
+    "emit-module-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget-primary-emit-module.dia",
+    "pch" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget-primary.swiftdeps"
+  },
+  "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/YTMusic/NowPlayingShared.swift" : {
+    "const-values" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingShared.swiftconstvalues",
+    "dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingShared.d",
+    "diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingShared.dia",
+    "index-unit-output-path" : "/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingShared.o",
+    "llvm-bc" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingShared.bc",
+    "object" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingShared.o",
+    "swift-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingShared.swiftdeps",
+    "swiftmodule" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingShared~partial.swiftmodule"
+  },
+  "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/YTMusic/PlayIntent.swift" : {
+    "const-values" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/PlayIntent.swiftconstvalues",
+    "dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/PlayIntent.d",
+    "diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/PlayIntent.dia",
+    "index-unit-output-path" : "/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/PlayIntent.o",
+    "llvm-bc" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/PlayIntent.bc",
+    "object" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/PlayIntent.o",
+    "swift-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/PlayIntent.swiftdeps",
+    "swiftmodule" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/PlayIntent~partial.swiftmodule"
+  },
+  "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/YTMusic/StatsModel.swift" : {
+    "const-values" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsModel.swiftconstvalues",
+    "dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsModel.d",
+    "diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsModel.dia",
+    "index-unit-output-path" : "/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsModel.o",
+    "llvm-bc" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsModel.bc",
+    "object" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsModel.o",
+    "swift-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsModel.swiftdeps",
+    "swiftmodule" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsModel~partial.swiftmodule"
+  },
+  "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/YTMusicWidget/NowPlayingWidget.swift" : {
+    "const-values" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingWidget.swiftconstvalues",
+    "dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingWidget.d",
+    "diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingWidget.dia",
+    "index-unit-output-path" : "/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingWidget.o",
+    "llvm-bc" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingWidget.bc",
+    "object" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingWidget.o",
+    "swift-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingWidget.swiftdeps",
+    "swiftmodule" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/NowPlayingWidget~partial.swiftmodule"
+  },
+  "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/YTMusicWidget/StatsLockWidget.swift" : {
+    "const-values" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsLockWidget.swiftconstvalues",
+    "dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsLockWidget.d",
+    "diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsLockWidget.dia",
+    "index-unit-output-path" : "/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsLockWidget.o",
+    "llvm-bc" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsLockWidget.bc",
+    "object" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsLockWidget.o",
+    "swift-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsLockWidget.swiftdeps",
+    "swiftmodule" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/StatsLockWidget~partial.swiftmodule"
+  },
+  "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/YTMusicWidget/YTMusicWidget.swift" : {
+    "const-values" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget.swiftconstvalues",
+    "dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget.d",
+    "diagnostics" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget.dia",
+    "index-unit-output-path" : "/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget.o",
+    "llvm-bc" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget.bc",
+    "object" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget.o",
+    "swift-dependencies" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget.swiftdeps",
+    "swiftmodule" : "/Users/spider/Projects/Youtube-TUI/ytm-tui/ios/build-pcal/Build/Intermediates.noindex/YTMusic.build/Debug-iphoneos/YTMusicWidget.build/Objects-normal/arm64/YTMusicWidget~partial.swiftmodule"
+  }
+}
