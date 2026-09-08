@@ -244,6 +244,16 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
      build/Build/Products/Debug-watchos/YTMusicWatch.app` — don't wait on the phone
      to hand it over. Watch: "Do you know da way", devicectl id
      `6CBD754F-EE48-54C0-8F10-4954FEE57931`, UDID `00008310-000C4BE60180E01E`.
+- **Schemes are declared in `project.yml`, and must stay that way.** xcodegen only
+  emits schemes it is told about. For months the build worked purely because Xcode
+  had been opened on the project once and auto-created them under `xcuserdata/`;
+  when those `.xcscheme` files disappeared every build failed with `The project
+  named "YTMusic" does not contain a scheme named "YTMusic"`, while
+  `xcschememanagement.plist` still listed three shared schemes that no longer
+  existed. The `schemes:` block at the bottom of project.yml regenerates all three
+  as shared schemes, so a build needs only the repo — never a prior trip through
+  the Xcode UI. Symptom to recognise: `xcodebuild -list` shows the targets but
+  says "This project contains no schemes."
 - **`./build.sh sim` never exits**: its last step is `simctl launch --console-pty`,
   which attaches to the app console forever. The build itself is done well before
   that — don't wait on the script. Also `simctl`/`devicectl` need

@@ -109,10 +109,23 @@ install_to() {   # id, label, app bundle
     return
   fi
   echo "Installing on $name ..."
-  if xcrun devicectl device install app --device "$id" "$app"; then
+  local out
+  if out="$(xcrun devicectl device install app --device "$id" "$app" 2>&1)"; then
     ok=$((ok + 1))
+    echo "$out" | grep -E "App installed|bundleID" || true
   else
-    skipped="$skipped, $name (install failed)"
+    # devicectl buries the actual reason a few lines into a nested error, and
+    # "install failed" on its own sends you hunting. The two that actually happen:
+    # a locked device (the developer disk image can't mount) and a sleeping one.
+    case "$out" in
+      *"still locked"*|*"currently locked"*|*"disk image could not be mounted"*)
+        skipped="$skipped, $name (LOCKED — unlock it and rerun)" ;;
+      *"could not be established"*|*"Timed out"*|*"unreachable"*)
+        skipped="$skipped, $name (asleep or off this network — wake it and rerun)" ;;
+      *)
+        skipped="$skipped, $name (install failed)" ;;
+    esac
+    echo "$out" | tail -3
   fi
 }
 
