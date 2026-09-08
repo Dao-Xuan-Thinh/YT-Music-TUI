@@ -155,3 +155,37 @@ targets:
         SKIP_INSTALL: YES
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
+
+# Shared schemes, declared here so `xcodegen generate` emits them every time.
+#
+# They used to exist only because Xcode had been opened on the project once and
+# auto-created them under xcuserdata/. Nothing regenerated those, so the day the
+# .xcscheme files went missing every build died with "does not contain a scheme
+# named YTMusic" — with the scheme-management plist still cheerfully listing
+# three shared schemes that were no longer on disk. Declaring them keeps the
+# build reproducible from source alone.
+schemes:
+  YTMusic:
+    build:
+      targets:
+        YTMusic: all
+    run:
+      config: Debug
+    archive:
+      config: Debug
+  YTMusicWatch:
+    build:
+      targets:
+        YTMusicWatch: all
+    run:
+      config: Debug
+    archive:
+      config: Debug
+  YTMusicWidget:
+    build:
+      targets:
+        YTMusicWidget: all
+    run:
+      config: Debug
+    archive:
+      config: Debug
