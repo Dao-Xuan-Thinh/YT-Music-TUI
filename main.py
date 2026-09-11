@@ -2041,21 +2041,42 @@ class YTMApp(App):
         # Boot straight into the home screen.
         self.push_screen(HomeScreen(self._lib, self._stats, self._config), self._on_home_result)
 
-    def _verify_account(self) -> None:
+    def _verify_account(self, signing_in: bool = False) -> None:
+        """Confirm the live session in the background. `signing_in` marks the run
+        kicked off by the Account screen, which must always end in a visible
+        outcome — at boot the same check stays quiet unless something is wrong."""
         status, name = youtube.verify_auth_live()
 
         def _apply():
+            method = self._config.auth_method
+            detail = youtube.auth_detail()
             if status == 'ok' and name:
                 self._config.account_name = name
                 self._config.auth_verified_ts = time.time()
+                if signing_in:
+                    self._set_status(f'Signed in as {name}.')
             elif status == 'expired':
-                # Cookies no longer authenticate → drop the stale name (is_authenticated
-                # is now False, so the footer hides the account) and alert the user.
+                # Not authenticating → drop the stale name (is_authenticated is now
+                # False, so the footer hides the account) and say WHY, per method.
+                # `detail` names the real cause when the session never even loaded:
+                # unreadable cookie store, wrong browser profile, signed-out browser.
                 self._config.account_name = ''
                 self._config.auth_verified_ts = 0.0
-                self._set_status('⚠ YouTube sign-in expired — your saved cookies no '
-                                 'longer work. Press g to re-export cookies.txt.')
-            # 'unknown' (network blip) → leave the cached name, retry next boot.
+                if method == 'browser':
+                    why = detail or 'that browser profile is signed out of YouTube'
+                    self._set_status(f'⚠ Not signed in — {why}. Sign into '
+                                     'music.youtube.com in that browser profile, '
+                                     'then press g and pick it again.')
+                else:
+                    why = detail or 'your saved cookies no longer work'
+                    self._set_status(f'⚠ YouTube sign-in expired — {why}. '
+                                     'Press g to re-export cookies.txt.')
+            elif signing_in:
+                # 'unknown' = couldn't confirm (network/transient). The cached name
+                # is left alone, but a sign-in the user just asked for must not end
+                # in silence — that read as "it closed and nothing happened".
+                self._set_status('Could not confirm the sign-in (network?) — '
+                                 'the app will re-check. Press g to try again.')
             self._update_footer()
 
         try:
@@ -3480,7 +3501,8 @@ class YTMApp(App):
             # confirmed logout. Never validate-then-dismiss from a worker thread (gotcha).
             if method in ('cookies', 'browser'):
                 self._set_status('Signing in…')
-                threading.Thread(target=self._verify_account, daemon=True).start()
+                threading.Thread(target=self._verify_account,
+                                 kwargs={'signing_in': True}, daemon=True).start()
                 return
             self._set_status('YouTube auth: ' + youtube.auth_status()
                              + (' — personalized' if youtube.is_authenticated() else ''))
