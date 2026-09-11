@@ -145,15 +145,44 @@ def _browser_headers_from_cookies(path):
     Returns None if the file has no SAPISID/__Secure-3PAPISID (i.e. not a logged-in
     YouTube cookie export).
     """
+    global _auth_detail
     import http.cookiejar
-    if not path or not os.path.isfile(path):
+    if not path:
+        _auth_detail = 'no cookies file set'
+        return None
+    if not os.path.isfile(path):
+        _auth_detail = f'cookies file not found: {path}'
         return None
     try:
         jar = http.cookiejar.MozillaCookieJar(path)
         jar.load(ignore_discard=True, ignore_expires=True)
-    except Exception:
+    except Exception as exc:
+        _auth_detail = f'cookies file unreadable — {str(exc)[:160]}'
         return None
-    return _headers_from_jar(jar)
+    headers = _headers_from_jar(jar)
+    if headers is None:
+        _auth_detail = ('that cookies file has no logged-in YouTube session '
+                        '(export it while signed into music.youtube.com)')
+    else:
+        _auth_detail = ''
+    return headers
+
+
+# Why the last auth attempt failed, in words the user can act on. Set by the two
+# header builders below and surfaced by the Account flow — without it every
+# failure (locked cookie DB, wrong profile, signed-out browser, no browser at all)
+# collapsed into the same silent fallback to an anonymous client.
+_auth_detail = ''
+# True when an auth method is configured but its session could not be loaded, so
+# _get_ytm() fell back to an anonymous client. That is a LOCAL certainty — no need
+# to ask the network whether we're signed in, and it must not be reported as a
+# network blip.
+_auth_degraded = False
+
+
+def auth_detail():
+    """Human-readable reason the active auth is not working ('' when fine)."""
+    return _auth_detail
 
 
 def _browser_headers_live(browser, profile=''):
@@ -170,14 +199,28 @@ def _browser_headers_live(browser, profile=''):
     Note: Chromium browsers (Chrome/Edge/Brave) on Windows use App-Bound Encryption,
     which blocks external decryption (yt-dlp #10927) — Firefox-family works.
     """
+    global _auth_detail
     if not browser:
+        _auth_detail = 'no browser selected'
         return None
     try:
         from yt_dlp.cookies import extract_cookies_from_browser
         jar = extract_cookies_from_browser(browser, profile or None, _SilentLogger())
-    except Exception:
+    except Exception as exc:
+        # The store could not be read at all: browser not installed, profile path
+        # gone, locked/encrypted DB (Chromium App-Bound Encryption on Windows).
+        # Keep the exception's own words — they name the actual file/permission.
+        _auth_detail = f'could not read {browser} cookies — {str(exc)[:160]}'
         return None
-    return _headers_from_jar(jar)
+    headers = _headers_from_jar(jar)
+    if headers is None:
+        # Read fine, but the jar carries no logged-in YouTube session. Almost
+        # always the wrong profile of a multi-profile browser.
+        _auth_detail = (f'{browser} profile opened, but it has no signed-in '
+                        'YouTube session (wrong profile?)')
+    else:
+        _auth_detail = ''
+    return headers
 
 
 # Firefox-family browsers (read via yt-dlp's `firefox` extractor + a profile-dir path).
@@ -275,8 +318,10 @@ def _get_ytm():
         return _ytm
     with _ytm_lock:
         if _ytm is None:
+            global _auth_degraded
             if _auth_method == 'cookies':
                 headers = _browser_headers_from_cookies(_cookies_file)
+                _auth_degraded = headers is None
                 try:
                     _ytm = _new_ytm(auth=headers) if headers else _new_ytm()
                 except Exception:
@@ -284,11 +329,13 @@ def _get_ytm():
             elif _auth_method == 'browser':
                 # Re-read the live session from the browser each launch (durable auth).
                 headers = _browser_headers_live(_auth_browser, _auth_browser_profile)
+                _auth_degraded = headers is None
                 try:
                     _ytm = _new_ytm(auth=headers) if headers else _new_ytm()
                 except Exception:
                     _ytm = _new_ytm()
             else:
+                _auth_degraded = False
                 _ytm = _new_ytm()
     return _ytm
 
@@ -351,10 +398,23 @@ def verify_auth_live():
     """
     global _authed
     if not _authed:
+        # A configured method that already failed its LOCAL check (unreadable or
+        # not-logged-in cookie file / no browser) is a definite failure, not an
+        # unknown — 'unknown' is reserved for "we asked and couldn't tell".
+        if _auth_method in ('cookies', 'browser'):
+            return ('expired', '')
         return ('unknown', '')
     try:
         with _ytm_lock:
-            info = _get_ytm().get_account_info() or {}
+            client = _get_ytm()
+            # Building it just told us the session could not be loaded at all
+            # (unreadable store, wrong profile, signed-out browser). That is a
+            # definite "not signed in" — reporting it as a network blip is what
+            # made a failed sign-in look like nothing had happened.
+            if _auth_degraded and _auth_method in ('cookies', 'browser'):
+                _authed = False
+                return ('expired', '')
+            info = client.get_account_info() or {}
         name = info.get('accountName') or ''
         if name:
             return ('ok', name)
