@@ -196,15 +196,21 @@ ok=0; skipped=""
 # the team. The destination platform follows the app being installed: a watchOS
 # app must be built for watchOS or its profile never gains the watch.
 register_device() {   # udid, app bundle
-  local udid="$1" app="$2"
+  local udid="$1" app="$2" out rc
   if [[ "$app" == *"-watchos"* ]]; then
-    xcodebuild -project YTMusic.xcodeproj -scheme YTMusicWatch -configuration Debug \
+    out="$(xcodebuild -project YTMusic.xcodeproj -scheme YTMusicWatch -configuration Debug \
       -destination "platform=watchOS,id=$udid" -derivedDataPath build \
       -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
-      DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic build >/dev/null 2>&1
+      DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic build 2>&1)"
+    rc=$?
   else
-    ./build.sh device "$TEAM" "$udid" >/dev/null 2>&1
+    out="$(./build.sh device "$TEAM" "$udid" 2>&1)"
+    rc=$?
   fi
+  # Never swallow this. A silent "could not be registered" sends you hunting for a
+  # cause the build already printed.
+  [ "$rc" -eq 0 ] || echo "$out" | grep -E "error:|Unable|BUILD FAILED" | head -3
+  return "$rc"
 }
 
 install_to() {   # udid, alt id, label, app bundle
