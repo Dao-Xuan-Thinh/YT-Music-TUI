@@ -52,6 +52,73 @@ reachable() {
 # the build, and -allowProvisioningUpdates still refreshes the profile for all
 # already-registered devices.
 #
+# ── Preflight ────────────────────────────────────────────────────────────────
+# Each of these otherwise surfaces only at the END of a ~3 minute build, which is
+# what turned a weekly re-sign into a ten-step chore: build, fail, fix, build,
+# fail, fix. Checked up front, in about a second.
+
+# Profiles minted for the APP itself (exact match — not .Widget/.watchkitapp),
+# newest first.
+app_profiles() {
+  local dir="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+  [ -d "$dir" ] || return 0
+  local p
+  for p in "$dir"/*.mobileprovision; do
+    [ -e "$p" ] || continue
+    if security cms -D -i "$p" 2>/dev/null | plutil -p - 2>/dev/null \
+         | grep -q "\"application-identifier\" => \"$TEAM.com.ytmtui.YTMusic\""; then
+      echo "$p"
+    fi
+  done
+}
+
+preflight() {
+  local prof exp left groups
+
+  # 1. Xcode's Apple ID. A free account loses this session regularly, and without
+  #    it every target fails to SIGN — i.e. after the whole build has compiled.
+  if ! defaults read com.apple.dt.Xcode DVTDeveloperAccountManagerAppleIDLists \
+       2>/dev/null | grep -q '@'; then
+    echo "✗ Xcode has no Apple ID signed in — signing would fail at the end of the build."
+    echo
+    echo "   Fix (about a minute):"
+    echo "     1. Xcode → Settings → Accounts"
+    echo "     2. + → Apple ID → sign in"
+    echo "     3. rerun this"
+    echo
+    echo "   Opening Xcode for you…"
+    open -a Xcode 2>/dev/null || true
+    return 1
+  fi
+
+  prof="$(app_profiles | head -1)"
+  if [ -n "$prof" ]; then
+    # 2. How long the CURRENT signing lasts — you may not need to run at all.
+    exp="$(security cms -D -i "$prof" 2>/dev/null \
+           | plutil -extract ExpirationDate raw - 2>/dev/null)"
+    if [ -n "$exp" ]; then
+      left=$(( ( $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$exp" +%s 2>/dev/null || echo 0) \
+                 - $(date +%s) ) / 86400 ))
+      [ "$left" -ge 0 ] && echo "· current signing has ~${left} day(s) left (${exp%%T*})"
+    fi
+
+    # 3. App Groups on the app's App ID. It drops off whenever the profiles are
+    #    re-minted, and then signing fails on an entitlements mismatch — the one
+    #    failure that needs Xcode's UI, so it is worth saying before the build.
+    groups="$(security cms -D -i "$prof" 2>/dev/null | plutil -p - 2>/dev/null \
+              | grep -c 'application-groups' || true)"
+    if [ "${groups:-0}" -eq 0 ]; then
+      echo "! The app's profile carries no App Group — signing will likely fail."
+      echo "  If it does: Xcode → YTMusic target → Signing & Capabilities →"
+      echo "  App Groups → tick group.com.ytmtui.YTMusic, then rerun."
+    fi
+  fi
+  return 0
+}
+
+preflight || exit 1
+echo
+
 # A generic build can only refresh profiles for devices the TEAM already knows.
 # Removing and re-adding the Xcode account empties that list, and then every
 # target fails with "Your team has no devices from which to generate a
@@ -63,7 +130,19 @@ BUILD_LOG="$(mktemp -t ytm-build)"
 trap 'rm -f "$BUILD_LOG"' EXIT
 
 if ! ./build.sh device "$TEAM" 2>&1 | tee "$BUILD_LOG"; then
-  if grep -q "no devices from which to generate" "$BUILD_LOG"; then
+  if grep -q "application-groups" "$BUILD_LOG"; then
+    # Needs Xcode's UI: -allowProvisioningUpdates can create App IDs and register
+    # devices, but it cannot re-add an App Group on a free team.
+    echo
+    echo "✗ Signing failed: the app's App ID lost its App Group."
+    echo "    1. Xcode → open ios/YTMusic.xcodeproj"
+    echo "    2. YTMusic target → Signing & Capabilities"
+    echo "    3. App Groups → tick group.com.ytmtui.YTMusic"
+    echo "       (missing section? + Capability → App Groups → + → that exact name)"
+    echo "    4. wait for the signing error to clear, quit Xcode, rerun this"
+    open -a Xcode 2>/dev/null || true
+    exit 1
+  elif grep -q "no devices from which to generate" "$BUILD_LOG"; then
     echo
     echo "Team device list is empty — registering each reachable device."
     echo "(they must be unlocked; this takes one build apiece)"
