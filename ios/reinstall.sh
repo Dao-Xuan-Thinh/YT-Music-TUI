@@ -16,16 +16,22 @@ APP=build/Build/Products/Debug-iphoneos/YTMusic.app
 # so the wrist can be refreshed from the same build with no extra compile.
 WATCH_APP=build/Build/Products/Debug-watchos/YTMusicWatch.app
 
-# devicectl identifier|label
+# <UDID>|<devicectl identifier>|<label>
+#
+# devicectl has listed these under BOTH forms at different times — the CoreDevice
+# identifiers changed when the Xcode account was removed and re-added, and every
+# device then read as "unreachable" because the script only knew the old ids. The
+# UDID is the stable one (it is also what the provisioning profiles carry), so
+# match on either and install with whichever devicectl currently knows.
 DEVICES=(
-  "034EFB07-1E60-5107-A97D-BE9686A0CAEA|iPhone 16 Pro"
-  "64B0EE2D-917D-56A3-A4F7-F30848A26BBB|iPad Pro 11 (:333)"
+  "00008140-000C109421DB801C|034EFB07-1E60-5107-A97D-BE9686A0CAEA|iPhone 16 Pro"
+  "00008142-0004118C0E22401C|64B0EE2D-917D-56A3-A4F7-F30848A26BBB|iPad Pro 11 (:333)"
 )
 # Installed directly rather than waiting for the phone to hand the app over —
 # that path stays silent when anything is off. (The watch must be registered with
 # the team first; see the watchOS notes in CLAUDE.md.)
 WATCH_DEVICES=(
-  "6CBD754F-EE48-54C0-8F10-4954FEE57931|Apple Watch SE 3"
+  "00008310-000C4BE60180E01E|6CBD754F-EE48-54C0-8F10-4954FEE57931|Apple Watch SE 3"
 )
 
 LIST="$(xcrun devicectl list devices 2>/dev/null || true)"
@@ -37,15 +43,20 @@ LIST="$(xcrun devicectl list devices 2>/dev/null || true)"
 # alone got this backwards twice over: it rejected connected devices AND
 # accepted unavailable ones. Compare the state that follows the identifier, and
 # rule out "unavailable" first so the substring can't fool us.
-reachable() {
-  local line state
-  line="$(echo "$LIST" | grep -F "$1")" || return 1
-  state="${line#*"$1"}"
-  case "$state" in
-    *unavailable*)             return 1 ;;
-    *available*|*connected*)   return 0 ;;
-    *)                         return 1 ;;
-  esac
+# Echo the id devicectl currently lists this device under (UDID or CoreDevice id),
+# and only when its state is healthy. Empty output = not reachable.
+resolve_device() {
+  local id line state
+  for id in "$@"; do
+    [ -n "$id" ] || continue
+    line="$(echo "$LIST" | grep -F "$id")" || continue
+    state="${line#*"$id"}"
+    case "$state" in
+      *unavailable*)           continue ;;
+      *available*|*connected*) echo "$id"; return 0 ;;
+    esac
+  done
+  return 1
 }
 
 # Build against the generic iOS destination: no device needs to be awake for
@@ -151,11 +162,12 @@ if ! ./build.sh device "$TEAM" 2>&1 | tee "$BUILD_LOG"; then
     echo "(they must be unlocked; this takes one build apiece)"
     registered=0
     for d in "${DEVICES[@]}"; do
-      id="${d%%|*}"; name="${d##*|}"
-      if reachable "$id"; then
+      udid="${d%%|*}"; name="${d##*|}"; alt="${d#*|}"; alt="${alt%%|*}"
+      if resolve_device "$udid" "$alt" >/dev/null; then
         echo
         echo "→ registering $name ..."
-        if ./build.sh device "$TEAM" "$id"; then
+        # Register by UDID — that is what the provisioning profile carries.
+        if ./build.sh device "$TEAM" "$udid"; then
           registered=$((registered + 1))
         else
           echo "  ! $name could not be registered (locked?)"
@@ -180,16 +192,31 @@ fi
 
 ok=0; skipped=""
 
-install_to() {   # id, label, app bundle
-  local id="$1" name="$2" app="$3"
+# One build aimed at a specific device, which is what actually registers it with
+# the team. The destination platform follows the app being installed: a watchOS
+# app must be built for watchOS or its profile never gains the watch.
+register_device() {   # udid, app bundle
+  local udid="$1" app="$2"
+  if [[ "$app" == *"-watchos"* ]]; then
+    xcodebuild -project YTMusic.xcodeproj -scheme YTMusicWatch -configuration Debug \
+      -destination "platform=watchOS,id=$udid" -derivedDataPath build \
+      -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
+      DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic build >/dev/null 2>&1
+  else
+    ./build.sh device "$TEAM" "$udid" >/dev/null 2>&1
+  fi
+}
+
+install_to() {   # udid, alt id, label, app bundle
+  local udid="$1" alt="$2" name="$3" app="$4" id
   if [ ! -d "$app" ]; then
     skipped="$skipped, $name (nothing built at $app)"
     return
   fi
-  if ! reachable "$id"; then
+  id="$(resolve_device "$udid" "$alt")" || {
     skipped="$skipped, $name (unreachable)"
     return
-  fi
+  }
   echo "Installing on $name ..."
   local out
   if out="$(xcrun devicectl device install app --device "$id" "$app" 2>&1)"; then
@@ -204,6 +231,19 @@ install_to() {   # id, label, app bundle
         skipped="$skipped, $name (LOCKED — unlock it and rerun)" ;;
       *"could not be established"*|*"Timed out"*|*"unreachable"*)
         skipped="$skipped, $name (asleep or off this network — wake it and rerun)" ;;
+      *"cannot be installed on this device"*|*"ApplicationVerificationFailed"*)
+        # The profile predates this device — it is not in ProvisionedDevices.
+        # Registering needs one build aimed at the device itself; for the watch
+        # that means a watchOS destination, which the generic build never covers.
+        echo "  ! $name is not in the profile — registering it, then retrying"
+        if register_device "$udid" "$app"; then
+          if out="$(xcrun devicectl device install app --device "$id" "$app" 2>&1)"; then
+            ok=$((ok + 1))
+            echo "$out" | grep -E "App installed|bundleID" || true
+            return
+          fi
+        fi
+        skipped="$skipped, $name (could not be registered — unlock it and rerun)" ;;
       *)
         skipped="$skipped, $name (install failed)" ;;
     esac
@@ -211,11 +251,14 @@ install_to() {   # id, label, app bundle
   fi
 }
 
+split_entry() {   # <udid>|<alt>|<label> → sets UDID / ALT / LABEL
+  UDID="${1%%|*}"; LABEL="${1##*|}"; ALT="${1#*|}"; ALT="${ALT%%|*}"
+}
 for d in "${DEVICES[@]}"; do
-  install_to "${d%%|*}" "${d##*|}" "$APP"
+  split_entry "$d"; install_to "$UDID" "$ALT" "$LABEL" "$APP"
 done
 for d in "${WATCH_DEVICES[@]}"; do
-  install_to "${d%%|*}" "${d##*|}" "$WATCH_APP"
+  split_entry "$d"; install_to "$UDID" "$ALT" "$LABEL" "$WATCH_APP"
 done
 
 echo
