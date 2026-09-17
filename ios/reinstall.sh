@@ -77,8 +77,11 @@ preflight() {
 
   # 1. Xcode's Apple ID. A free account loses this session regularly, and without
   #    it every target fails to SIGN — i.e. after the whole build has compiled.
+  # Signed in, the list holds one entry per account; signed out it is literally
+  # "( )". The entry is a UUID, NOT an email — grepping for '@' reported a
+  # perfectly good account as missing.
   if ! defaults read com.apple.dt.Xcode DVTDeveloperAccountManagerAppleIDLists \
-       2>/dev/null | grep -q '@'; then
+       2>/dev/null | grep -q 'identifier'; then
     echo "✗ Xcode has no Apple ID signed in — signing would fail at the end of the build."
     echo
     echo "   Fix (about a minute):"
