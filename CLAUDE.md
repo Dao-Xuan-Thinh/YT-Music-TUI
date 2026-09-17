@@ -254,6 +254,27 @@ Device facts (free Apple ID — 7-day signing, auto-provisioned via
   as shared schemes, so a build needs only the repo — never a prior trip through
   the Xcode UI. Symptom to recognise: `xcodebuild -list` shows the targets but
   says "This project contains no schemes."
+- **The weekly Xcode re-login is the 7-day cycle, not a broken Mac.** Ruled out
+  locally: the login keychain never locks and accepts writes, there is no cleaner
+  app or launchd job, and yet `DVTDeveloperAccountUseKeychainService` held no Xcode
+  credential at all. Observed pattern: profiles expire exactly 7 days after minting,
+  Xcode's `~/Library/Developer/Xcode/UserData/Provisioning Profiles/` is emptied at
+  the same time, and `defaults read com.apple.dt.Xcode
+  DVTDeveloperAccountManagerAppleIDLists` comes back with an empty
+  `IDE.Identifiers.Prod` — i.e. renewal needs a live portal session the free account
+  no longer has, so Xcode drops account and profiles together. Workaround applied
+  (inconsistent per Apple's forums, so verify before trusting it):
+  `defaults write -g DVTDeveloperAccountUseKeychainService -bool NO` and
+  `defaults write com.apple.dt.Xcode DVTDeveloperAccountUseKeychainService_2 -bool NO`;
+  undo with `defaults delete` on both. The only real fixes are a paid membership
+  (1-year profiles, plus App Store Connect API keys that let
+  `xcodebuild -authenticationKeyPath/-authenticationKeyID/-authenticationKeyIssuerID`
+  sign headlessly with no GUI login ever) — free Personal Teams have no App Store
+  Connect, so no API key. Sideloaders (AltStore/SideStore) move the re-sign off the
+  Mac but sign with the same 7-day free cert, cost one App ID per target (this app
+  needs 3: app + widget + watch) against a 10-per-week / 3-installed limit, and have
+  an open bug where App Group entitlements for extensions do not work — which would
+  break the stats widget. TrollStore is dead from iOS 17.0.1 onward.
 - **`./build.sh sim` never exits**: its last step is `simctl launch --console-pty`,
   which attaches to the app console forever. The build itself is done well before
   that — don't wait on the script. Also `simctl`/`devicectl` need
