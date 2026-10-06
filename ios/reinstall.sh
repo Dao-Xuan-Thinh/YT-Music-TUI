@@ -10,6 +10,24 @@ set -euo pipefail
 cd "$(dirname "$0")"
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 
+# ── Output styling ───────────────────────────────────────────────────────────
+# Colour only when stdout is a real terminal. AdminPanel hands us one, but the
+# launchd agent redirects into a log file where escape codes are just noise.
+# NO_COLOR=1 turns it off everywhere (no-color.org).
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  R=$'\e[0m'; B=$'\e[1m'; DIM=$'\e[2m'
+  BLUE=$'\e[38;5;39m'; GREEN=$'\e[38;5;42m'; YELLOW=$'\e[38;5;214m'
+  RED=$'\e[38;5;203m'; MAG=$'\e[38;5;170m'
+else
+  R=''; B=''; DIM=''; BLUE=''; GREEN=''; YELLOW=''; RED=''; MAG=''
+fi
+step() { printf '%s▸ %s%s\n' "$BLUE$B" "$*" "$R"; }
+ok()   { printf '%s✓ %s%s\n' "$GREEN"   "$*" "$R"; }
+warn() { printf '%s! %s%s\n' "$YELLOW"  "$*" "$R"; }
+err()  { printf '%s✗ %s%s\n' "$RED$B"   "$*" "$R"; }
+info() { printf '%s· %s%s\n' "$DIM"     "$*" "$R"; }
+hint() { printf '%s  %s%s\n' "$DIM"     "$*" "$R"; }
+
 TEAM="${TEAM:-YK4NZ9U7TL}"
 APP=build/Build/Products/Debug-iphoneos/YTMusic.app
 # The generic iOS build produces the watch app too (it is embedded in YTMusic.app),
@@ -93,14 +111,14 @@ preflight() {
   # perfectly good account as missing.
   if ! defaults read com.apple.dt.Xcode DVTDeveloperAccountManagerAppleIDLists \
        2>/dev/null | grep -q 'identifier'; then
-    echo "✗ Xcode has no Apple ID signed in — signing would fail at the end of the build."
+    err "Xcode has no Apple ID signed in — signing would fail at the end of the build."
     echo
-    echo "   Fix (about a minute):"
-    echo "     1. Xcode → Settings → Accounts"
-    echo "     2. + → Apple ID → sign in"
-    echo "     3. rerun this"
+    hint "Fix (about a minute):"
+    hint "  1. Xcode → Settings → Accounts"
+    hint "  2. + → Apple ID → sign in"
+    hint "  3. rerun this"
     echo
-    echo "   Opening Xcode for you…"
+    hint "Opening Xcode for you…"
     open -a Xcode 2>/dev/null || true
     return 1
   fi
@@ -113,7 +131,7 @@ preflight() {
     if [ -n "$exp" ]; then
       left=$(( ( $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$exp" +%s 2>/dev/null || echo 0) \
                  - $(date +%s) ) / 86400 ))
-      [ "$left" -ge 0 ] && echo "· current signing has ~${left} day(s) left (${exp%%T*})"
+      [ "$left" -ge 0 ] && info "current signing has ~${left} day(s) left (${exp%%T*})"
     fi
 
     # 3. App Groups on the app's App ID. It drops off whenever the profiles are
@@ -122,9 +140,9 @@ preflight() {
     groups="$(security cms -D -i "$prof" 2>/dev/null | plutil -p - 2>/dev/null \
               | grep -c 'application-groups' || true)"
     if [ "${groups:-0}" -eq 0 ]; then
-      echo "! The app's profile carries no App Group — signing will likely fail."
-      echo "  If it does: Xcode → YTMusic target → Signing & Capabilities →"
-      echo "  App Groups → tick group.com.ytmtui.YTMusic, then rerun."
+      warn "The app's profile carries no App Group — signing will likely fail."
+      hint "If it does: Xcode → YTMusic target → Signing & Capabilities →"
+      hint "App Groups → tick group.com.ytmtui.YTMusic, then rerun."
     fi
   fi
   return 0
@@ -143,54 +161,94 @@ echo
 BUILD_LOG="$(mktemp -t ytm-build)"
 trap 'rm -f "$BUILD_LOG"' EXIT
 
-if ! ./build.sh device "$TEAM" 2>&1 | tee "$BUILD_LOG"; then
+# Which xcodebuild phase the log last reached, in plain words — the live feed
+# below shows this instead of ~3000 lines of compiler output.
+build_phase() {
+  case "$(grep -oE '(CompileSwift|CompileC|Ld|CodeSign|PhaseScriptExecution|ProcessProductPackaging|CpResource|Touch)' "$BUILD_LOG" 2>/dev/null | tail -1)" in
+    CompileSwift|CompileC)   echo "compiling" ;;
+    Ld)                      echo "linking" ;;
+    PhaseScriptExecution)    echo "bundling Python" ;;
+    CpResource)              echo "copying resources" ;;
+    ProcessProductPackaging) echo "provisioning" ;;
+    CodeSign)                echo "signing" ;;
+    Touch)                   echo "finishing" ;;
+    *)                       echo "starting" ;;
+  esac
+}
+
+# Build with a one-line progress feed. Full output still goes to BUILD_LOG, which
+# is what the failure classifier reads, so nothing is lost by not printing it.
+run_build() {   # label, then build.sh args
+  local label="$1"; shift
+  local pid t0 rc
+  ./build.sh "$@" > "$BUILD_LOG" 2>&1 &
+  pid=$!
+  t0=$(date +%s)
+  if [ -t 1 ]; then
+    while kill -0 "$pid" 2>/dev/null; do
+      printf '\r%s▸ %s%s %s%s%s %s%ss%s   ' \
+        "$BLUE$B" "$label" "$R" "$MAG" "$(build_phase)" "$R" \
+        "$DIM" "$(( $(date +%s) - t0 ))" "$R"
+      sleep 1
+    done
+    printf '\r\033[K'
+  fi
+  wait "$pid"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    ok "$label done ($(( $(date +%s) - t0 ))s)"
+  else
+    err "$label failed after $(( $(date +%s) - t0 ))s"
+  fi
+  return "$rc"
+}
+
+if ! run_build "building" device "$TEAM"; then
   if grep -q "application-groups" "$BUILD_LOG"; then
     # Needs Xcode's UI: -allowProvisioningUpdates can create App IDs and register
     # devices, but it cannot re-add an App Group on a free team.
     echo
-    echo "✗ Signing failed: the app's App ID lost its App Group."
-    echo "    1. Xcode → open ios/YTMusic.xcodeproj"
-    echo "    2. YTMusic target → Signing & Capabilities"
-    echo "    3. App Groups → tick group.com.ytmtui.YTMusic"
-    echo "       (missing section? + Capability → App Groups → + → that exact name)"
-    echo "    4. wait for the signing error to clear, quit Xcode, rerun this"
+    err "Signing failed: the app's App ID lost its App Group."
+    hint "1. Xcode → open ios/YTMusic.xcodeproj"
+    hint "2. YTMusic target → Signing & Capabilities"
+    hint "3. App Groups → tick group.com.ytmtui.YTMusic"
+    hint "   (missing section? + Capability → App Groups → + → that exact name)"
+    hint "4. wait for the signing error to clear, quit Xcode, rerun this"
     open -a Xcode 2>/dev/null || true
     exit 1
   elif grep -q "no devices from which to generate" "$BUILD_LOG"; then
     echo
-    echo "Team device list is empty — registering each reachable device."
-    echo "(they must be unlocked; this takes one build apiece)"
+    warn "Team device list is empty — registering each reachable device."
+    hint "(they must be unlocked; this takes one build apiece)"
     registered=0
     for d in "${DEVICES[@]}"; do
       udid="${d%%|*}"; name="${d##*|}"; alt="${d#*|}"; alt="${alt%%|*}"
       if resolve_device "$udid" "$alt" >/dev/null; then
         echo
-        echo "→ registering $name ..."
+        step "registering $name"
         # Register by UDID — that is what the provisioning profile carries.
-        if ./build.sh device "$TEAM" "$udid"; then
+        if run_build "registering $name" device "$TEAM" "$udid"; then
           registered=$((registered + 1))
         else
-          echo "  ! $name could not be registered (locked?)"
+          warn "$name could not be registered (locked?)"
         fi
       else
-        echo "→ skipping $name (unreachable)"
+        info "skipping $name (unreachable)"
       fi
     done
     [ "$registered" -gt 0 ] || {
       echo
-      echo "No device could be registered. Unlock one, keep it on this network,"
-      echo "and run this again."
+      err "No device could be registered."
+      hint "Unlock one, keep it on this network, and run this again."
       exit 1
     }
     echo
-    echo "→ rebuilding with all registered devices in the profile ..."
-    ./build.sh device "$TEAM"
+    run_build "rebuilding with all devices" device "$TEAM"
   else
     exit 1
   fi
 fi
 
-ok=0; skipped=""
+installed=0; skipped=""
 
 # One build aimed at a specific device, which is what actually registers it with
 # the team. The destination platform follows the app being installed: a watchOS
@@ -223,11 +281,11 @@ install_to() {   # udid, alt id, label, app bundle
     skipped="$skipped, $name (unreachable)"
     return
   }
-  echo "Installing on $name ..."
+  step "installing on $name"
   local out
   if out="$(xcrun devicectl device install app --device "$id" "$app" 2>&1)"; then
-    ok=$((ok + 1))
-    echo "$out" | grep -E "App installed|bundleID" || true
+    installed=$((installed + 1))
+    ok "$name updated"
   else
     # devicectl buries the actual reason a few lines into a nested error, and
     # "install failed" on its own sends you hunting. The two that actually happen:
@@ -241,11 +299,11 @@ install_to() {   # udid, alt id, label, app bundle
         # The profile predates this device — it is not in ProvisionedDevices.
         # Registering needs one build aimed at the device itself; for the watch
         # that means a watchOS destination, which the generic build never covers.
-        echo "  ! $name is not in the profile — registering it, then retrying"
+        warn "$name is not in the profile — registering it, then retrying"
         if register_device "$udid" "$app"; then
           if out="$(xcrun devicectl device install app --device "$id" "$app" 2>&1)"; then
-            ok=$((ok + 1))
-            echo "$out" | grep -E "App installed|bundleID" || true
+            installed=$((installed + 1))
+            ok "$name updated (after registering it)"
             return
           fi
         fi
@@ -268,9 +326,9 @@ for d in "${WATCH_DEVICES[@]}"; do
 done
 
 echo
-echo "Refreshed $ok device(s) — re-signed for another 7 days."
+ok "refreshed $installed device(s) — re-signed for another 7 days"
 if [ -n "$skipped" ]; then
-  echo "Skipped:${skipped#,}"
-  echo "Rerun this script once that device is reachable — the rebuild may have"
-  echo "invalidated its current install, so refresh it soon."
+  warn "skipped:${skipped#,}"
+  hint "Rerun once that device is reachable — the rebuild may have invalidated"
+  hint "its current install, so refresh it soon."
 fi
