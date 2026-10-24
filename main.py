@@ -2100,7 +2100,8 @@ class YTMApp(App):
         if self._player.backend is None:
             self.call_from_thread(
                 self._set_status,
-                'No audio backend found — install mpv (macOS: brew install mpv) to enable playback.'
+                'No audio backend found — install mpv ('
+                + player_module.install_hint() + ') to enable playback.'
             )
             return
         if self._player.backend == 'ffplay':

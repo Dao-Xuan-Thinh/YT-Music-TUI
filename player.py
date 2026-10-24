@@ -72,14 +72,98 @@ else:
     _CONNECT_TARGET = _IPC_ARG
 
 
+def install_hint():
+    """The command that installs mpv on THIS OS (for every user-facing message)."""
+    if sys.platform == 'darwin':
+        return 'brew install mpv'
+    if _IS_WINDOWS:
+        return 'winget install --id shinchiro.mpv -e'
+    return 'sudo apt install mpv   (or your distro\'s package manager)'
+
+
+def _backend_dirs(tool):
+    """
+    Where `tool` ('mpv' / 'ffplay') lands when it isn't on PATH.
+
+    Installers routinely put mpv somewhere PATH never hears about: winget and
+    scoop only extend the PATH of *new* processes, and the Windows mpv installers
+    don't touch PATH at all (`C:\\Program Files\\MPV Player\\mpv.exe` is a real
+    case). Entries may contain a single `*`; order is most-likely-first.
+    """
+    home = os.path.expanduser('~')
+    if _IS_WINDOWS:
+        exe = tool + '.exe'
+        local = os.environ.get('LOCALAPPDATA', os.path.join(home, 'AppData', 'Local'))
+        pf = os.environ.get('ProgramFiles', r'C:\Program Files')
+        pf86 = os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')
+        return [
+            os.path.join(local, 'Microsoft', 'WinGet', 'Links', exe),
+            os.path.join(pf, '*mpv*', exe),            # 'MPV Player', 'mpv', 'mpv.net'
+            os.path.join(pf86, '*mpv*', exe),
+            os.path.join(pf, '*mpv*', 'bin', exe),
+            os.path.join(pf, 'ffmpeg', 'bin', exe),
+            os.path.join(local, 'Programs', '*mpv*', exe),
+            os.path.join(home, 'scoop', 'shims', exe),
+            os.path.join(home, 'scoop', 'apps', '*', 'current', exe),
+            r'C:\ProgramData\chocolatey\bin\%s' % exe,
+            os.path.join(local, 'Microsoft', 'WinGet', 'Packages', '*', exe),
+            os.path.join(local, 'Microsoft', 'WinGet', 'Packages', '*', 'bin', exe),
+            r'C:\mpv\%s' % exe,
+            r'C:\ffmpeg\bin\%s' % exe,
+        ]
+    paths = [
+        f'/opt/homebrew/bin/{tool}',          # Apple Silicon Homebrew
+        f'/usr/local/bin/{tool}',             # Intel Homebrew, hand-built
+        f'/opt/local/bin/{tool}',             # MacPorts
+        f'/usr/bin/{tool}',
+        f'/snap/bin/{tool}',
+        os.path.join(home, '.local', 'bin', tool),
+    ]
+    if sys.platform == 'darwin' and tool == 'mpv':
+        paths.append('/Applications/mpv.app/Contents/MacOS/mpv')
+    return paths
+
+
+_backend_exe_cache = {}
+
+
+def find_backend_exe(tool):
+    """
+    Absolute path to 'mpv' / 'ffplay', or None. PATH first, then _backend_dirs().
+
+    Only hits are cached: a miss is cheap (a handful of stats) and must not
+    outlive the user installing mpv while the app is open.
+    """
+    if not tool:
+        return None
+    cached = _backend_exe_cache.get(tool)
+    if cached:
+        return cached
+    found = shutil.which(tool)
+    if not found:
+        for pattern in _backend_dirs(tool):
+            if '*' in pattern:
+                import glob
+                hits = sorted(p for p in glob.glob(pattern) if os.access(p, os.X_OK))
+            else:
+                hits = [pattern] if os.access(pattern, os.X_OK) else []
+            if hits:
+                found = hits[0]
+                break
+    if found:
+        _backend_exe_cache[tool] = found
+    return found
+
+
 def detect_backend():
-    """Return 'mpv' or 'ffplay' depending on what's on PATH."""
-    if shutil.which('mpv'):
+    """Return 'mpv' or 'ffplay', whichever can be found (see find_backend_exe)."""
+    if find_backend_exe('mpv'):
         return 'mpv'
-    if shutil.which('ffplay'):
+    if find_backend_exe('ffplay'):
         return 'ffplay'
     raise RuntimeError(
-        'No audio backend found. Install mpv (recommended) or ffmpeg (for ffplay).'
+        f'No audio backend found. Install mpv ({install_hint()}) '
+        'or ffmpeg (for ffplay).'
     )
 
 
@@ -409,6 +493,9 @@ class Player:
                 # No mpv/ffplay — the app still runs (search/browse work);
                 # playback stays disabled with a clear message instead of crashing.
                 self.backend = None
+        # The exact executable to spawn — not the bare name: mpv is often
+        # installed somewhere this process's PATH doesn't cover.
+        self.backend_exe = find_backend_exe(self.backend) or self.backend
         self.cookies_file = cookies_file
         self._proc        = None
         self._ipc         = None
@@ -439,7 +526,7 @@ class Player:
             if self._proc or self._ipc:
                 self._shutdown_mpv()
             cmd = [
-                'mpv', '--no-video', '--ytdl=yes',
+                self.backend_exe, '--no-video', '--ytdl=yes',
                 f'--input-ipc-server={_IPC_ARG}',
                 '--idle=yes', '--really-quiet',
                 # Bound the network so a stalled load can't wedge the mpv daemon forever
@@ -490,7 +577,7 @@ class Player:
         """Play url. start>0 resumes playback at that absolute offset (seconds)."""
         if not self.backend:
             raise RuntimeError(
-                'No audio backend. Install mpv (macOS: brew install mpv) or ffmpeg.'
+                f'No audio backend. Install mpv ({install_hint()}) or ffmpeg.'
             )
         with self._lock:
             if self.backend == 'mpv':
@@ -517,7 +604,7 @@ class Player:
             # get no position/seek/pause, but at least keep auto-advance working
             # by watching the process exit and firing on_end (like ffplay does).
             self._shutdown_mpv()
-            cmd = ['mpv', '--no-video', '--ytdl=yes', '--really-quiet',
+            cmd = [self.backend_exe, '--no-video', '--ytdl=yes', '--really-quiet',
                    '--network-timeout=15', '--no-terminal', url]
             if start and start > 0:
                 cmd.append(f'--start=+{int(start)}')
@@ -543,7 +630,8 @@ class Player:
     def _spawn_ffplay(self, target, start=0.0):
         """Launch ffplay on a (local path or stream) URL and watch for end."""
         # -nostdin + stdin=DEVNULL so ffplay never reads terminal keys either.
-        args = ['ffplay', '-nodisp', '-autoexit', '-nostdin', '-loglevel', 'quiet']
+        args = [self.backend_exe, '-nodisp', '-autoexit', '-nostdin',
+                '-loglevel', 'quiet']
         if start and start > 0:
             args += ['-ss', str(int(start))]   # ffplay seeks before -i
         args.append(target)

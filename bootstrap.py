@@ -261,8 +261,14 @@ def _have_pip(python):
 # ── audio backend (not a pip package) ─────────────────────────────────────────
 
 def _backend_present():
-    import shutil
-    return bool(shutil.which('mpv') or shutil.which('ffplay'))
+    # player.py knows where installers hide mpv when it isn't on PATH, and it is
+    # stdlib-only so it is safe to import before the dependencies exist.
+    try:
+        import player
+        return bool(player.find_backend_exe('mpv') or player.find_backend_exe('ffplay'))
+    except Exception:
+        import shutil
+        return bool(shutil.which('mpv') or shutil.which('ffplay'))
 
 
 def _backend_installer():
