@@ -1881,7 +1881,7 @@ class YTMApp(App):
         Binding('o', 'toggle_mode', 'Online/Offline', show=False),
         Binding('c', 'theme_picker', 'Theme', show=False),
         Binding('C', 'cycle_theme', 'Cycle theme', show=False),
-        Binding('plus,equal', 'vol_up', 'Vol+', show=False),
+        Binding('plus,equals_sign', 'vol_up', 'Vol+', show=False),
         Binding('minus', 'vol_down', 'Vol-', show=False),
         Binding('left', 'seek_back', 'Seek-', show=False),
         Binding('right', 'seek_fwd', 'Seek+', show=False),
