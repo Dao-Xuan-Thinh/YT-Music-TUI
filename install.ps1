@@ -6,15 +6,11 @@ $repo = $PSScriptRoot
 $bin  = Join-Path $env:USERPROFILE 'bin'
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 
-# Launcher: cd to the repo, prefer a local .venv, else system python.
+# Launcher: hand off to run.cmd in the repo, which finds/creates the venv and
+# picks a modern Python (deps are installed on first launch by bootstrap.py).
 $cmd = @"
 @echo off
-cd /d "$repo"
-if exist ".venv\Scripts\python.exe" (
-  ".venv\Scripts\python.exe" main.py %*
-) else (
-  python main.py %*
-)
+call "$repo\run.cmd" %*
 "@
 Set-Content -Path (Join-Path $bin 'yttui.cmd') -Value $cmd -Encoding ASCII
 Write-Host "Installed: $bin\yttui.cmd  ->  $repo"

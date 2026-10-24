@@ -11,6 +11,12 @@ import time
 import random
 import threading
 
+# First run on a new machine installs whatever requirements.txt is missing, so
+# the imports below have something to import (bootstrap.py; --no-bootstrap off).
+import bootstrap
+
+bootstrap.ensure()
+
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding

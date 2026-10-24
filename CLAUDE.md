@@ -63,11 +63,31 @@ updater.py      ← Self-update via git (check/pull/deps refresh, branch switch)
 
 ### Dependencies
 
-Install with: `pip install -r requirements.txt`
+Nothing to install by hand: `main.py` calls `bootstrap.ensure()` **before its
+first third-party import**, so a fresh clone on a new machine pip-installs
+whatever `requirements.txt` is missing and re-execs itself.
 
 - **yt-dlp** — YouTube metadata + audio stream extraction
 - **textual** — Terminal UI framework (reactive widgets, keyboard input)
-- **System:** mpv (preferred) or ffmpeg (fallback; provides ffplay)
+- **System:** mpv (preferred) or ffmpeg (fallback; provides ffplay) — not a pip
+  package, so `bootstrap` prints the command for this OS and offers to run the
+  platform package manager (brew / winget / apt / pacman / dnf / zypper).
+
+`bootstrap.py` is stdlib-only (it runs before anything is installed) and:
+- parses `requirements.txt` itself, including `sys_platform` markers; a comment
+  line starting with `# optional` marks every entry below it as nice-to-have
+  (the media-key bindings), so one unbuildable wheel can't stop the app;
+- installs into the current interpreter, unless that's a PEP 668
+  "externally managed" system Python (Homebrew / Debian / Arch) — then it
+  creates (or reuses) the project venv and re-execs into it;
+- records a verified install in `.deps-stamp` (keyed on interpreter +
+  `requirements.txt` mtime/size) so the ~20 ms metadata check runs only after a
+  pull that changes the requirements, not on every launch. A hand-wiped venv is
+  still caught by a `find_spec('textual')` probe;
+- never loops: the re-exec'd child carries `YTM_BOOTSTRAP_RAN` and reports what
+  is still missing instead of installing again.
+
+Escape hatches: `YTM_NO_BOOTSTRAP=1` or `--no-bootstrap`.
 
 ### Testing Each Module
 
@@ -237,11 +257,15 @@ location avoids the macOS AF_UNIX path-length limit).
 - macOS: `brew install mpv`
 - Debian/Ubuntu: `sudo apt install mpv ffmpeg`
 - Arch: `sudo pacman -S mpv`
-- Windows: `scoop install mpv` (or from mpv.io)
+- Windows: `winget install --id shinchiro.mpv -e` (or `scoop install mpv`, or mpv.io)
 
-Then `pip install -r requirements.txt`. If running in a virtualenv, ensure mpv
-can stream YouTube — `_find_ytdlp()` handles this by pointing mpv at the venv's
-yt-dlp automatically.
+Then just start the app (`./run.sh`, `run.cmd` on Windows, or `python main.py`):
+`bootstrap.py` installs the Python dependencies on that first launch. If running
+in a virtualenv, ensure mpv can stream YouTube — `_find_ytdlp()` handles this by
+pointing mpv at the venv's yt-dlp automatically.
+
+`install.sh` / `install.ps1` only add a global `yttui` launcher; both delegate to
+`run.sh` / `run.cmd`, so there is one code path that picks the interpreter.
 
 **macOS Python gotcha:** the system `python3` is 3.9, and current yt-dlp (the one
 that actually works with today's YouTube) requires **Python 3.10+**. On 3.9, pip
@@ -261,8 +285,10 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 | `config.py` | JSON settings persistence (cookies, volume, source, theme, app_mode) |
 | `library.py` | JSON persistence: liked, playlists, pinned folders, recent, sessions |
 | `offline.py` | Local audio folder scanner (mutagen tags) |
+| `bootstrap.py` | First-boot dependency install (stdlib only; runs before main.py's imports) |
 | `updater.py` | Self-update: git fetch/compare, ff-only pull, deps refresh, branch switch, re-exec |
-| `requirements.txt` | Python dependencies |
+| `requirements.txt` | Python dependencies (everything under `# optional` is non-fatal) |
+| `run.sh` / `run.cmd` | Launchers: find a modern Python, make the venv, start the app |
 | `config.json` | Auto-created runtime config (gitignored) |
 | `library.json` / `sessions.json` | Auto-created library + resume sessions (gitignored) |
 
