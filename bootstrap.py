@@ -39,7 +39,13 @@ def _no_window():
 
 
 def _say(msg):
-    """Progress goes to stderr: stdout may be a pipe someone is parsing."""
+    """
+    Progress goes to stderr: stdout may be a pipe someone is parsing.
+
+    Everything printed here stays ASCII on purpose. This runs before Textual
+    owns the terminal, and a plain print() of '—' or '✓' raises
+    UnicodeEncodeError on a Windows console still on a legacy code page.
+    """
     print(f'[setup] {msg}', file=sys.stderr, flush=True)
 
 
@@ -217,7 +223,7 @@ def _ensure_venv():
     import subprocess
     venv_dir, exists = _project_venv()
     if not exists:
-        _say(f'creating a virtualenv in {os.path.basename(venv_dir)} …')
+        _say(f'creating a virtualenv in {os.path.basename(venv_dir)} ...')
         try:
             subprocess.run([sys.executable, '-m', 'venv', venv_dir],
                            check=True, creationflags=_no_window())
@@ -229,7 +235,7 @@ def _ensure_venv():
 
 
 def _pip(python, *args):
-    """Run pip in `python`. Output is left visible — installs are slow."""
+    """Run pip in `python`. Output is left visible - installs are slow."""
     import subprocess
     cmd = [python, '-m', 'pip', '--disable-pip-version-check', *args]
     try:
@@ -242,7 +248,7 @@ def _pip(python, *args):
 def _have_pip(python):
     if _pip(python, '--version'):
         return True
-    _say('pip is missing — bootstrapping it with ensurepip …')
+    _say('pip is missing - bootstrapping it with ensurepip ...')
     import subprocess
     try:
         subprocess.run([python, '-m', 'ensurepip', '--upgrade'],
@@ -306,19 +312,19 @@ def ensure_backend():
     if _backend_present():
         return True
     human, argv = _backend_installer()
-    _say('no audio backend found — mpv (preferred) or ffmpeg/ffplay is required.')
+    _say('no audio backend found - mpv (preferred) or ffmpeg/ffplay is required.')
     if argv and _interactive() and _ask(f'run `{human}` now?'):
         import subprocess
         try:
             subprocess.run(argv, check=True)
         except Exception as exc:
-            _say(f'that failed ({exc}) — install it by hand: {human}')
+            _say(f'that failed ({exc}) - install it by hand: {human}')
         else:
             # winget/scoop put mpv on the PATH of *new* shells only.
             if _backend_present():
-                _say('mpv installed ✓')
+                _say('mpv installed ok')
                 return True
-            _say('installed — restart the terminal so mpv is on your PATH.')
+            _say('installed - restart the terminal so mpv is on your PATH.')
             return False
     else:
         _say(f'install it with:  {human}')
@@ -360,7 +366,7 @@ def _ensure_deps():
         return not required
 
     names = ', '.join(required + optional)
-    _say(f'first run on this machine — {len(required) + len(optional)} package(s) '
+    _say(f'first run on this machine - {len(required) + len(optional)} package(s) '
          f'to install: {names}')
 
     # Install into this interpreter when that's allowed; a system Python that
@@ -370,7 +376,7 @@ def _ensure_deps():
         python = _ensure_venv() or sys.executable
 
     if not _have_pip(python):
-        _say('no pip available — install the dependencies by hand: '
+        _say('no pip available - install the dependencies by hand: '
              f'{python} -m pip install -r "{_REQ_FILE}"')
         return not required
 
@@ -378,14 +384,14 @@ def _ensure_deps():
     if not ok and optional:
         # One unbuildable optional wheel (the media-key bindings on an odd
         # platform) must not stop the app: retry with just the required ones.
-        _say('full install failed — retrying without the optional extras …')
+        _say('full install failed - retrying without the optional extras ...')
         specs = [spec for _n, spec, is_opt in _requirements() if not is_opt]
         ok = _pip(python, 'install', *specs)
     if not ok:
-        _say('install failed — see the pip output above.')
+        _say('install failed - see the pip output above.')
         return not required
 
-    _say('dependencies installed ✓ restarting …')
+    _say('dependencies installed ok, restarting ...')
     env = dict(os.environ, **{_RAN_ENV: '1'})
     script = os.path.join(_ROOT, 'main.py')
     args = [python, script, *sys.argv[1:]]
@@ -398,7 +404,7 @@ def _ensure_deps():
     except SystemExit:
         raise
     except Exception as exc:
-        _say(f'could not restart ({exc}) — run the app again to pick up the new packages.')
+        _say(f'could not restart ({exc}) - run the app again to pick up the new packages.')
         return False
     return True
 
@@ -409,5 +415,5 @@ if __name__ == '__main__':
     print('missing (required):', ', '.join(required) or 'none')
     print('missing (optional):', ', '.join(optional) or 'none')
     print('audio backend     :',
-          shutil.which('mpv') or shutil.which('ffplay') or 'NONE — ' + _backend_installer()[0])
+          shutil.which('mpv') or shutil.which('ffplay') or 'NONE - ' + _backend_installer()[0])
     print('interpreter       :', sys.executable, '(venv)' if _in_venv() else '(system)')
