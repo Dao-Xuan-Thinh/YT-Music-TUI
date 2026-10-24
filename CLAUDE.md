@@ -147,6 +147,25 @@ the Windows FileIO lock contention.
 
 The `<pid>` suffix makes the endpoint unique per run so a new launch never connects to a stale `--idle` daemon (that bug caused silent no-audio).
 
+### mpv itself may not be on PATH
+
+`shutil.which('mpv')` is not enough. The Windows mpv installers don't touch PATH
+at all (a real case: `C:\Program Files\MPV Player\mpv.exe`), and winget/scoop
+only extend the PATH of *new* processes — so a correct install is invisible to
+the shell that is already open, and the app used to report "No audio backend"
+while mpv sat right there.
+
+`player.find_backend_exe(tool)` checks PATH first, then where installers actually
+put things (winget Links/Packages, `Program Files\*mpv*`, scoop shims/apps,
+chocolatey bin, `C:\mpv`, `ffmpeg\bin`; Homebrew both prefixes, MacPorts,
+`/snap/bin`, `~/.local/bin`, `mpv.app` on Unix). Every spawn uses the resolved
+absolute path — `Player.backend_exe`, never the bare name. Only successful
+lookups are cached, so installing mpv while the app is open is picked up.
+
+`player.install_hint()` is the single source of the per-OS install command; the
+old messages hard-coded `brew install mpv` on every platform. `main.py`'s boot
+warning and `bootstrap.py`'s backend check both call it.
+
 ### mpv must find yt-dlp (venv gotcha)
 
 mpv runs as a separate process and resolves `yt-dlp` from its own PATH. In a virtualenv, yt-dlp is next to the venv Python and NOT on the system PATH, so YouTube won't stream. `_find_ytdlp()` locates it (next to `sys.executable`, else PATH) and passes `--script-opts=ytdl_hook-ytdl_path=<path>` to mpv.

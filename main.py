@@ -505,6 +505,7 @@ CHANGELOG = [
     ('1.9', '2026-10-24 21:40', [
         'Volume: "=" now works as "+" — it never did, despite the help saying so',
         'First launch on a new machine installs its own dependencies; a missing mpv/ffmpeg is reported with the command for your OS',
+        'mpv is found even when its installer never put it on PATH (hello, Windows)',
         'Windows: run.cmd creates the venv and picks a modern Python, like run.sh does',
         'Sign-in failures now say what went wrong instead of sitting on "Signing in…"',
     ]),
