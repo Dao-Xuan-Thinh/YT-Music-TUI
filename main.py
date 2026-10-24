@@ -502,6 +502,12 @@ class KeybindingsScreen(ModalScreen):
 # runtime `git log`) so it works on non-git installs. The mobile app mirrors
 # this list so the desktop history is viewable there too.
 CHANGELOG = [
+    ('1.9', '2026-10-24 21:40', [
+        'Volume: "=" now works as "+" — it never did, despite the help saying so',
+        'First launch on a new machine installs its own dependencies; a missing mpv/ffmpeg is reported with the command for your OS',
+        'Windows: run.cmd creates the venv and picks a modern Python, like run.sh does',
+        'Sign-in failures now say what went wrong instead of sitting on "Signing in…"',
+    ]),
     ('1.8', '2026-08-14 23:55', [
         'Keyboard help (?) rewritten: grouped into sections and scrollable',
         'It now lists every key — the old one silently cut off the last few and never showed the home-screen, lyrics or dialog keys at all',
