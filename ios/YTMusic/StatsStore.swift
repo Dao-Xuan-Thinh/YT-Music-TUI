@@ -30,6 +30,11 @@ final class StatsStore: ObservableObject {
     private var syncing = false
 
     private static let marker = "ytm-tui listen stats"
+    /// The merged library (liked / playlists / sessions + tombstones) lives in
+    /// ONE shared file, not inside every device file: it is identical on every
+    /// device by definition, and four copies were most of the gist — which is
+    /// what pushed the API response past the 1 MB inline limit.
+    private static let libFile = "ytm-library.json"
     private static let api = "https://api.github.com"
 
     private init() {
@@ -299,9 +304,19 @@ final class StatsStore: ObservableObject {
                 }
             }
             var remote: [String: DeviceStats] = [:]
-            var remoteLibs: [LibraryBlob] = []   // other devices' blobs (ours excluded)
+            var remoteLibs: [LibraryBlob] = []   // blobs to merge with ours
             var skipped: [String] = []           // unreadable files (reported)
             if let files = pulled?["files"] as? [String: Any] {
+                // The shared library file — absent until a client has pushed it.
+                if let finfo = files[libFile] as? [String: Any] {
+                    if let content = fullContent(of: finfo, token: token),
+                       let data = content.data(using: .utf8),
+                       let blob = try? JSONDecoder().decode(LibraryBlob.self, from: data) {
+                        remoteLibs.append(blob)
+                    } else {
+                        skipped.append(libFile)
+                    }
+                }
                 for (name, info) in files {
                     guard name.hasPrefix("ytm-stats-"), name.hasSuffix(".json"),
                           let finfo = info as? [String: Any]
@@ -330,7 +345,13 @@ final class StatsStore: ObservableObject {
                         tracks: recordMap(parsed["tracks"]),
                         albums: recordMap(parsed["albums"]),
                         clock: doubleMap(parsed["clock"]))
-                    if dev != deviceID, let lib = parsed["library"],
+                    // A device file still carrying a library was written by a
+                    // pre-dedup client — ours included, since we are about to
+                    // drop it from our own file and until every client has
+                    // moved it may be the only remote copy of our library.
+                    // LibrarySync.merge is timestamp-based, so a stale add
+                    // can't outrank a newer tombstone.
+                    if let lib = parsed["library"],
                        let libData = try? JSONSerialization.data(withJSONObject: lib),
                        let blob = try? JSONDecoder().decode(LibraryBlob.self, from: libData) {
                         remoteLibs.append(blob)
@@ -356,25 +377,27 @@ final class StatsStore: ObservableObject {
                     records.clock[k] = v
                 }
             }
-            var payload: [String: Any] = ["device": deviceName, "days": days,
+            let payload: [String: Any] = ["device": deviceName, "days": days,
                                           "top": localTop,
                                           "artists": recordPayload(records.artists),
                                           "tracks": recordPayload(records.tracks),
                                           "albums": recordPayload(records.albums),
                                           "clock": records.clock]
-            // Publish the MERGED library so this file already reflects
-            // everyone's edits the next time another device pulls.
-            if let libData = try? JSONEncoder().encode(mergedLibrary),
-               let libObj = try? JSONSerialization.jsonObject(with: libData) {
-                payload["library"] = libObj
-            }
             let content = String(
                 data: try JSONSerialization.data(withJSONObject: payload),
                 encoding: .utf8) ?? "{}"
-            let fileBody = ["files": ["ytm-stats-\(deviceID).json":
-                                        ["content": content]]]
+            // Our stats file plus the shared library, in ONE request, so a
+            // device can never publish half a state. Leaving 'library' out of
+            // our own file is what shrinks the gist.
+            var files: [String: [String: String]] =
+                ["ytm-stats-\(deviceID).json": ["content": content]]
+            if let libData = try? JSONEncoder().encode(mergedLibrary),
+               let libText = String(data: libData, encoding: .utf8) {
+                files[libFile] = ["content": libText]
+            }
+            let fileBody: [String: Any] = ["files": files]
             if id.isEmpty {
-                var body = fileBody as [String: Any]
+                var body = fileBody
                 body["description"] = marker
                 body["public"] = false
                 let created = try request("POST", "/gists", token: token, body: body)
