@@ -229,7 +229,8 @@ final class StatsStore: ObservableObject {
                     }
                     self.file.remote = outcome.remote
                     self.file.lastSync = Date()
-                    self.syncStatus = "synced"
+                    self.syncStatus = outcome.skipped.isEmpty ? "synced"
+                        : "synced, skipped \(outcome.skipped.joined(separator: ", "))"
                     self.dirty = true
                     self.flush(reloadWidget: true)
                     let mergedLib = outcome.mergedLibrary
@@ -263,6 +264,7 @@ final class StatsStore: ObservableObject {
         let newGistID: String?
         let mergedLibrary: LibraryBlob
         let mergedRecords: LocalRecords
+        let skipped: [String]      // device files we could not read
     }
 
     /// The all-time maps, passed to the background sync and merged back after.
@@ -298,16 +300,24 @@ final class StatsStore: ObservableObject {
             }
             var remote: [String: DeviceStats] = [:]
             var remoteLibs: [LibraryBlob] = []   // other devices' blobs (ours excluded)
+            var skipped: [String] = []           // unreadable files (reported)
             if let files = pulled?["files"] as? [String: Any] {
                 for (name, info) in files {
                     guard name.hasPrefix("ytm-stats-"), name.hasSuffix(".json"),
-                          let content = (info as? [String: Any])?["content"] as? String,
-                          let data = content.data(using: .utf8),
-                          let parsed = try? JSONSerialization.jsonObject(with: data)
-                            as? [String: Any]
+                          let finfo = info as? [String: Any]
                     else { continue }
                     let dev = String(name.dropFirst("ytm-stats-".count)
                                          .dropLast(".json".count))
+                    guard let content = fullContent(of: finfo, token: token),
+                          let data = content.data(using: .utf8),
+                          let parsed = try? JSONSerialization.jsonObject(with: data)
+                            as? [String: Any]
+                    else {
+                        // Dropping a device silently is how a whole machine's
+                        // listening went missing for weeks. Say which one.
+                        skipped.append(String(dev.prefix(8)))
+                        continue
+                    }
                     let days = doubleMap(parsed["days"])
                     var top: [String: [String: Double]] = [:]
                     for (month, entries) in (parsed["top"] as? [String: Any]) ?? [:] {
@@ -381,7 +391,8 @@ final class StatsStore: ObservableObject {
             return .success(SyncOutcome(remote: remote, mergedDays: days,
                                         newGistID: id == gistID ? nil : id,
                                         mergedLibrary: mergedLibrary,
-                                        mergedRecords: records))
+                                        mergedRecords: records,
+                                        skipped: skipped))
         } catch let err as SyncError {
             return .failure(err)
         } catch {
@@ -431,7 +442,42 @@ final class StatsStore: ObservableObject {
         return ours.first?["id"] as? String ?? ""
     }
 
+    /// The full text of one gist file.
+    ///
+    /// GET /gists/<id> inlines `content` only while the WHOLE response fits in
+    /// 1 MB; the files past that point come back with `truncated: true` and a
+    /// body cut off mid-JSON, plus a `raw_url` holding the real thing. Four
+    /// devices pushed the gist over that line and the file that lost the race
+    /// (the laptop's) was dropped without a word on every other device.
+    private static func fullContent(of info: [String: Any], token: String) -> String? {
+        let inline = info["content"] as? String
+        let truncated = (info["truncated"] as? Bool) ?? false
+        if !truncated, let inline, !inline.isEmpty { return inline }
+        guard let raw = info["raw_url"] as? String,
+              let data = try? rawFetch(raw, token: token),
+              let text = String(data: data, encoding: .utf8)
+        else { return inline }
+        return text
+    }
+
     // MARK: - Tiny synchronous HTTP helper (background queue only)
+
+    /// GET an absolute URL (a gist file's raw_url, which is NOT on api.github.com).
+    private static func rawFetch(_ urlString: String, token: String) throws -> Data {
+        guard let url = URL(string: urlString) else { throw SyncError.network }
+        var req = URLRequest(url: url, timeoutInterval: 30)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let sem = DispatchSemaphore(value: 0)
+        var out: (Data?, HTTPURLResponse?) = (nil, nil)
+        URLSession.shared.dataTask(with: req) { data, resp, _ in
+            out = (data, resp as? HTTPURLResponse)
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 35)
+        guard let resp = out.1, let data = out.0,
+              (200..<300).contains(resp.statusCode) else { throw SyncError.network }
+        return data
+    }
 
     private static func rawRequest(_ method: String, _ path: String, token: String,
                                    body: [String: Any]?) throws -> Data {
