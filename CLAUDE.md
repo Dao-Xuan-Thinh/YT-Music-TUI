@@ -45,7 +45,10 @@ updater.py      ← Self-update via git (check/pull/deps refresh, branch switch)
    device name). Streaming cookies (age-restricted playback, player-only) live in
    Account (`g`) with live ✓/✗ + immediate apply; the offline folder is set by
    typing its path in the search bar while in offline mode (`o`). **Quit** (`q`)
-   confirms when playing and saves a resume session.
+   asks when playing: *Save & quit* (y) saves a resume session, *Just quit* (n)
+   quits without one, Esc stays in the app. The home screen's `q` routes through
+   the same `App.action_quit` — a bare `app.exit()` there skipped the stats flush
+   and `player.quit()`, leaving the mpv daemon playing.
 
 ### Key Design Patterns
 

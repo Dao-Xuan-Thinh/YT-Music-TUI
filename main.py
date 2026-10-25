@@ -238,7 +238,7 @@ KEYS_HELP = [
         ('u',        'Check for updates and update the app'),
         ('V',        "Changelog — what's new"),
         ('?',        'This help'),
-        ('q',        'Quit (asks first when something is playing)'),
+        ('q',        'Quit (when playing: save the session, or just quit; Esc stays)'),
     ]),
     ('On the home screen', [
         ('← / →',    'Previous / next tab'),
@@ -504,6 +504,8 @@ class KeybindingsScreen(ModalScreen):
 CHANGELOG = [
     ('1.9.1', '2026-10-25 10:30', [
         'Unplugging headphones no longer blasts a paused track through the speakers — the system\'s own pause is no longer treated as play/pause',
+        'Quitting while playing: "Just quit" now actually quits without saving the session (it used to do nothing); Esc is how you stay',
+        'Quitting from the home screen no longer left mpv running in the background',
     ]),
     ('1.9', '2026-10-24 21:40', [
         'Volume: "=" now works as "+" — it never did, despite the help saying so',
@@ -876,9 +878,15 @@ class ArtistScreen(ModalScreen):
 # ── Confirm screen ──────────────────────────────────────────────────────────────
 
 class ConfirmScreen(ModalScreen):
-    """Yes / No confirmation modal."""
+    """Yes / No confirmation modal.
+
+    Default: No and Esc are the same thing — "never mind" — and dismiss False.
+    With cancel=True the dialog is three-way and dismisses True / False / None,
+    so No can be a real second action (quit WITHOUT saving) while Esc stays the
+    way out. Callers that only test truthiness are unaffected: None is falsy.
+    """
     BINDINGS = [
-        Binding('escape', 'no', 'No'),
+        Binding('escape', 'cancel', 'Cancel'),
         Binding('n', 'no', 'No'),
         Binding('y', 'yes', 'Yes'),
     ]
@@ -886,23 +894,27 @@ class ConfirmScreen(ModalScreen):
     CSS = """
     ConfirmScreen { align: center middle; }
     #confirm-box {
-        width: 56; height: 9;
+        width: 56; height: auto;      /* grows with the message (3-line quit) */
         border: round $accent; padding: 1 2; background: $surface;
     }
-    #confirm-msg { height: 1fr; }
+    #confirm-msg { height: auto; margin-bottom: 1; }
     #confirm-btns { height: 3; }
     """
 
-    def __init__(self, message):
+    def __init__(self, message, yes_label='Yes (y)', no_label='No (n)',
+                 cancel=False):
         super().__init__()
         self._message = message
+        self._yes_label = yes_label
+        self._no_label = no_label
+        self._cancel = cancel
 
     def compose(self) -> ComposeResult:
         with Vertical(id='confirm-box'):
             yield Static(self._message, id='confirm-msg')
             with Horizontal(id='confirm-btns'):
-                yield Button('Yes (y)', id='confirm-yes', variant='error')
-                yield Button('No (n)', id='confirm-no')
+                yield Button(self._yes_label, id='confirm-yes', variant='error')
+                yield Button(self._no_label, id='confirm-no')
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == 'confirm-yes')
@@ -912,6 +924,9 @@ class ConfirmScreen(ModalScreen):
 
     def action_no(self) -> None:
         self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None if self._cancel else False)
 
 
 # ── Name prompt screen ──────────────────────────────────────────────────────────
@@ -1834,7 +1849,10 @@ class HomeScreen(Screen):
         self.dismiss({'kind': 'search'})
 
     def action_quit_app(self) -> None:
-        self.app.exit()
+        # Route through the app's own quit: a bare app.exit() here skipped the
+        # session save, the stats flush AND player.quit(), so quitting from the
+        # home screen left the mpv daemon running and still playing.
+        self.app.action_quit()
 
 
 # ── Main App ──────────────────────────────────────────────────────────────────
@@ -3755,8 +3773,9 @@ class YTMApp(App):
                 'repeat': self.repeat,
             })
 
-    def _finalize_quit(self) -> None:
-        self._save_session()
+    def _finalize_quit(self, save_session: bool = True) -> None:
+        if save_session:
+            self._save_session()
         self._stats.flush()
         # Best-effort final sync (stats + the just-saved session, so another
         # device can resume it): data is already safe on disk, so never hold
@@ -3787,11 +3806,19 @@ class YTMApp(App):
 
     def action_quit(self) -> None:
         if self.now_playing:
-            def _after(confirmed):
-                if confirmed:
-                    self._finalize_quit()
+            # Three-way: both buttons quit — No means "quit, save nothing".
+            # Esc (dismiss None) is the only way to stay in the app.
+            def _after(choice):
+                if choice is None:
+                    return
+                self._finalize_quit(save_session=bool(choice))
             self.push_screen(
-                ConfirmScreen('Something is playing. Quit and save this session?'),
+                ConfirmScreen(
+                    'Something is playing.\nSave this session for next time?'
+                    '\n(Esc stays in the app)',
+                    yes_label='Save & quit (y)', no_label='Just quit (n)',
+                    cancel=True,
+                ),
                 _after,
             )
         else:
