@@ -240,6 +240,22 @@ owns `#now-playing`, so `_update_player_bar` skips that widget (avoids a 1 Hz fl
 
 `on_mount()` spawns a background thread to call `_ensure_mpv_running()` early. This avoids the 4.5s startup delay on first play. Race condition prevented by `_start_lock` in `_ensure_mpv_running()`.
 
+### OS media keys: play and pause are directional, never a toggle
+
+`mediakeys.py` maps the system's transport buttons to app callbacks. Play and
+Pause must dispatch `play` / `pause` (handled by `_media_play` / `_media_pause`,
+which only resume a paused track / only pause a playing one). They used to both
+dispatch `toggle_pause`, and that had a real consequence: **every OS sends an
+unsolicited Pause when the audio device goes away** (headphones unplugged,
+Bluetooth headset powered off). Received as a toggle, a track the user had
+paused on purpose started playing out loud through the built-in speakers.
+
+Only an actual toggle button may flip the state: macOS
+`togglePlayPauseCommand`, MPRIS `PlayPause`, and the `space` key. SMTC has no
+toggle button — Windows decides between PLAY and PAUSE from the
+`playback_status` we publish, which is why `set_now_playing` must keep pushing
+it.
+
 ### Listen-stats schema is a contract with the iOS app
 
 `stats.py` and the iOS `StatsStore`/`StatsModel` read and write the SAME per-device
@@ -305,6 +321,9 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 | `library.py` | JSON persistence: liked, playlists, pinned folders, recent, sessions |
 | `offline.py` | Local audio folder scanner (mutagen tags) |
 | `bootstrap.py` | First-boot dependency install (stdlib only; runs before main.py's imports) |
+| `mediakeys.py` | OS media keys + now-playing panel: macOS helper process / MPRIS2 / SMTC |
+| `_mediakeys_darwin_helper.py` | macOS-only subprocess owning the Cocoa run loop for MPRemoteCommandCenter |
+| `stats.py` | Listen stats: local JSON + per-device gist sync (schema shared with the iOS app) |
 | `updater.py` | Self-update: git fetch/compare, ff-only pull, deps refresh, branch switch, re-exec |
 | `requirements.txt` | Python dependencies (everything under `# optional` is non-fatal) |
 | `run.sh` / `run.cmd` | Launchers: find a modern Python, make the venv, start the app |

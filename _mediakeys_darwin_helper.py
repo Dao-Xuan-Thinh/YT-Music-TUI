@@ -8,7 +8,7 @@ in-process integration silently never receives events. Same philosophy as
 the mpv daemon: isolate the OS integration behind a line protocol.
 
 stdin  ← JSON lines {title, artist, duration, position, is_playing}
-stdout → event lines: toggle_pause | next | previous | stop
+stdout → event lines: play | pause | toggle_pause | next | previous | stop
 Parent death = stdin EOF → clean exit.
 """
 
@@ -53,8 +53,12 @@ def _wire_commands():
     global cc
     from MediaPlayer import MPRemoteCommandCenter
     cc = MPRemoteCommandCenter.sharedCommandCenter()
-    cc.playCommand().addTargetWithHandler_(_handler('toggle_pause'))
-    cc.pauseCommand().addTargetWithHandler_(_handler('toggle_pause'))
+    # play/pause are DIRECTIONAL, not a toggle: macOS sends pauseCommand on
+    # its own when the audio device goes away (headphones unplugged / BT off).
+    # Mapping that to a toggle resumed an already-paused track through the
+    # built-in speakers. Only togglePlayPauseCommand may flip the state.
+    cc.playCommand().addTargetWithHandler_(_handler('play'))
+    cc.pauseCommand().addTargetWithHandler_(_handler('pause'))
     cc.togglePlayPauseCommand().addTargetWithHandler_(_handler('toggle_pause'))
     cc.nextTrackCommand().addTargetWithHandler_(_handler('next'))
     cc.previousTrackCommand().addTargetWithHandler_(_handler('previous'))

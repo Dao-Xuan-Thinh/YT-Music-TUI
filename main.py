@@ -502,6 +502,9 @@ class KeybindingsScreen(ModalScreen):
 # runtime `git log`) so it works on non-git installs. The mobile app mirrors
 # this list so the desktop history is viewable there too.
 CHANGELOG = [
+    ('1.9.1', '2026-10-25 10:30', [
+        'Unplugging headphones no longer blasts a paused track through the speakers — the system\'s own pause is no longer treated as play/pause',
+    ]),
     ('1.9', '2026-10-24 21:40', [
         'Volume: "=" now works as "+" — it never did, despite the help saying so',
         'First launch on a new machine installs its own dependencies; a missing mpv/ffmpeg is reported with the command for your OS',
@@ -2116,6 +2119,8 @@ class YTMApp(App):
         # Optional: returns None when the per-OS dep isn't installed — the app
         # behaves exactly as before. Callbacks arrive on backend threads.
         self._mediakeys = mediakeys.start({
+            'play': lambda: self.call_from_thread(self._media_play),
+            'pause': lambda: self.call_from_thread(self._media_pause),
             'toggle_pause': lambda: self.call_from_thread(self.action_toggle_pause),
             'next': lambda: self.call_from_thread(self.action_next_track),
             'previous': lambda: self.call_from_thread(self.action_prev_track),
@@ -3012,17 +3017,33 @@ class YTMApp(App):
         self.query_one('#search-input', Input).focus()
 
     def action_toggle_pause(self) -> None:
+        self._set_paused(not self.is_paused)
+
+    def _media_play(self) -> None:
+        """OS media key / Control Center 'play' — resume only, never a toggle."""
+        if self.is_paused:
+            self._set_paused(False)
+
+    def _media_pause(self) -> None:
+        """OS media key / Control Center 'pause' — pause only, never a toggle.
+
+        The OS sends this by itself when the audio device goes away (headphones
+        unplugged, Bluetooth off). Treating it as a toggle made an already-paused
+        track start playing out loud through the built-in speakers."""
+        if not self.is_paused:
+            self._set_paused(True)
+
+    def _set_paused(self, want_paused: bool) -> None:
         if not self.now_playing:
             return
         # Optimistic: flip the bar instantly so a keypress never waits on a
         # stalled IPC socket. The mpv round-trip runs off the UI thread; the
         # optimistic value is authoritative (Player.pause/resume set _paused
         # before the blocking set_property, and _poll_player re-reads it 1/s).
-        self.is_paused = not self.is_paused
+        self.is_paused = want_paused
         self._last_bar_sig = None      # force an immediate bar redraw
         self._update_player_bar()
         self._sync_animation()
-        want_paused = self.is_paused
 
         def _run():
             try:

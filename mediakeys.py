@@ -1,9 +1,12 @@
 """
 mediakeys.py — OS media-key + now-playing integration for the TUI.
 
-`start(callbacks)` returns a backend or None. Callbacks (`toggle_pause`, `next`,
-`previous`, `stop`) are invoked from backend threads — the app wraps them in
-`call_from_thread`. Backends expose `set_now_playing(title, artist, duration,
+`start(callbacks)` returns a backend or None. Callbacks (`play`, `pause`,
+`toggle_pause`, `next`, `previous`, `stop`) are invoked from backend threads —
+the app wraps them in `call_from_thread`. `play`/`pause` are directional and
+must stay that way: every OS sends an unsolicited pause when the audio device
+disappears, so collapsing them into `toggle_pause` makes a paused track resume
+through the speakers. Backends expose `set_now_playing(title, artist, duration,
 position, is_playing)` (cheap, coalescing) and `stop()`.
 
 Per-OS, all optional (a bare install just gets None — zero behavior change):
@@ -159,11 +162,11 @@ class _LinuxBackend(_Base):
 
             @method()
             def Play(self):
-                backend._dispatch('toggle_pause')
+                backend._dispatch('play')
 
             @method()
             def Pause(self):
-                backend._dispatch('toggle_pause')
+                backend._dispatch('pause')
 
             @method()
             def Next(self):
@@ -310,7 +313,7 @@ class _WindowsBackend(_Base):
 
     def _on_button(self, sender, args):
         Btn = self._Btn
-        event = {Btn.PLAY: 'toggle_pause', Btn.PAUSE: 'toggle_pause',
+        event = {Btn.PLAY: 'play', Btn.PAUSE: 'pause',
                  Btn.NEXT: 'next', Btn.PREVIOUS: 'previous',
                  Btn.STOP: 'stop'}.get(args.button)
         if event:
