@@ -24,6 +24,11 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _STATS_FILE = os.path.join(_HERE, 'stats.json')
 
 GIST_MARKER = 'ytm-tui listen stats'
+# The merged library (liked / playlists / sessions + tombstones) lives in ONE
+# shared file, not inside every device file. It is identical on every device by
+# definition — four copies was most of the gist, and it is what pushed the
+# response past the 1 MB inline limit (see StatsStore._file_body).
+LIB_FILE = 'ytm-library.json'
 _API = 'https://api.github.com'
 _TIMEOUT = 10
 
@@ -607,9 +612,11 @@ class StatsStore:
         → push our file → persist snapshot. Returns (ok, status_msg, gist_id
         or None if unchanged, merged_library or None). Never raises.
 
-        `library_export` (Library.export_sync output) rides in our device file
-        and, when given, the pull side merges every device's library blob via
-        library.merge_sync — the caller applies the result on the UI thread."""
+        `library_export` (Library.export_sync output), when given, is merged
+        with every other device's via library.merge_sync and the result is
+        published to the single shared LIB_FILE — the caller applies it on the
+        UI thread. Pre-dedup clients embedded it in their own device file; such
+        a copy is still read and merged."""
         import requests
         if not (token and device_id):
             return False, 'not configured', None, None
@@ -636,10 +643,21 @@ class StatsStore:
                 gist_id = self._create_gist(headers, device_id, device_name)
                 r = None
             remote = {}
-            remote_libs = []      # other devices' library blobs (ours excluded)
-            unreadable = []       # device files we could not parse (reported)
+            remote_libs = []      # library blobs to merge (ours excluded)
+            unreadable = []       # files we could not parse (reported)
+            own_legacy_lib = None  # our own file's old embedded library, if any
+            files = (r.json().get('files') or {}) if r is not None else {}
+            # The shared library file. Absent until some client has pushed it.
+            if LIB_FILE in files:
+                try:
+                    blob = json.loads(
+                        self._file_body(files[LIB_FILE], headers) or '{}')
+                    if isinstance(blob, dict):
+                        remote_libs.append(blob)
+                except Exception:
+                    unreadable.append(LIB_FILE)
             if r is not None:
-                for fname, finfo in (r.json().get('files') or {}).items():
+                for fname, finfo in files.items():
                     if not (fname.startswith('ytm-stats-') and fname.endswith('.json')):
                         continue
                     dev = fname[len('ytm-stats-'):-len('.json')]
@@ -654,8 +672,14 @@ class StatsStore:
                             remote[dev][kind] = {
                                 k: _rec(v) for k, v in
                                 (parsed.get(kind) or {}).items()}
-                        if dev != device_id and isinstance(parsed.get('library'), dict):
-                            remote_libs.append(parsed['library'])
+                        # A device file still carrying a library was written by
+                        # a pre-dedup client; merge it and let it age out (we
+                        # stop writing ours below).
+                        if isinstance(parsed.get('library'), dict):
+                            if dev == device_id:
+                                own_legacy_lib = parsed['library']
+                            else:
+                                remote_libs.append(parsed['library'])
                     except Exception:
                         # One bad file must not kill the merge — but say so:
                         # silently skipping a device is how a whole machine's
@@ -663,10 +687,17 @@ class StatsStore:
                         unreadable.append(dev[:8])
                         continue
             # Cross-device library merge: our fresh export + everyone else's.
+            # Our own file's pre-dedup copy goes in too — it is about to be
+            # deleted from that file, and until every client has moved to the
+            # shared file it may be the only remote record of our library.
+            # merge_sync is timestamp-based, so a stale add can't outrank a
+            # newer tombstone.
             merged_library = None
             if library_export is not None:
                 import library as _library
-                merged_library = _library.merge_sync([library_export] + remote_libs)
+                merged_library = _library.merge_sync(
+                    [library_export] + remote_libs
+                    + ([own_legacy_lib] if own_legacy_lib is not None else []))
             # Merge-max our own remote copy into local (protects a wiped store).
             with self._lock:
                 own = remote.get(device_id, {}).get('days', {})
@@ -698,15 +729,20 @@ class StatsStore:
                         'clock': self._data.get('clock', {})}
                 for kind in RECORD_KINDS:
                     body[kind] = self._data.get(kind, {})
-                if merged_library is not None:
-                    # Publish the MERGED state, so this file already reflects
-                    # everyone's edits the next time another device pulls.
-                    body['library'] = merged_library
+                if merged_library is None and own_legacy_lib is not None:
+                    # Nothing to publish (caller passed no export) — keep the
+                    # copy already in our file rather than deleting data.
+                    body['library'] = own_legacy_lib
                 payload = json.dumps(body, indent=1)
-            # Push only our file.
+            # Push our stats file plus, when we have one, the shared library —
+            # one request, so a device never publishes half a state. Dropping
+            # 'library' from our own file is what shrinks the gist.
+            push = {f'ytm-stats-{device_id}.json': {'content': payload}}
+            if merged_library is not None:
+                push[LIB_FILE] = {'content': json.dumps(merged_library, indent=1)}
             pr = requests.patch(
                 f'{_API}/gists/{gist_id}', headers=headers, timeout=_TIMEOUT,
-                json={'files': {f'ytm-stats-{device_id}.json': {'content': payload}}})
+                json={'files': push})
             self._check(pr)
             with self._lock:
                 remote[device_id] = {'device': device_name,

@@ -507,6 +507,7 @@ CHANGELOG = [
         'Quitting while playing: "Just quit" now actually quits without saving the session (it used to do nothing); Esc is how you stay',
         'Quitting from the home screen no longer left mpv running in the background',
         'Stats sync: once the shared gist passed 1 MB, GitHub served the last device\'s file cut in half and it was dropped without a word — it is now refetched in full, and an unreadable device is named in the sync status',
+        'Stats sync: the library is stored once for all devices instead of a full copy inside every device file — about two thirds off the sync payload',
     ]),
     ('1.9', '2026-10-24 21:40', [
         'Volume: "=" now works as "+" — it never did, despite the help saying so',

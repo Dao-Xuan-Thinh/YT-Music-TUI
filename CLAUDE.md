@@ -263,7 +263,19 @@ it.
 
 `stats.py` and the iOS `StatsStore`/`StatsModel` read and write the SAME per-device
 gist files, so any schema change must land on both or each client will drop the
-other's fields the next time it pushes. Alongside `days` and `top` (a 12-month,
+other's fields the next time it pushes.
+
+**One shared library file.** The library blob (liked / playlists / sessions +
+tombstones) is identical on every device, so it lives in ONE file —
+`stats.LIB_FILE` = `ytm-library.json` — not inside each device file. Four
+embedded copies were most of the gist and are what pushed it past the 1 MB
+inline limit. A device publishes its stats file and the shared library in a
+single PATCH, so it can never leave half a state behind. A device file written
+by a pre-dedup client still carries `library`; that copy is read and merged
+(ours included, since deleting it from our own file would otherwise lose it)
+and disappears the next time that client syncs. Only the library is shared —
+`days`, `top`, `clock` and the record maps stay per-device, which is what keeps
+the merge conflict-free. Alongside `days` and `top` (a 12-month,
 300-key-per-month attribution map) sit the all-time records — `artists`, `tracks`,
 `albums`, each `key -> {'s','n','f','l'}` (seconds, plays, first listened, last
 listened) — plus `clock` (`'<weekday 0=Mon>-<hour>' -> seconds`) for the heatmap.
