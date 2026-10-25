@@ -283,6 +283,17 @@ listened) — plus `clock` (`'<weekday 0=Mon>-<hour>' -> seconds`) for the heatm
 - `albums` only fills for tracks whose yt-dlp metadata carries an album (YouTube
   Music tracks, not plain videos), and only from v1.7 onward.
 
+**The gist API truncates past 1 MB.** `GET /gists/<id>` inlines each file's
+`content` only while the WHOLE response fits in 1 MB; the files past that point
+come back with `truncated: true`, a body cut off mid-JSON, and a `raw_url` to
+fetch instead. With four devices the gist crossed 1 MB and the last file (the
+laptop's) was silently dropped by every client, because both readers parse the
+inline `content` and swallow the failure — `except Exception: continue` here,
+`guard … else { continue }` in `StatsStore.swift`. Both now refetch from
+`raw_url` on `truncated` or a parse failure (`StatsStore._file_body` /
+`fileBody`), and a file that still can't be read is named in the sync status
+instead of vanishing. Any new client must do the same.
+
 ## Cross-Platform Notes
 
 **Status:** runs on Windows, macOS, and Linux. The IPC layer auto-selects a

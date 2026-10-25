@@ -580,6 +580,28 @@ class StatsStore:
 
     # ── Gist sync (blocking; run on a daemon thread) ───────────────────────
 
+    @staticmethod
+    def _file_body(finfo, headers):
+        """The full text of one gist file.
+
+        The gists API inlines `content` only while the WHOLE response fits in
+        1 MB; past that the remaining files come back with `truncated: true`
+        and a body cut off mid-JSON. Four devices crossed that line, and the
+        file that lost the race was silently dropped by every client — the
+        laptop's listening never reached the phone. Always honour `truncated`
+        (and a surprise parse failure) by refetching from `raw_url`.
+        """
+        import requests
+        body = finfo.get('content') or ''
+        raw_url = finfo.get('raw_url')
+        if not finfo.get('truncated') and body:
+            return body
+        if not raw_url:
+            return body
+        rr = requests.get(raw_url, headers=headers, timeout=_TIMEOUT * 3)
+        rr.raise_for_status()
+        return rr.text
+
     def sync(self, token, device_id, device_name, gist_id='', library_export=None):
         """Full cycle: resolve gist → pull all device files → merge-max our own
         → push our file → persist snapshot. Returns (ok, status_msg, gist_id
@@ -615,13 +637,15 @@ class StatsStore:
                 r = None
             remote = {}
             remote_libs = []      # other devices' library blobs (ours excluded)
+            unreadable = []       # device files we could not parse (reported)
             if r is not None:
                 for fname, finfo in (r.json().get('files') or {}).items():
                     if not (fname.startswith('ytm-stats-') and fname.endswith('.json')):
                         continue
                     dev = fname[len('ytm-stats-'):-len('.json')]
                     try:
-                        parsed = json.loads(finfo.get('content') or '{}')
+                        parsed = json.loads(
+                            self._file_body(finfo, headers) or '{}')
                         remote[dev] = {'device': parsed.get('device') or dev[:8],
                                        'days': dict(parsed.get('days') or {}),
                                        'top': dict(parsed.get('top') or {}),
@@ -633,7 +657,11 @@ class StatsStore:
                         if dev != device_id and isinstance(parsed.get('library'), dict):
                             remote_libs.append(parsed['library'])
                     except Exception:
-                        continue  # one bad file must not kill the merge
+                        # One bad file must not kill the merge — but say so:
+                        # silently skipping a device is how a whole machine's
+                        # listening went missing for weeks.
+                        unreadable.append(dev[:8])
+                        continue
             # Cross-device library merge: our fresh export + everyone else's.
             merged_library = None
             if library_export is not None:
@@ -691,11 +719,15 @@ class StatsStore:
                 self._data['last_sync'] = time.time()
                 self._dirty = True
             self.flush()
-            self._last_error = ''
+            self._last_error = ('' if not unreadable else
+                                f'{len(unreadable)} device file(s) unreadable')
             # Report the gist id back whenever it changed (created, or the cached
             # one was deleted and a fresh one was rediscovered) so the caller
             # persists it and stops re-resolving every cycle.
-            return (True, 'synced', (gist_id if gist_id != orig_id else None),
+            return (True,
+                    'synced' if not unreadable
+                    else f'synced, skipped {", ".join(unreadable)}',
+                    (gist_id if gist_id != orig_id else None),
                     merged_library)
         except _AuthError:
             self._last_error = 'token rejected'

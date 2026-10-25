@@ -506,6 +506,7 @@ CHANGELOG = [
         'Unplugging headphones no longer blasts a paused track through the speakers — the system\'s own pause is no longer treated as play/pause',
         'Quitting while playing: "Just quit" now actually quits without saving the session (it used to do nothing); Esc is how you stay',
         'Quitting from the home screen no longer left mpv running in the background',
+        'Stats sync: once the shared gist passed 1 MB, GitHub served the last device\'s file cut in half and it was dropped without a word — it is now refetched in full, and an unreadable device is named in the sync status',
     ]),
     ('1.9', '2026-10-24 21:40', [
         'Volume: "=" now works as "+" — it never did, despite the help saying so',
