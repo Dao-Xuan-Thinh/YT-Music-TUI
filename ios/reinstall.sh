@@ -104,14 +104,21 @@ app_profiles() {
 preflight() {
   local prof exp left groups
 
-  # 1. Xcode's Apple ID. A free account loses this session regularly, and without
-  #    it every target fails to SIGN — i.e. after the whole build has compiled.
-  # Signed in, the list holds one entry per account; signed out it is literally
-  # "( )". The entry is a UUID, NOT an email — grepping for '@' reported a
-  # perfectly good account as missing.
+  # 1. Can we sign at all? A free account loses Xcode's session regularly, and
+  #    without it every target fails to SIGN — i.e. after the whole build has
+  #    compiled. Two independent tells, because neither alone is reliable:
+  #  - Xcode's account list: one entry per account, literally "( )" when signed
+  #    out. The entry is a UUID, NOT an email — grepping for '@' once reported a
+  #    perfectly good account as missing. It also reads EMPTY for a while after
+  #    a fresh sign-in (Xcode's prefs are still only in cfprefsd), which blocked
+  #    three builds that would have signed fine.
+  #  - An "Apple Development" identity in the keychain: that certificate is what
+  #    the build actually signs with, so its presence settles the question.
   if ! defaults read com.apple.dt.Xcode DVTDeveloperAccountManagerAppleIDLists \
-       2>/dev/null | grep -q 'identifier'; then
-    err "Xcode has no Apple ID signed in — signing would fail at the end of the build."
+         2>/dev/null | grep -q 'identifier' \
+     && ! security find-identity -v -p codesigning 2>/dev/null \
+         | grep -q 'Apple Development'; then
+    err "No signing identity and no Apple ID in Xcode — the build would fail to sign."
     echo
     hint "Fix (about a minute):"
     hint "  1. Xcode → Settings → Accounts"
