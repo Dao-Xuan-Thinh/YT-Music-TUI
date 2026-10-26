@@ -238,11 +238,23 @@ final class PlaybackService: ObservableObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleInterruption(_:)),
             name: AVAudioSession.interruptionNotification, object: s)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleRouteChange(_:)),
+            name: AVAudioSession.routeChangeNotification, object: s)
     }
 
     private func activateSession() {
         try? AVAudioSession.sharedInstance().setActive(true)
     }
+
+    /// Set when an interruption paused playback that WAS running, so the track
+    /// can be picked back up when the interruption ends. iOS leaves
+    /// `.shouldResume` out of the end notification far more often than not (a
+    /// call taken from another app, Siri, a clip in another app), and honouring
+    /// only that flag is why a song would stay stopped until it was started by
+    /// hand. Cleared by a route loss below, so "resume" can never mean "play out
+    /// loud through the speaker".
+    private var resumeAfterInterruption = false
 
     @objc private func handleInterruption(_ note: Notification) {
         guard let info = note.userInfo,
@@ -250,14 +262,35 @@ final class PlaybackService: ObservableObject {
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         switch type {
         case .began:
+            resumeAfterInterruption = intendsPlayback
+            DebugLog.shared.log("playback",
+                "audio interrupted (was playing: \(intendsPlayback))")
             pause()
         case .ended:
-            if let optRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt,
-               AVAudioSession.InterruptionOptions(rawValue: optRaw).contains(.shouldResume) {
-                resume()
-            }
+            let flagged = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
+                .map { AVAudioSession.InterruptionOptions(rawValue: $0)
+                        .contains(.shouldResume) } ?? false
+            let resuming = flagged || resumeAfterInterruption
+            DebugLog.shared.log("playback",
+                "interruption ended (shouldResume: \(flagged)) — \(resuming ? "resuming" : "staying paused")")
+            resumeAfterInterruption = false
+            if resuming { resume() }
         @unknown default: break
         }
+    }
+
+    /// The audio route changed. Only one reason matters: the device we were
+    /// playing to is gone (headphones unplugged, Bluetooth powered off). iOS has
+    /// already stopped us, and the one thing the user does NOT want is the
+    /// built-in speaker taking over — so stay paused and make sure a later
+    /// interruption-end can't resume us either.
+    @objc private func handleRouteChange(_ note: Notification) {
+        guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable
+        else { return }
+        DebugLog.shared.log("playback", "audio device went away — staying paused")
+        resumeAfterInterruption = false
+        pause()
     }
 
     // MARK: - Player observation

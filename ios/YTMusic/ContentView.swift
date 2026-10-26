@@ -126,7 +126,10 @@ struct ContentView: View {
     /// Slim top banner while a slow fetch runs (artist page, album/playlist, radio, search)
     /// so long loads never look like a frozen app.
     private var isLoadingSomething: Bool {
-        vm.artistLoading || vm.collectionLoading || vm.searching
+        // `resolving` included: a slow track resolve used to show nothing but the
+        // small spinner beside the search field, invisible from the player or any
+        // other tab — the app just went quiet.
+        vm.artistLoading || vm.collectionLoading || vm.searching || vm.resolving
     }
 
     @ViewBuilder private var loadingBanner: some View {

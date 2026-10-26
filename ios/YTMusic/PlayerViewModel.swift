@@ -255,6 +255,7 @@ final class PlayerViewModel: ObservableObject {
         playback.beginLoading(title: r.title, uploader: r.uploader,
                               thumbnail: r.thumbnail, duration: r.duration)
         resolving = true
+        loadingLabel = "loading \(r.title)…"
         errorMsg = nil
         // Debounce: a rapid re-selection (misclick) cancels this before it fires, so the
         // wrong song's extraction never starts (a started one can starve later resolves
@@ -267,11 +268,30 @@ final class PlayerViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
+    /// A resolve that passes the soft deadline is SLOW, not dead: say so and keep
+    /// waiting. Giving up at 30s used to drop the spinner on a resolve that was
+    /// still alive and would have started playing on its own — YouTube regularly
+    /// makes the engine re-handshake and 90s+ resolves are real (and the tap it
+    /// invited cancelled that work and queued a second one behind it, under the
+    /// GIL). Only the hard deadline is a real give-up.
+    private static let resolveSoftDeadline: TimeInterval = 30
+    private static let resolveHardDeadline: TimeInterval = 150
+
     private func resolveAndPlay(id: String, resumeAt: Double = 0, token: Int) {
-        // UI watchdog: if this resolve hasn't produced a result in time, stop showing the
-        // spinner and offer a retry (the socket_timeout in resolve.py ends the work too).
-        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.resolveSoftDeadline
+        ) { [weak self] in
             guard let self, token == self.resolveToken, self.resolving else { return }
+            DebugLog.shared.log("resolve",
+                "\(id) still working after \(Int(Self.resolveSoftDeadline))s — waiting")
+            self.loadingLabel = "youtube is slow — still trying…"
+        }
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.resolveHardDeadline
+        ) { [weak self] in
+            guard let self, token == self.resolveToken, self.resolving else { return }
+            DebugLog.shared.log("resolve",
+                "\(id) gave up after \(Int(Self.resolveHardDeadline))s")
             self.resolving = false
             self.errorMsg = "Couldn't load this track — tap to try again."
         }
@@ -331,6 +351,7 @@ final class PlayerViewModel: ObservableObject {
         playback.beginLoading(title: r.title, uploader: r.uploader,
                               thumbnail: r.thumbnail, duration: r.duration)
         resolving = true
+        loadingLabel = "stream died — reloading…"
         DispatchQueue.global(qos: .userInitiated).async {
             let c = python_resolve_fresh(r.id)
             let json = c.map { String(cString: $0) } ?? "{}"
