@@ -11,6 +11,13 @@ struct ChangelogEntry: Identifiable {
 
 enum Changelog {
     static let entries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.17", date: "2026-10-27 00:45", notes: [
+            "A song no longer stays stopped after an interruption: when a call, Siri or another app's audio ends, playback picks itself back up — unplugging headphones still never hands the song to the speaker",
+            "A slow load is no longer mistaken for a dead one — YouTube sometimes makes the engine re-handshake and a track takes 90 seconds; giving up at 30 dropped the spinner on a track that was about to play, and tapping retry threw that work away",
+            "The loading banner now covers loading a track and names it — outside the search tab a slow load used to show nothing at all",
+            "Listening stats: your laptop's history was missing here — once the shared gist passed 1 MB GitHub served that device's file cut in half and it was dropped without a word; it is now refetched in full",
+            "Listening stats: the library is stored once for all devices instead of a full copy inside every device file — about two thirds off the sync payload",
+        ]),
         ChangelogEntry(version: "1.15", date: "2026-08-14 23:30", notes: [
             "The Apple Watch remote works — see what's playing and control it (play/pause, next, previous) from your wrist while the phone app is reachable",
         ]),
@@ -128,6 +135,20 @@ enum Changelog {
     /// viewable on mobile via the Mobile/Desktop toggle. Kept in sync with the
     /// desktop app's CHANGELOG (main.py) by hand (different language/branch).
     static let desktopEntries: [ChangelogEntry] = [
+        ChangelogEntry(version: "1.9.1", date: "2026-10-25 10:30", notes: [
+            "Unplugging headphones no longer blasts a paused track through the speakers — the system's own pause is no longer treated as play/pause",
+            "Quitting while playing: \"Just quit\" now actually quits without saving the session (it used to do nothing); Esc is how you stay",
+            "Quitting from the home screen no longer left mpv running in the background",
+            "Stats sync: once the shared gist passed 1 MB, GitHub served the last device's file cut in half and it was dropped without a word — it is now refetched in full, and an unreadable device is named in the sync status",
+            "Stats sync: the library is stored once for all devices instead of a full copy inside every device file — about two thirds off the sync payload",
+        ]),
+        ChangelogEntry(version: "1.9", date: "2026-10-24 21:40", notes: [
+            "Volume: \"=\" now works as \"+\" — it never did, despite the help saying so",
+            "First launch on a new machine installs its own dependencies; a missing mpv/ffmpeg is reported with the command for your OS",
+            "mpv is found even when its installer never put it on PATH (hello, Windows)",
+            "Windows: run.cmd creates the venv and picks a modern Python, like run.sh does",
+            "Sign-in failures now say what went wrong instead of sitting on \"Signing in…\"",
+        ]),
         ChangelogEntry(version: "1.8", date: "2026-08-14 23:55", notes: [
             "Keyboard help (?) rewritten: grouped into sections and scrollable",
             "It now lists every key — the old one silently cut off the last few and never showed the home-screen, lyrics or dialog keys at all",
