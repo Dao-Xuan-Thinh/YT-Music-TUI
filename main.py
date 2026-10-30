@@ -36,6 +36,7 @@ import youtube
 import player as player_module
 import updater
 import mediakeys
+import artwork
 import stats as stats_module
 from config import Config, _expand
 from library import Library
@@ -48,6 +49,14 @@ SOURCE_LABEL = {'ytm': 'YT Music', 'yt': 'YouTube', 'both': 'Both'}
 
 REPEAT_CYCLE = ['off', 'one', 'all']
 REPEAT_LABEL = {'off': '↻ off', 'one': '↻ one', 'all': '↻ all'}
+
+# Cover-art panel geometry (see _sync_art_panel). The table's own columns add up
+# to 82 cells, so the panel only appears once the terminal has that much PLUS a
+# cover wide enough to be worth looking at — below that the table would start
+# losing columns, which is the worse trade.
+ART_TABLE_COLS = 86
+ART_MIN_COLS = 24
+ART_MAX_COLS = 52
 
 # ── Custom themes ─────────────────────────────────────────────────────────────
 # Registered at startup via App.register_theme(); they then appear in the picker
@@ -280,6 +289,14 @@ def _bar(pos, dur, width=40):
     return '█' * filled + '─' * (width - filled)
 
 
+def _ellipsis(s, width):
+    """Trim to `width` cells, with a trailing … when something was cut."""
+    s = s or ''
+    if width < 2 or len(s) <= width:
+        return s
+    return s[:width - 1].rstrip() + '…'
+
+
 def _hex(c):
     """'#rrggbb' → (r, g, b)."""
     c = c.lstrip('#')
@@ -502,6 +519,10 @@ class KeybindingsScreen(ModalScreen):
 # runtime `git log`) so it works on non-git installs. The mobile app mirrors
 # this list so the desktop history is viewable there too.
 CHANGELOG = [
+    ('1.10', '2026-10-30 10:40', [
+        'Cover art: a wide terminal now shows the playing track\'s album/song cover on the right, drawn from half-block characters',
+        'The panel appears only when the results table can keep its full width, and hides itself again when the window shrinks',
+    ]),
     ('1.9.1', '2026-10-25 10:30', [
         'Unplugging headphones no longer blasts a paused track through the speakers — the system\'s own pause is no longer treated as play/pause',
         'Quitting while playing: "Just quit" now actually quits without saving the session (it used to do nothing); Esc is how you stay',
@@ -1875,7 +1896,19 @@ class YTMApp(App):
     #filter-row.visible { display: block; }
     #filter-input { width: 1fr; }
 
-    #results-table { height: 1fr; border: none; }
+    #main-row { height: 1fr; }
+    #results-table { width: 1fr; height: 1fr; border: none; }
+
+    /* Cover art, right of the results. Hidden by default: _sync_art_panel
+       shows it (and sets its width) only when the terminal is wide enough. */
+    #art-panel {
+        display: none; width: 0; padding: 1 1 0 2;
+        background: $surface; border-left: solid $accent;
+    }
+    #art-panel.visible { display: block; }
+    #art-image { height: auto; }
+    #art-title { height: auto; color: $text; text-style: bold; margin-top: 1; }
+    #art-artist { height: auto; color: $text-muted; }
 
     #player-bar {
         height: 5; padding: 0 2; background: $panel; border-top: solid $accent;
@@ -1998,6 +2031,10 @@ class YTMApp(App):
         self._loading_since = None       # monotonic ts while awaiting playback (load watchdog)
         self._play_timer = None          # debounce timer for rapid selections (misclicks)
         self._premium_retry_id = None    # track id already retried with account cookies
+        # Cover-art panel state (see _sync_art_panel): last drawn
+        # (track, cols, rows), and the track ids with a download in flight.
+        self._art_sig = None
+        self._art_fetching = set()
         # Color-wave animation state (see _sync_animation / _animate_tick).
         self._anim_frame = 0
         self._anim_timer = None          # active Timer while the wave is running
@@ -2032,8 +2069,13 @@ class YTMApp(App):
         # cursor_foreground_priority='renderable' so the playing row's accent
         # color (set in _row_cells) survives even when it's also the cursor row;
         # the default 'css' lets the cursor style override it (Bug: no highlight).
-        yield DataTable(id='results-table', cursor_type='row',
-                        cursor_foreground_priority='renderable')
+        with Horizontal(id='main-row'):
+            yield DataTable(id='results-table', cursor_type='row',
+                            cursor_foreground_priority='renderable')
+            with Vertical(id='art-panel'):
+                yield Static('', id='art-image')
+                yield Static('', id='art-title')
+                yield Static('', id='art-artist')
         with Vertical(id='player-bar'):
             yield Static('♪  Nothing playing', id='now-playing')
             yield Static('', id='controls-row')
@@ -2647,6 +2689,12 @@ class YTMApp(App):
         self._render_table()
         self._update_footer()
         self._sync_animation()
+        self._sync_art_panel()      # swap the cover now, not on the next poll tick
+        # The OS now-playing panel wants the cover too, and it's visible even
+        # when the side panel isn't (narrow terminal, or no Pillow) — so the
+        # download is driven by playback, not by the panel.
+        if self._mediakeys is not None and not artwork.cached(track):
+            self._fetch_art(track)
         url = direct_url or track['url']
 
         def _run():
@@ -2875,6 +2923,8 @@ class YTMApp(App):
                 threading.Thread(target=self._player.quit, daemon=True).start()
         # Start/stop the color-wave to match play/pause/stop state (cheap check).
         self._sync_animation()
+        # Keep the cover panel on the current track (no-op unless something moved).
+        self._sync_art_panel()
         # Only redraw the player bar when something visible actually changed.
         # While paused or idle the position is frozen, so this skips the redraw
         # (and the repaint) entirely — no work happens on most ticks.
@@ -2888,11 +2938,14 @@ class YTMApp(App):
         if self._mediakeys is not None:
             if self.now_playing and 0 <= self._queue_idx < len(self._queue):
                 t = self._queue[self._queue_idx]
+                # Only a cover already on disk — the panel picks it up on the
+                # next tick once _fetch_art lands, and nothing blocks here.
                 self._mediakeys.set_now_playing(
                     t.get('title', ''), t.get('uploader', ''),
-                    self.duration, self.position, not self.is_paused)
+                    self.duration, self.position, not self.is_paused,
+                    artwork.cached(t))
             else:
-                self._mediakeys.set_now_playing('', '', 0, 0, False)
+                self._mediakeys.set_now_playing('', '', 0, 0, False, '')
 
     def _update_player_bar(self) -> None:
         pos = self.position
@@ -2914,6 +2967,77 @@ class YTMApp(App):
             self.query_one('#progress-row', Static).update(bar)
         except NoMatches:
             pass
+
+    # ── Cover art panel ─────────────────────────────────────────────────────
+    def on_resize(self, event) -> None:
+        self._sync_art_panel()
+
+    def _sync_art_panel(self) -> None:
+        """Show the cover of the playing track to the right of the results, but
+        only when the terminal is wide enough that the table keeps its full
+        width. Everything is keyed on a signature, so the 1 Hz poll does no
+        work while the track and the geometry stay the same."""
+        try:
+            panel = self.query_one('#art-panel', Vertical)
+        except NoMatches:
+            return
+        track = (self._queue[self._queue_idx]
+                 if self.now_playing and 0 <= self._queue_idx < len(self._queue)
+                 else None)
+        room = self.size.width - ART_TABLE_COLS
+        if track is None or room < ART_MIN_COLS or not artwork.available():
+            if panel.has_class('visible'):
+                panel.remove_class('visible')
+            self._art_sig = None
+            return
+        cols = min(room, ART_MAX_COLS)
+        if not panel.has_class('visible'):
+            panel.styles.width = cols
+            panel.add_class('visible')
+            return      # geometry lands on the next layout; fill in on the next tick
+        panel.styles.width = cols
+        img = self.query_one('#art-image', Static)
+        # Measured, not computed: border + padding come from the CSS above, and a
+        # cover one cell too wide would wrap and shear the whole picture. A fresh
+        # resize lands here with last frame's width; the signature catches that on
+        # the next tick.
+        art_cols = img.size.width
+        # 1 padding row above, 3 caption rows below (title can wrap to two).
+        rows = max(0, self.query_one('#main-row', Horizontal).size.height - 4)
+        if art_cols < 2 or rows < 2:
+            return      # layout hasn't settled yet — try again on the next tick
+        sig = (track.get('id') or track.get('url'), art_cols, rows)
+        if sig == self._art_sig:
+            return
+        self._art_sig = sig
+        self.query_one('#art-title', Static).update(
+            _ellipsis(track.get('title') or '', art_cols))
+        self.query_one('#art-artist', Static).update(
+            _ellipsis(track.get('uploader') or '', art_cols))
+        path = artwork.cached(track)
+        if not path:
+            self._fetch_art(track)
+            return      # keep the previous cover up rather than blinking to empty
+        art = artwork.render(path, art_cols, rows)
+        img.update(art if art is not None else '')
+
+    def _fetch_art(self, track) -> None:
+        """Download one cover in the background, then redraw. One flight per
+        track — a failed fetch isn't retried until the track plays again."""
+        key = track.get('id') or track.get('url') or ''
+        if not key or key in self._art_fetching:
+            return
+        self._art_fetching.add(key)
+
+        def _run():
+            got = artwork.fetch(track)
+            self._art_fetching.discard(key)
+            if got:
+                # Force a redraw: the signature already reflects this track.
+                self._art_sig = None
+                self.call_from_thread(self._sync_art_panel)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     # ── Color-wave animation ────────────────────────────────────────────────
     def _sync_animation(self) -> None:

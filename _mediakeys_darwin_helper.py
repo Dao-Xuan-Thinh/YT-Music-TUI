@@ -7,7 +7,8 @@ run loop. The TUI's main thread belongs to Textual's asyncio loop, so an
 in-process integration silently never receives events. Same philosophy as
 the mpv daemon: isolate the OS integration behind a line protocol.
 
-stdin  ← JSON lines {title, artist, duration, position, is_playing}
+stdin  ← JSON lines {title, artist, duration, position, is_playing, artwork}
+         (`artwork` is a local image path, or '' — see artwork.py)
 stdout → event lines: play | pause | toggle_pause | next | previous | stop
 Parent death = stdin EOF → clean exit.
 """
@@ -16,9 +17,11 @@ import json
 import sys
 import threading
 
-from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+from AppKit import NSApplication, NSApplicationActivationPolicyAccessory, NSImage
 from MediaPlayer import (
+    MPMediaItemArtwork,
     MPMediaItemPropertyArtist,
+    MPMediaItemPropertyArtwork,
     MPMediaItemPropertyPlaybackDuration,
     MPMediaItemPropertyTitle,
     MPNowPlayingInfoCenter,
@@ -65,6 +68,32 @@ def _wire_commands():
     cc.stopCommand().addTargetWithHandler_(_handler('stop'))
 
 
+_art_cache = {}   # image path → MPMediaItemArtwork (built once per cover)
+
+
+def _artwork(path):
+    """MPMediaItemArtwork for a local image file, or None. Control Center shows
+    the generic app icon without this — the cover is what makes the entry
+    recognizable next to Music and Spotify."""
+    if not path:
+        return None
+    if path in _art_cache:
+        return _art_cache[path]
+    art = None
+    img = NSImage.alloc().initWithContentsOfFile_(path)
+    if img is not None:
+        try:
+            art = MPMediaItemArtwork.alloc().initWithBoundsSize_requestHandler_(
+                img.size(), lambda size: img)
+        except Exception:
+            # Older PyObjC / AppKit route (deprecated upstream, still present).
+            art = MPMediaItemArtwork.alloc().initWithImage_(img)
+    if len(_art_cache) > 8:
+        _art_cache.clear()
+    _art_cache[path] = art
+    return art
+
+
 def _apply_state(st):
     info = {
         MPMediaItemPropertyTitle: st.get('title') or '',
@@ -73,6 +102,9 @@ def _apply_state(st):
         MPNowPlayingInfoPropertyElapsedPlaybackTime: float(st.get('position') or 0),
         MPNowPlayingInfoPropertyPlaybackRate: 1.0 if st.get('is_playing') else 0.0,
     }
+    art = _artwork(st.get('artwork') or '')
+    if art is not None:
+        info[MPMediaItemPropertyArtwork] = art
     center = MPNowPlayingInfoCenter.defaultCenter()
     center.setNowPlayingInfo_(info)
     center.setPlaybackState_(_PLAYING if st.get('is_playing') else _PAUSED)

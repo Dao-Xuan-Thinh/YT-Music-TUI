@@ -3,11 +3,14 @@ textual>=0.47.0
 mutagen>=1.47.0
 ytmusicapi>=1.12.1
 requests>=2.28
-# optional — OS media keys + now-playing panel (the app runs without them).
-# bootstrap.py treats everything below this marker as nice-to-have.
+# optional — cover art + OS media keys / now-playing panel (the app runs
+# without them). bootstrap.py treats everything below this marker as
+# nice-to-have.
+pillow>=10.0
 pyobjc-framework-MediaPlayer>=10.0 ; sys_platform == 'darwin'
 dbus-fast>=2.0 ; sys_platform == 'linux'
 winrt-runtime>=3.0 ; sys_platform == 'win32'
 winrt-Windows.Media>=3.0 ; sys_platform == 'win32'
 winrt-Windows.Media.Playback>=3.0 ; sys_platform == 'win32'
 winrt-Windows.Foundation>=3.0 ; sys_platform == 'win32'
+winrt-Windows.Storage.Streams>=3.0 ; sys_platform == 'win32'

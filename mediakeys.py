@@ -26,6 +26,7 @@ import os
 import subprocess
 import sys
 import threading
+from urllib.parse import quote
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -59,7 +60,8 @@ class _Base:
             except Exception:
                 pass
 
-    def set_now_playing(self, title, artist, duration, position, is_playing):
+    def set_now_playing(self, title, artist, duration, position, is_playing,
+                        art_path=''):
         raise NotImplementedError
 
     def stop(self):
@@ -86,10 +88,11 @@ class _DarwinBackend(_Base):
         except Exception:
             pass
 
-    def set_now_playing(self, title, artist, duration, position, is_playing):
+    def set_now_playing(self, title, artist, duration, position, is_playing,
+                        art_path=''):
         # Position updates every second; only title/state changes need a full
         # metadata push, but the helper handles per-line updates cheaply.
-        key = (title, artist, int(duration), int(position), is_playing)
+        key = (title, artist, int(duration), int(position), is_playing, art_path)
         if key == self._last:
             return
         self._last = key
@@ -97,6 +100,7 @@ class _DarwinBackend(_Base):
             self._proc.stdin.write(json.dumps({
                 'title': title, 'artist': artist, 'duration': float(duration),
                 'position': float(position), 'is_playing': bool(is_playing),
+                'artwork': art_path or '',
             }) + '\n')
             self._proc.stdin.flush()
         except Exception:
@@ -232,7 +236,8 @@ class _LinuxBackend(_Base):
             def CanControl(self) -> 'b':                   # noqa: F821
                 return True
 
-            def push(self, title, artist, duration, position, is_playing):
+            def push(self, title, artist, duration, position, is_playing,
+                     art_path=''):
                 self.status = 'Playing' if is_playing else 'Paused'
                 self.position_us = int(position * 1e6)
                 self.meta = {
@@ -241,6 +246,10 @@ class _LinuxBackend(_Base):
                     'xesam:title': Variant('s', title or ''),
                     'xesam:artist': Variant('as', [artist or '']),
                 }
+                if art_path:
+                    # MPRIS wants a URI; the cover is already a local file.
+                    self.meta['mpris:artUrl'] = Variant(
+                        's', 'file://' + quote(art_path))
                 self.emit_properties_changed(
                     {'PlaybackStatus': self.status, 'Metadata': self.meta})
 
@@ -276,14 +285,15 @@ class _LinuxBackend(_Base):
         except Exception:
             self._ready.set()
 
-    def set_now_playing(self, title, artist, duration, position, is_playing):
-        key = (title, artist, is_playing)
+    def set_now_playing(self, title, artist, duration, position, is_playing,
+                        art_path=''):
+        key = (title, artist, is_playing, art_path)
         emit_meta = key != self._last
         self._last = key
         p = self._player
         if emit_meta:
             self._loop.call_soon_threadsafe(
-                p.push, title, artist, duration, position, is_playing)
+                p.push, title, artist, duration, position, is_playing, art_path)
         else:
             # Position-only tick — no PropertiesChanged storm.
             p.position_us = int(position * 1e6)
@@ -319,8 +329,9 @@ class _WindowsBackend(_Base):
         if event:
             self._dispatch(event)
 
-    def set_now_playing(self, title, artist, duration, position, is_playing):
-        key = (title, artist, is_playing)
+    def set_now_playing(self, title, artist, duration, position, is_playing,
+                        art_path=''):
+        key = (title, artist, is_playing, art_path)
         if key == self._last:
             return
         self._last = key
@@ -331,7 +342,22 @@ class _WindowsBackend(_Base):
             du.type = self._Type.MUSIC
             du.music_properties.title = title or ''
             du.music_properties.artist = artist or ''
+            if art_path:
+                self._set_thumbnail(du, art_path)
             du.update()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _set_thumbnail(du, art_path):
+        """Cover for the SMTC flyout. Its own try/except: the Storage.Streams
+        package is a separate wheel, and a missing cover must never cost us the
+        title/artist update."""
+        try:
+            from winrt.windows.foundation import Uri
+            from winrt.windows.storage.streams import RandomAccessStreamReference
+            du.thumbnail = RandomAccessStreamReference.create_from_uri(
+                Uri('file:///' + art_path.replace('\\', '/').lstrip('/')))
         except Exception:
             pass
 

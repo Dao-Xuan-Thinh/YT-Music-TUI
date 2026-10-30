@@ -243,6 +243,35 @@ owns `#now-playing`, so `_update_player_bar` skips that widget (avoids a 1 Hz fl
 
 `on_mount()` spawns a background thread to call `_ensure_mpv_running()` early. This avoids the 4.5s startup delay on first play. Race condition prevented by `_start_lock` in `_ensure_mpv_running()`.
 
+### Cover art: one cache, two consumers, and a cell is two pixels
+
+`artwork.py` downloads a track's cover ONCE into `.art-cache/` (keyed on the
+URL) and both consumers read that same file: the TUI side panel renders it,
+and `mediakeys.set_now_playing(..., art_path)` hands the path to the OS panel
+(macOS `MPMediaItemArtwork`, MPRIS `mpris:artUrl`, SMTC `display_updater
+.thumbnail`). So the download is driven by **playback**, not by the panel —
+`_play_queue_item` kicks it off whenever a media-keys backend exists, because
+Control Center is visible even when the terminal is too narrow for the panel.
+
+- **A cell holds two pixels.** The render uses `▀` with the top pixel as the
+  foreground and the bottom one as the background, which cancels out the ~1:2
+  cell aspect ratio: `cols x rows` cells show a `cols x 2*rows` pixel grid at
+  its true shape. `fit()` is the only place that math lives.
+- **Measure, don't compute, the panel's inner width** (`#art-image`.size.width).
+  Border + padding come from CSS; a cover one cell too wide wraps, and a
+  wrapped half-block row shears the whole picture diagonally.
+- **The panel never steals width from the table.** It appears only above
+  `ART_TABLE_COLS` (the table's own columns add up to 82) and hides itself on
+  the way back down, so a normal 80-column terminal is untouched.
+- **Pillow is optional** (below the `# optional` marker, like the media-key
+  deps). Without it `artwork.available()` is False, the panel never shows, and
+  the OS panel still gets its cover — fetching needs no decoder.
+- YouTube's per-video image is always 4:3, so a 16:9 frame arrives letterboxed
+  and a square cover pillarboxed; `_autocrop` trims a uniform border, and
+  ignores a crop that would eat most of the picture (a dark cover isn't a
+  border). ytmusicapi hands out 120x120 thumbnails — `url_for` rewrites the
+  `=w120-h120` suffix Google honors into `=w544-h544` instead of upscaling mud.
+
 ### OS media keys: play and pause are directional, never a toggle
 
 `mediakeys.py` maps the system's transport buttons to app callbacks. Play and
@@ -347,6 +376,7 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 | `library.py` | JSON persistence: liked, playlists, pinned folders, recent, sessions |
 | `offline.py` | Local audio folder scanner (mutagen tags) |
 | `bootstrap.py` | First-boot dependency install (stdlib only; runs before main.py's imports) |
+| `artwork.py` | Cover art: download + disk cache, half-block terminal render (needs the optional Pillow) |
 | `mediakeys.py` | OS media keys + now-playing panel: macOS helper process / MPRIS2 / SMTC |
 | `_mediakeys_darwin_helper.py` | macOS-only subprocess owning the Cocoa run loop for MPRemoteCommandCenter |
 | `stats.py` | Listen stats: local JSON + per-device gist sync (schema shared with the iOS app) |

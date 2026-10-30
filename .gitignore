@@ -20,3 +20,6 @@ ios/
 
 # dependency check stamp (bootstrap.py)
 .deps-stamp
+
+# downloaded cover art (artwork.py)
+.art-cache/
