@@ -265,11 +265,12 @@ Control Center is visible even when the terminal is too narrow for the panel.
 - **Three renderers, chosen by `config.art_style`.** Each colors per cell, and
   `fit()` is the only place the aspect math lives — it returns CELLS, and each
   renderer resizes to its own subpixel grid:
-  - `braille` (the default): 2x4 dots per cell, so eight times the detail of
-    the ramp. The dots are on/off, so shading comes from Floyd-Steinberg
-    dithering (`convert('1')`) and color from the cell average. Resizes to
+  - `ascii` (the default): one glyph per pixel from `_RAMP`. Resizes to
+    `cols x rows`.
+  - `braille`: 2x4 dots per cell, so eight times the detail of the ramp. The
+    dots are on/off, so shading comes from Floyd-Steinberg dithering
+    (`convert('1')`) and color from the cell average. Resizes to
     `cols*2 x rows*4`.
-  - `ascii`: one glyph per pixel from `_RAMP`. Resizes to `cols x rows`.
   - `blocks`: `▀` with the top pixel as foreground and the bottom as
     background — two pixels per cell, closer to a photo. Resizes to
     `cols x 2*rows`.
@@ -412,7 +413,7 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 | `library.py` | JSON persistence: liked, playlists, pinned folders, recent, sessions |
 | `offline.py` | Local audio folder scanner (mutagen tags) |
 | `bootstrap.py` | First-boot dependency install (stdlib only; runs before main.py's imports) |
-| `artwork.py` | Cover art: download + disk cache, half-block terminal render (needs the optional Pillow) |
+| `artwork.py` | Cover art: download + disk cache, ASCII / braille / half-block terminal render (needs the optional Pillow) |
 | `mediakeys.py` | OS media keys + now-playing panel: macOS helper process / MPRIS2 / SMTC |
 | `_mediakeys_darwin_helper.py` | macOS-only subprocess owning the Cocoa run loop for MPRemoteCommandCenter |
 | `stats.py` | Listen stats: local JSON + per-device gist sync (schema shared with the iOS app) |

@@ -5,13 +5,14 @@ panel.
 Two jobs, one disk cache:
 - `fetch(track)` downloads the cover once per track id into `.art-cache/` and
   returns the local path (blocking — callers run it on a daemon thread).
-- `render(path, cols, rows)` turns that file into terminal cells.
-
-Rendering uses HALF BLOCKS: one `▀` per cell carries two pixels — the top one
-as the foreground color, the bottom one as the background — so a cell is square
-even though a terminal cell is roughly twice as tall as it is wide. That
-doubles the vertical resolution for free and is why the result reads as an
-image rather than as text. `ascii_art()` is the no-color fallback.
+- `render(path, cols, rows, style)` turns that file into terminal cells, in
+  one of three styles (config `art_style`):
+  - `ascii` (default): one glyph per pixel from a brightness ramp, each
+    colored by its pixel.
+  - `braille`: 2x4 dots per cell, eight times the detail, shaded by
+    dithering.
+  - `blocks`: one `▀` per cell carrying two pixels (top = foreground,
+    bottom = background), the closest to a photo.
 
 Pillow is an OPTIONAL dependency (requirements.txt, below the `# optional`
 marker). Without it `available()` is False and every caller simply shows
@@ -124,7 +125,7 @@ def fit(img_w: int, img_h: int, max_cols: int, max_rows: int):
     return cols, rows
 
 
-def render(path: str, max_cols: int, max_rows: int, style: str = 'braille'):
+def render(path: str, max_cols: int, max_rows: int, style: str = 'ascii'):
     """A Rich `Text` of the cover, at most `max_cols` x `max_rows` cells, in one
     of the three STYLES. Returns None when the image can't be read (missing
     Pillow, bad file)."""
@@ -282,7 +283,7 @@ if __name__ == '__main__':   # python artwork.py <url-or-file> [cols] [rows] [st
     arg = sys.argv[1] if len(sys.argv) > 1 else ''
     cols = int(sys.argv[2]) if len(sys.argv) > 2 else 40
     rows = int(sys.argv[3]) if len(sys.argv) > 3 else 20
-    style = sys.argv[4] if len(sys.argv) > 4 else 'braille'
+    style = sys.argv[4] if len(sys.argv) > 4 else 'ascii'
     src = arg if os.path.isfile(arg) else fetch({'thumbnail': arg})
     if not src:
         print('could not get an image from:', arg)

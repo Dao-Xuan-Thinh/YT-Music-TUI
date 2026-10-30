@@ -544,7 +544,7 @@ class KeybindingsScreen(ModalScreen):
 CHANGELOG = [
     ('1.10', '2026-10-30 11:35', [
         'Cover art: a wide terminal now shows covers down the right side — the playing track up top, whatever the cursor is on below',
-        'Covers are drawn in braille dots (2x4 per character, eight times the detail of a text ramp); art_style in config.json also takes "ascii" or "blocks"',
+        'Covers are drawn as colored ASCII art; art_style in config.json also takes "braille" (2x4 dots per character, eight times the detail) or "blocks" (half blocks, closer to a photo)',
         'The playing track now lists its album, release year and play count under the cover, plus your own line: how many times you played it and for how long (across every device), with a heart if you liked it',
         'The panel appears only when the results table can keep its full width, and hides itself again when the window shrinks',
         'The cover also reaches the system now-playing panel (Control Center / MPRIS / Windows), which used to show a generic icon',

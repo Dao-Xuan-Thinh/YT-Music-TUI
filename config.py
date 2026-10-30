@@ -38,14 +38,14 @@ _DEFAULTS = {
     # the (3-5s, network) re-verify while this is fresh — the browser-jar
     # re-read still happens lazily, and feed errors still surface expiry.
     'auth_verified_ts':    0.0,
-    # Cover art in the side panel: 'braille' (2x4 dots per cell — the most
-    # detail text can hold), 'ascii' (glyph ramp) or 'blocks' (half blocks,
+    # Cover art in the side panel: 'ascii' (glyph ramp), 'braille' (2x4 dots
+    # per cell — the most detail text can hold) or 'blocks' (half blocks,
     # closer to a photo than to text art). All three color per cell.
-    'art_style':           'braille',
+    'art_style':           'ascii',
 }
 
 
-ART_STYLES = ('braille', 'ascii', 'blocks')
+ART_STYLES = ('ascii', 'braille', 'blocks')
 
 
 def _expand(path):
@@ -155,12 +155,12 @@ class Config:
 
     @property
     def art_style(self):
-        v = self._data.get('art_style', 'braille')
-        return v if v in ART_STYLES else 'braille'
+        v = self._data.get('art_style', 'ascii')
+        return v if v in ART_STYLES else 'ascii'
 
     @art_style.setter
     def art_style(self, value):
-        self._data['art_style'] = value if value in ART_STYLES else 'braille'
+        self._data['art_style'] = value if value in ART_STYLES else 'ascii'
         self.save()
 
     @property
