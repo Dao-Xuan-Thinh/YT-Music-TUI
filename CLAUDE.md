@@ -262,18 +262,33 @@ it, and `mediakeys.set_now_playing(..., art_path)` hands the path to the OS pane
 `_play_queue_item` kicks it off whenever a media-keys backend exists, because
 Control Center is visible even when the terminal is too narrow for the panel.
 
-- **Two renderers, chosen by `config.art_style`.** `ascii` (the default) maps
-  each pixel to a glyph from `_RAMP`, colored by that pixel; `blocks` uses `▀`
-  with the top pixel as the foreground and the bottom one as the background.
-  Blocks therefore hold **two pixels per cell**, which cancels out the ~1:2
-  cell aspect ratio — `fit()` is the only place that math lives, and it returns
-  cells, so the blocks path resizes to `cols x 2*rows` and ASCII to `cols x rows`.
-- **ASCII needs its contrast stretched** (`autocontrast(cutoff=12)`). Most
-  covers live in the bottom third of the luminance scale and map to nothing but
-  `.` and `:` — noise, not a picture. Equalizing the histogram reads better
-  still on a flat cover but blows a letterboxed one into a solid block of `@`.
+- **Three renderers, chosen by `config.art_style`.** Each colors per cell, and
+  `fit()` is the only place the aspect math lives — it returns CELLS, and each
+  renderer resizes to its own subpixel grid:
+  - `braille` (the default): 2x4 dots per cell, so eight times the detail of
+    the ramp. The dots are on/off, so shading comes from Floyd-Steinberg
+    dithering (`convert('1')`) and color from the cell average. Resizes to
+    `cols*2 x rows*4`.
+  - `ascii`: one glyph per pixel from `_RAMP`. Resizes to `cols x rows`.
+  - `blocks`: `▀` with the top pixel as foreground and the bottom as
+    background — two pixels per cell, closer to a photo. Resizes to
+    `cols x 2*rows`.
+- **The luminance must be stretched first** (`_stretch`, `autocontrast(cutoff=12)`).
+  Most covers live in the bottom third of the scale and map to nothing but `.`
+  and `:` (or a sparse dot field) — noise, not a picture. Equalizing the
+  histogram reads better still on a flat cover but blows a letterboxed one into
+  a solid block.
+- **Braille needs a font that has U+28xx.** Most programming fonts do
+  (JetBrains Mono, Nerd Fonts); one that doesn't shows tofu, and `art_style`
+  is the way out.
 - **The cursor half is debounced** (`_cursor_since`, 0.3 s): without it, holding
   ↓ fires one download per row passed.
+- **The detail lines** (album, release year, play count) come from
+  `youtube.ytm_track_details`, which needs TWO ytmusicapi calls because no
+  single endpoint carries all of it: `get_watch_playlist` has the album and the
+  year, `get_song` the play count. Cached per track id in `App._details`,
+  including the empty result — a local file or a dead id must not re-query
+  every time it comes up. Daemon thread only (it takes `_ytm_lock`).
 - **Measure, don't compute, the panel's inner width** (`#art-image`.size.width).
   Border + padding come from CSS; a cover one cell too wide wraps, and a
   wrapped half-block row shears the whole picture diagonally.

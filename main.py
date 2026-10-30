@@ -289,6 +289,15 @@ def _bar(pos, dur, width=40):
     return '█' * filled + '─' * (width - filled)
 
 
+def _compact(n):
+    """4106179 -> '4.1M'."""
+    for cut, suffix in ((1_000_000_000, 'B'), (1_000_000, 'M'), (1_000, 'K')):
+        if n >= cut:
+            v = n / cut
+            return f'{v:.1f}{suffix}' if v < 10 else f'{v:.0f}{suffix}'
+    return str(n)
+
+
 def _art_key(track):
     """Identity of a track for cover caching/signatures."""
     if not track:
@@ -526,8 +535,10 @@ class KeybindingsScreen(ModalScreen):
 # runtime `git log`) so it works on non-git installs. The mobile app mirrors
 # this list so the desktop history is viewable there too.
 CHANGELOG = [
-    ('1.10', '2026-10-30 11:20', [
-        'Cover art: a wide terminal now shows covers down the right side — the playing track up top, whatever the cursor is on below, drawn as colored ASCII (set art_style to "blocks" in config.json for the half-block look)',
+    ('1.10', '2026-10-30 11:35', [
+        'Cover art: a wide terminal now shows covers down the right side — the playing track up top, whatever the cursor is on below',
+        'Covers are drawn in braille dots (2x4 per character, eight times the detail of a text ramp); art_style in config.json also takes "ascii" or "blocks"',
+        'The playing track now lists its album, release year and play count under the cover',
         'The panel appears only when the results table can keep its full width, and hides itself again when the window shrinks',
         'The cover also reaches the system now-playing panel (Control Center / MPRIS / Windows), which used to show a generic icon',
         'mpv no longer leaves a daemon running after a crash, a kill or an update restart — each launch clears out whatever earlier runs left behind (66 of them had piled up here)',
@@ -1919,6 +1930,8 @@ class YTMApp(App):
     #art-image, #art-cursor-image { height: auto; text-align: center; }
     #art-title { height: auto; color: $text; text-style: bold; margin-top: 1; }
     #art-artist { height: auto; color: $text-muted; }
+    #art-album { height: auto; color: $text-muted; text-style: italic; }
+    #art-facts { height: auto; color: $accent; }
     #art-cursor-title { height: auto; color: $text-muted; margin-top: 1; }
 
     #player-bar {
@@ -2048,6 +2061,8 @@ class YTMApp(App):
         self._art_fetching = set()
         self._cursor_track = None     # row under the table cursor (lower half)
         self._cursor_since = 0.0      # when it landed there — debounces fetches
+        self._details = {}            # track key -> {album, year, views} (cached)
+        self._details_fetching = set()
         # Color-wave animation state (see _sync_animation / _animate_tick).
         self._anim_frame = 0
         self._anim_timer = None          # active Timer while the wave is running
@@ -2090,6 +2105,8 @@ class YTMApp(App):
                     yield Static('', id='art-image')
                     yield Static('', id='art-title')
                     yield Static('', id='art-artist')
+                    yield Static('', id='art-album')
+                    yield Static('', id='art-facts')
                 with Vertical(id='art-cursor'):
                     yield Static('', id='art-cursor-image')
                     yield Static('', id='art-cursor-title')
@@ -3047,14 +3064,16 @@ class YTMApp(App):
         # A fresh resize lands here with last frame's width; the signature
         # catches that on the next tick.
         art_cols = img.size.width
-        # Caption rows come off each section: 3 up top (title can wrap), 2 below.
-        now_rows = max(0, self.query_one('#art-now', Vertical).size.height - 3)
+        # Caption rows come off each section: 5 up top (title, artist, album,
+        # facts, and the margin above them), 2 below.
+        now_rows = max(0, self.query_one('#art-now', Vertical).size.height - 5)
         cur_rows = max(0, self.query_one('#art-cursor', Vertical).size.height - 2)
         if art_cols < 2:
             return      # layout hasn't settled yet — try again on the next tick
         style = self._config.art_style
+        details = self._details.get(_art_key(playing)) if playing else None
         sig = (_art_key(playing), _art_key(cursor), art_cols,
-               now_rows, cur_rows, style)
+               now_rows, cur_rows, style, bool(details))
         if sig == self._art_sig:
             return
         self._art_sig = sig
@@ -3062,6 +3081,62 @@ class YTMApp(App):
                          art_cols, now_rows, style)
         self._draw_cover(cursor, '#art-cursor-image', '#art-cursor-title', None,
                          art_cols, cur_rows, style)
+        self._draw_details(playing, details, art_cols)
+
+    def _draw_details(self, track, details, cols) -> None:
+        """Album line + a 'year · length · plays' line under the playing track.
+        `details` is None until the lookup lands; the two lines simply stay
+        empty until then, and the lookup is fired here."""
+        album = self.query_one('#art-album', Static)
+        facts = self.query_one('#art-facts', Static)
+        if track is None:
+            album.update('')
+            facts.update('')
+            return
+        if details is None:
+            self._fetch_details(track)
+            details = {}
+        album.update(_ellipsis(details.get('album') or '', cols))
+        bits = []
+        if details.get('year'):
+            bits.append(details['year'])
+        if track.get('duration'):
+            bits.append(_fmt(track['duration']))
+        if details.get('views'):
+            bits.append(f'{_compact(details["views"])} plays')
+        facts.update(_ellipsis('  ·  '.join(bits), cols))
+
+    def _fetch_details(self, track) -> None:
+        """Look up album / release year / play count once per track, off the UI
+        thread. A track with nothing to find caches an empty dict, so a local
+        file or a dead id isn't retried every time it comes up."""
+        key = _art_key(track)
+        vid = track.get('id') or ''
+        if not key or key in self._details or key in self._details_fetching:
+            return
+        if not vid or not (track.get('url') or '').startswith('http'):
+            self._details[key] = {}
+            return
+        self._details_fetching.add(key)
+
+        def _run():
+            try:
+                got = youtube.ytm_track_details(vid)
+            except Exception:
+                got = {}
+            self._details_fetching.discard(key)
+            self._details[key] = got
+
+            def _apply():
+                self._art_sig = None
+                self._sync_art_panel()
+
+            try:
+                self.call_from_thread(_apply)
+            except Exception:
+                pass
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _draw_cover(self, track, img_id, title_id, artist_id, cols, rows,
                     style) -> None:
@@ -3090,7 +3165,7 @@ class YTMApp(App):
             else:
                 self._art_sig = None        # come back for it on the next tick
             return      # keep the previous cover up rather than blinking to empty
-        art = artwork.render(path, cols, rows, ascii_only=(style == 'ascii'))
+        art = artwork.render(path, cols, rows, style)
         img.update(art if art is not None else '')
 
     def _fetch_art(self, track) -> None:

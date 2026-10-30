@@ -703,6 +703,34 @@ def ytm_radio(video_id, limit=25):
     return out
 
 
+def ytm_track_details(video_id):
+    """Extra metadata for one track → {'album', 'year', 'views'}; missing keys
+    simply stay out. Two calls, because no single endpoint has all of it:
+    get_watch_playlist carries the album and the release year, get_song the
+    play count. Blocking + network — daemon threads only."""
+    out = {}
+    try:
+        with _ytm_lock:
+            wp = _get_ytm().get_watch_playlist(videoId=video_id, limit=1)
+        t = (wp.get('tracks') or [{}])[0]
+        album = (t.get('album') or {}).get('name') or ''
+        if album:
+            out['album'] = album
+        if t.get('year'):
+            out['year'] = str(t['year'])
+    except Exception:
+        pass
+    try:
+        with _ytm_lock:
+            vd = (_get_ytm().get_song(video_id) or {}).get('videoDetails') or {}
+        views = int(vd.get('viewCount') or 0)
+        if views:
+            out['views'] = views
+    except Exception:
+        pass
+    return out
+
+
 def ytm_lyrics(video_id):
     """Lyrics for a video, or None if unavailable. Requests timestamps so playback can
     follow along when the song has synced lyrics.

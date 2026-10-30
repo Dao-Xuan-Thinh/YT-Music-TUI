@@ -124,12 +124,13 @@ def fit(img_w: int, img_h: int, max_cols: int, max_rows: int):
     return cols, rows
 
 
-def render(path: str, max_cols: int, max_rows: int, ascii_only: bool = False):
-    """A Rich `Text` of the cover, at most `max_cols` x `max_rows` cells.
-    Returns None when the image can't be read (missing Pillow, bad file)."""
+def render(path: str, max_cols: int, max_rows: int, style: str = 'braille'):
+    """A Rich `Text` of the cover, at most `max_cols` x `max_rows` cells, in one
+    of the three STYLES. Returns None when the image can't be read (missing
+    Pillow, bad file)."""
     if not path or max_cols < 2 or max_rows < 2:
         return None
-    key = (path, max_cols, max_rows, ascii_only)
+    key = (path, max_cols, max_rows, style)
     with _render_lock:
         hit = _render_cache.get(key)
     if hit is not None:
@@ -146,7 +147,9 @@ def render(path: str, max_cols: int, max_rows: int, ascii_only: bool = False):
             cols, rows = fit(im.width, im.height, max_cols, max_rows)
             if cols < 2 or rows < 1:
                 return None
-            if ascii_only:
+            if style == 'braille':
+                out = _braille_text(Image, im, cols, rows)
+            elif style == 'ascii':
                 out = _ascii_text(Image, im, cols, rows)
             else:
                 small = im.resize((cols, rows * 2), Image.LANCZOS)
@@ -195,6 +198,56 @@ def _autocrop(im):
         return im
 
 
+# Braille cell: 2 dots across, 4 down, and the bit for each is fixed by Unicode
+# (dots 1-6 came first, 7 and 8 were bolted on underneath for the 8-dot sets) —
+# which is why the bottom row jumps to 0x40/0x80 instead of continuing the run.
+_BRAILLE_BITS = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
+
+
+def _braille_text(Image, im, cols: int, rows: int):
+    """The most detail a terminal cell can hold: 2x4 dots instead of one
+    character, so a cover gets EIGHT times the resolution of the ASCII ramp.
+    The dots are either on or off, so the shading comes from Floyd-Steinberg
+    dithering (what `convert('1')` does by default) and the color from each
+    cell's average — one color per cell is all a character can carry."""
+    from rich.style import Style
+    from rich.text import Text
+    small = im.resize((cols * 2, rows * 4), Image.LANCZOS)
+    color = small.resize((cols, rows), Image.LANCZOS).load()
+    dots = _stretch(small.convert('L')).convert('1').load()
+    out = Text(no_wrap=True, overflow='crop')
+    for y in range(rows):
+        for x in range(cols):
+            bits = 0
+            for dy in range(4):
+                for dx in range(2):
+                    if dots[x * 2 + dx, y * 4 + dy]:
+                        bits |= _BRAILLE_BITS[dy][dx]
+            r, g, b = _lift(color[x, y])
+            out.append(chr(0x2800 + bits), Style(color=f'#{r:02x}{g:02x}{b:02x}'))
+        if y != rows - 1:
+            out.append('\n')
+    return out
+
+
+def _lift(rgb):
+    """Push a pixel toward full brightness. A glyph inks maybe a third of its
+    cell, so a cover drawn in its own colors reads far darker than the image."""
+    r, g, b = rgb
+    top = max(r, g, b) or 1
+    return tuple(min(255, c * 255 // top) for c in (r, g, b))
+
+
+def _stretch(lum):
+    """Spread the luminance across the full range. Most covers sit in the
+    bottom third of the scale, and mapped straight they come out as nothing but
+    '.' and ':' — noise, not a picture. The cutoff is deliberately steep:
+    clipping the darkest and brightest 12% is what makes shapes read at
+    40-odd characters across."""
+    from PIL import ImageOps
+    return ImageOps.autocontrast(lum, cutoff=12)
+
+
 # Dark → light: the glyph ramp for the ASCII renderer. Each character still
 # carries its pixel's color, so a cover reads as text art without going gray.
 _RAMP = ' .:-=+*#%@'
@@ -203,27 +256,14 @@ _RAMP = ' .:-=+*#%@'
 def _ascii_text(Image, im, cols: int, rows: int):
     from rich.style import Style
     from rich.text import Text
-    from PIL import ImageOps
     small = im.resize((cols, rows), Image.LANCZOS)
     px = small.load()
-    # Spread the luminance across the whole ramp before picking glyphs. Most
-    # covers sit in the bottom third of the scale, and mapped straight they
-    # come out as nothing but '.' and ':' — noise, not a picture. The cutoff
-    # is deliberately steep: clipping the darkest and brightest 12% is what
-    # makes the shapes read at 40-odd characters across. (Equalizing the
-    # histogram instead looks better on a flat cover and blows out a
-    # letterboxed one into a solid block of '@'.)
-    gray = ImageOps.autocontrast(small.convert('L'), cutoff=12).load()
+    gray = _stretch(small.convert('L')).load()
     out = Text(no_wrap=True, overflow='crop')
     last = len(_RAMP) - 1
     for y in range(rows):
         for x in range(cols):
-            r, g, b = px[x, y]
-            # Lift the color: a glyph covers maybe a third of its cell, so the
-            # cover reads far darker than the image unless each pixel is pushed
-            # toward full brightness.
-            top = max(r, g, b) or 1
-            r, g, b = (min(255, c * 255 // top) for c in (r, g, b))
+            r, g, b = _lift(px[x, y])
             out.append(_RAMP[gray[x, y] * last // 255],
                        Style(color=f'#{r:02x}{g:02x}{b:02x}'))
         if y != rows - 1:
@@ -237,14 +277,15 @@ def clear_cache() -> None:
         _render_cache.clear()
 
 
-if __name__ == '__main__':   # python artwork.py <url-or-file> [cols] [rows]
+if __name__ == '__main__':   # python artwork.py <url-or-file> [cols] [rows] [style]
     import sys
     arg = sys.argv[1] if len(sys.argv) > 1 else ''
     cols = int(sys.argv[2]) if len(sys.argv) > 2 else 40
     rows = int(sys.argv[3]) if len(sys.argv) > 3 else 20
+    style = sys.argv[4] if len(sys.argv) > 4 else 'braille'
     src = arg if os.path.isfile(arg) else fetch({'thumbnail': arg})
     if not src:
         print('could not get an image from:', arg)
         raise SystemExit(1)
     from rich.console import Console
-    Console().print(render(src, cols, rows))
+    Console().print(render(src, cols, rows, style))
