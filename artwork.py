@@ -173,37 +173,59 @@ def render(path: str, max_cols: int, max_rows: int, ascii_only: bool = False):
 def _autocrop(im):
     """Trim a uniform border. YouTube's per-video image is always 4:3, so a
     16:9 frame arrives letterboxed and a square cover arrives pillarboxed —
-    drawn as-is, the panel would be half black bars. A crop that would eat
-    most of the picture is ignored (a genuinely dark cover isn't a border)."""
+    drawn as-is, the panel would be half black bars. Each side is measured on
+    its own, because a cover usually has bars on one axis only, and a crop that
+    would eat most of the picture is ignored (a dark cover isn't a border)."""
     try:
         from PIL import Image, ImageChops
-        bg = Image.new('RGB', im.size, im.getpixel((0, 0)))
-        mask = ImageChops.difference(im, bg).convert('L').point(
-            lambda v: 255 if v > 18 else 0)
-        box = mask.getbbox()
-        if not box:
-            return im
-        w, h = box[2] - box[0], box[3] - box[1]
-        if w * h < im.width * im.height * 0.4:
-            return im
-        return im.crop(box)
+        for corner in ((0, 0), (im.width - 1, im.height - 1)):
+            bg = Image.new('RGB', im.size, im.getpixel(corner))
+            mask = ImageChops.difference(im, bg).convert('L').point(
+                lambda v: 255 if v > 10 else 0)
+            box = mask.getbbox()
+            if not box:
+                continue
+            w, h = box[2] - box[0], box[3] - box[1]
+            if w * h < im.width * im.height * 0.15:
+                continue    # that's not a border, that's the whole picture
+            if w < im.width or h < im.height:
+                im = im.crop(box)
+        return im
     except Exception:
         return im
 
 
-# Dark → light. Doubles as the no-color fallback and as proof the panel works
-# on a terminal that can't do 24-bit color.
+# Dark → light: the glyph ramp for the ASCII renderer. Each character still
+# carries its pixel's color, so a cover reads as text art without going gray.
 _RAMP = ' .:-=+*#%@'
 
 
 def _ascii_text(Image, im, cols: int, rows: int):
+    from rich.style import Style
     from rich.text import Text
-    gray = im.resize((cols, rows), Image.LANCZOS).convert('L')
-    px = gray.load()
+    from PIL import ImageOps
+    small = im.resize((cols, rows), Image.LANCZOS)
+    px = small.load()
+    # Spread the luminance across the whole ramp before picking glyphs. Most
+    # covers sit in the bottom third of the scale, and mapped straight they
+    # come out as nothing but '.' and ':' — noise, not a picture. The cutoff
+    # is deliberately steep: clipping the darkest and brightest 12% is what
+    # makes the shapes read at 40-odd characters across. (Equalizing the
+    # histogram instead looks better on a flat cover and blows out a
+    # letterboxed one into a solid block of '@'.)
+    gray = ImageOps.autocontrast(small.convert('L'), cutoff=12).load()
     out = Text(no_wrap=True, overflow='crop')
     last = len(_RAMP) - 1
     for y in range(rows):
-        out.append(''.join(_RAMP[px[x, y] * last // 255] for x in range(cols)))
+        for x in range(cols):
+            r, g, b = px[x, y]
+            # Lift the color: a glyph covers maybe a third of its cell, so the
+            # cover reads far darker than the image unless each pixel is pushed
+            # toward full brightness.
+            top = max(r, g, b) or 1
+            r, g, b = (min(255, c * 255 // top) for c in (r, g, b))
+            out.append(_RAMP[gray[x, y] * last // 255],
+                       Style(color=f'#{r:02x}{g:02x}{b:02x}'))
         if y != rows - 1:
             out.append('\n')
     return out

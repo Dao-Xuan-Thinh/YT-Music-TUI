@@ -38,6 +38,9 @@ _DEFAULTS = {
     # the (3-5s, network) re-verify while this is fresh — the browser-jar
     # re-read still happens lazily, and feed errors still surface expiry.
     'auth_verified_ts':    0.0,
+    # Cover art in the side panel: 'ascii' (glyph ramp, colored per pixel) or
+    # 'blocks' (half blocks — closer to a photo, less like text art).
+    'art_style':           'ascii',
 }
 
 
@@ -144,6 +147,16 @@ class Config:
     @account_name.setter
     def account_name(self, name):
         self._data['account_name'] = name or ''
+        self.save()
+
+    @property
+    def art_style(self):
+        v = self._data.get('art_style', 'ascii')
+        return v if v in ('ascii', 'blocks') else 'ascii'
+
+    @art_style.setter
+    def art_style(self, value):
+        self._data['art_style'] = value if value in ('ascii', 'blocks') else 'ascii'
         self.save()
 
     @property

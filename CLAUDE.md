@@ -145,10 +145,18 @@ the Windows FileIO lock contention.
 ### mpv IPC endpoint argument
 
 `--input-ipc-server={_IPC_ARG}` where `_IPC_ARG` is per-process and per-OS (`player.py`):
-- **Windows:** short name `ytm-tui-<pid>` → mpv creates `\\.\pipe\ytm-tui-<pid>`; Python connects via that full pipe path.
-- **Unix:** a filesystem path `/tmp/ytm-tui-<pid>.sock` → mpv creates the AF_UNIX socket; Python `connect()`s to that path.
+- **Windows:** short name `ytm-tui-<pid>-<nonce>` → mpv creates `\\.\pipe\<name>`; Python connects via that full pipe path.
+- **Unix:** a filesystem path `/tmp/ytm-tui-<pid>-<nonce>.sock` → mpv creates the AF_UNIX socket; Python `connect()`s to that path.
 
-The `<pid>` suffix makes the endpoint unique per run so a new launch never connects to a stale `--idle` daemon (that bug caused silent no-audio).
+The suffix makes the endpoint unique per run so a new launch never connects to a stale `--idle` daemon (that bug caused silent no-audio). **The pid alone was not unique:** the updater re-execs in place, so the next run has the SAME pid and collided with the daemon the old one left behind — hence `_RUN_NONCE`.
+
+### mpv daemons outlive the app, and publish their own now-playing entry
+
+`--idle=yes` is what keeps mpv between tracks, and nothing in the OS ties a child to its parent: a crash, a `kill -9`, a closed terminal or an in-place re-exec all orphan the daemon, and it keeps running. They pile up — a real case had **66 of them**, the oldest five days old, several from a single run.
+
+`player._sweep_orphans()` runs in a background thread at `Player.__init__`: it lists live mpv, reads the pid back out of each one's `--input-ipc-server` name, and kills only those whose owner is gone (plus our own pid under a different nonce — the re-exec case). A daemon whose owner is still alive belongs to a second running instance and is left alone. It is never a pattern kill: every pid comes out of our own endpoint name. `atexit` also calls `_shutdown_mpv` as a last line of defence.
+
+Each daemon also published **its own entry** to the system now-playing list, named after the socket (`mpv-55554944…`), which both cluttered Control Center and answered the media keys behind the app's back. `--media-controls=no` turns that off — but an mpv too old to know the option **exits** instead of ignoring it, so `_supports_media_controls()` probes once with `mpv --media-controls=no --version` before it's ever passed.
 
 ### mpv itself may not be on PATH
 
@@ -243,20 +251,29 @@ owns `#now-playing`, so `_update_player_bar` skips that widget (avoids a 1 Hz fl
 
 `on_mount()` spawns a background thread to call `_ensure_mpv_running()` early. This avoids the 4.5s startup delay on first play. Race condition prevented by `_start_lock` in `_ensure_mpv_running()`.
 
-### Cover art: one cache, two consumers, and a cell is two pixels
+### Cover art: one cache, three consumers, and a cell is two pixels
 
 `artwork.py` downloads a track's cover ONCE into `.art-cache/` (keyed on the
-URL) and both consumers read that same file: the TUI side panel renders it,
-and `mediakeys.set_now_playing(..., art_path)` hands the path to the OS panel
+URL) and every consumer reads that same file: the side panel's upper section
+(the playing track) and lower section (the row under the table cursor) render
+it, and `mediakeys.set_now_playing(..., art_path)` hands the path to the OS panel
 (macOS `MPMediaItemArtwork`, MPRIS `mpris:artUrl`, SMTC `display_updater
 .thumbnail`). So the download is driven by **playback**, not by the panel —
 `_play_queue_item` kicks it off whenever a media-keys backend exists, because
 Control Center is visible even when the terminal is too narrow for the panel.
 
-- **A cell holds two pixels.** The render uses `▀` with the top pixel as the
-  foreground and the bottom one as the background, which cancels out the ~1:2
-  cell aspect ratio: `cols x rows` cells show a `cols x 2*rows` pixel grid at
-  its true shape. `fit()` is the only place that math lives.
+- **Two renderers, chosen by `config.art_style`.** `ascii` (the default) maps
+  each pixel to a glyph from `_RAMP`, colored by that pixel; `blocks` uses `▀`
+  with the top pixel as the foreground and the bottom one as the background.
+  Blocks therefore hold **two pixels per cell**, which cancels out the ~1:2
+  cell aspect ratio — `fit()` is the only place that math lives, and it returns
+  cells, so the blocks path resizes to `cols x 2*rows` and ASCII to `cols x rows`.
+- **ASCII needs its contrast stretched** (`autocontrast(cutoff=12)`). Most
+  covers live in the bottom third of the luminance scale and map to nothing but
+  `.` and `:` — noise, not a picture. Equalizing the histogram reads better
+  still on a flat cover but blows a letterboxed one into a solid block of `@`.
+- **The cursor half is debounced** (`_cursor_since`, 0.3 s): without it, holding
+  ↓ fires one download per row passed.
 - **Measure, don't compute, the panel's inner width** (`#art-image`.size.width).
   Border + padding come from CSS; a cover one cell too wide wraps, and a
   wrapped half-block row shears the whole picture diagonally.

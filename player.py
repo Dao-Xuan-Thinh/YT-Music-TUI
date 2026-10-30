@@ -9,9 +9,12 @@ platform-specific (a transport):
 The mpv daemon / loadfile / observe-property model is identical on every OS.
 """
 
+import atexit
 import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -23,6 +26,12 @@ import queue
 # stale --idle daemon from a prior run/crash.
 _IS_WINDOWS = os.name == 'nt'
 _PID = os.getpid()
+# The endpoint name also carries a per-RUN nonce. The pid alone wasn't unique:
+# the updater re-execs in place, so the new run has the SAME pid, collides with
+# the daemon the old one left behind, and that orphan then lives forever. The
+# nonce separates the two, and _sweep_orphans() below uses the pid still in the
+# name to decide whether a daemon's owner is gone.
+_RUN_NONCE = f'{os.getpid()}-{int(time.time() * 1000) % 100000:05d}'
 
 # Consecutive send() timeouts before the IPC is declared dead (→ recovery rebuilds
 # the whole mpv+IPC). Control/loadfile commands are local mpv ops answered instantly
@@ -34,7 +43,7 @@ if _IS_WINDOWS:
     import ctypes
     import msvcrt
     _kernel32 = ctypes.windll.kernel32
-    _IPC_ARG = f'ytm-tui-{_PID}'                  # mpv creates \\.\pipe\<name>
+    _IPC_ARG = f'ytm-tui-{_RUN_NONCE}'            # mpv creates \\.\pipe\<name>
     _CONNECT_TARGET = r'\\.\pipe' + '\\' + _IPC_ARG
 else:
     import socket
@@ -51,7 +60,7 @@ else:
         tempfile.gettempdir() so mpv IPC (and thus transport controls) works on
         the phone instead of failing to create the socket.
         """
-        name = f'ytm-tui-{_PID}.sock'
+        name = f'ytm-tui-{_RUN_NONCE}.sock'
         candidates = []
         if os.path.isdir('/tmp') and os.access('/tmp', os.W_OK):
             candidates.append('/tmp')
@@ -70,6 +79,109 @@ else:
     # mpv creates this socket file on launch; Python connects to the same path.
     _IPC_ARG = _unix_socket_path()
     _CONNECT_TARGET = _IPC_ARG
+
+
+# The nonce group is optional: daemons started before it existed are named
+# ytm-tui-<pid> and still need cleaning up.
+_ENDPOINT_RE = re.compile(r'--input-ipc-server=\S*?ytm-tui-(\d+)(?:-(\d+))?')
+
+
+def _pid_alive(pid):
+    if _IS_WINDOWS:
+        SYNCHRONIZE = 0x00100000
+        h = _kernel32.OpenProcess(SYNCHRONIZE, False, int(pid))
+        if h:
+            _kernel32.CloseHandle(h)
+            return True
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True          # alive, just not ours
+    except OSError:
+        return True          # unknown — err on the side of leaving it be
+
+
+def _running_mpv():
+    """[(pid, command line)] for every live mpv. Best effort: an OS that won't
+    tell us returns nothing and the sweep simply does nothing."""
+    try:
+        if _IS_WINDOWS:
+            out = subprocess.run(
+                ['powershell', '-NoProfile', '-Command',
+                 "Get-CimInstance Win32_Process -Filter \"Name='mpv.exe'\" | "
+                 "ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }"],
+                capture_output=True, text=True, timeout=10).stdout
+        else:
+            out = subprocess.run(['ps', '-axo', 'pid=,args='],
+                                 capture_output=True, text=True,
+                                 timeout=10).stdout
+    except Exception:
+        return []
+    rows = []
+    for line in out.splitlines():
+        line = line.strip()
+        head, _, rest = line.partition(' ')
+        if head.isdigit() and 'ytm-tui-' in rest:
+            rows.append((int(head), rest))
+    return rows
+
+
+def _sweep_orphans():
+    """Kill mpv daemons this app left behind.
+
+    `--idle=yes` means a daemon outlives its parent, and nothing in the OS ties
+    the two together: a crash, a `kill -9`, a closed terminal or an in-place
+    re-exec all orphan one, and it keeps running — holding audio devices and
+    publishing its own entry in the system's now-playing list. They accumulate
+    for weeks.
+
+    Only daemons whose endpoint name carries a pid that is GONE are killed
+    (plus our own pid with a different nonce — that's the re-exec case). A
+    second copy of the app running right now owns a live pid, so its daemon is
+    left alone. Never a pattern kill: every pid here came out of our own
+    endpoint name."""
+    killed = 0
+    for pid, args in _running_mpv():
+        m = _ENDPOINT_RE.search(args)
+        if not m:
+            continue
+        owner, nonce = int(m.group(1)), m.group(2) or ''
+        if f'{owner}-{nonce}' == _RUN_NONCE:
+            continue                        # this run's own daemon
+        if owner != _PID and _pid_alive(owner):
+            continue                        # another live instance — hands off
+        try:
+            if _IS_WINDOWS:
+                subprocess.run(['taskkill', '/PID', str(pid), '/F'],
+                               capture_output=True, timeout=10)
+            else:
+                os.kill(pid, signal.SIGTERM)
+            killed += 1
+        except Exception:
+            pass
+    return killed
+
+
+_media_controls_ok = None
+
+
+def _supports_media_controls(exe):
+    """Whether this mpv knows --media-controls (0.37+). An mpv that doesn't
+    EXITS on the unknown option instead of ignoring it, which would mean no
+    audio at all — so it's probed once, cheaply, rather than assumed."""
+    global _media_controls_ok
+    if _media_controls_ok is None:
+        try:
+            r = subprocess.run([exe, '--media-controls=no', '--version'],
+                               capture_output=True, timeout=10)
+            _media_controls_ok = r.returncode == 0
+        except Exception:
+            _media_controls_ok = False
+    return _media_controls_ok
 
 
 def install_hint():
@@ -504,6 +616,12 @@ class Player:
         self._paused      = False
         self._current_url = None
         self._on_end_cb   = None
+        # An --idle daemon outlives a crashed/killed/re-exec'd parent, so clear
+        # out whatever earlier runs left behind. Off the main thread: it shells
+        # out to ps, and nothing here blocks startup.
+        threading.Thread(target=_sweep_orphans, daemon=True).start()
+        # Last line of defence for a clean interpreter exit that skipped quit().
+        atexit.register(self._shutdown_mpv)
 
     def set_on_end(self, callback):
         self._on_end_cb = callback
@@ -541,6 +659,12 @@ class Player:
                 # terminal. stdin=DEVNULL below is the belt-and-suspenders half.
                 '--no-terminal',
             ]
+            # mpv publishes its OWN entry to the system now-playing list, named
+            # after the IPC socket ("mpv-55554944..."). We already publish a
+            # proper one via mediakeys.py, so mpv's is pure clutter — and it
+            # answers the media keys directly, behind the app's back.
+            if _supports_media_controls(self.backend_exe):
+                cmd.append('--media-controls=no')
             ytdlp = _find_ytdlp()
             if ytdlp:
                 cmd.append(f'--script-opts=ytdl_hook-ytdl_path={ytdlp}')
@@ -606,6 +730,8 @@ class Player:
             self._shutdown_mpv()
             cmd = [self.backend_exe, '--no-video', '--ytdl=yes', '--really-quiet',
                    '--network-timeout=15', '--no-terminal', url]
+            if _supports_media_controls(self.backend_exe):
+                cmd.append('--media-controls=no')   # see the daemon spawn above
             if start and start > 0:
                 cmd.append(f'--start=+{int(start)}')
             ytdlp = _find_ytdlp()

@@ -289,6 +289,13 @@ def _bar(pos, dur, width=40):
     return '█' * filled + '─' * (width - filled)
 
 
+def _art_key(track):
+    """Identity of a track for cover caching/signatures."""
+    if not track:
+        return ''
+    return track.get('id') or track.get('url') or ''
+
+
 def _ellipsis(s, width):
     """Trim to `width` cells, with a trailing … when something was cut."""
     s = s or ''
@@ -519,9 +526,12 @@ class KeybindingsScreen(ModalScreen):
 # runtime `git log`) so it works on non-git installs. The mobile app mirrors
 # this list so the desktop history is viewable there too.
 CHANGELOG = [
-    ('1.10', '2026-10-30 10:40', [
-        'Cover art: a wide terminal now shows the playing track\'s album/song cover on the right, drawn from half-block characters',
+    ('1.10', '2026-10-30 11:20', [
+        'Cover art: a wide terminal now shows covers down the right side — the playing track up top, whatever the cursor is on below, drawn as colored ASCII (set art_style to "blocks" in config.json for the half-block look)',
         'The panel appears only when the results table can keep its full width, and hides itself again when the window shrinks',
+        'The cover also reaches the system now-playing panel (Control Center / MPRIS / Windows), which used to show a generic icon',
+        'mpv no longer leaves a daemon running after a crash, a kill or an update restart — each launch clears out whatever earlier runs left behind (66 of them had piled up here)',
+        'mpv no longer publishes its own "mpv-5555…" entry to the system now-playing list, where it also answered media keys behind the app\'s back',
     ]),
     ('1.9.1', '2026-10-25 10:30', [
         'Unplugging headphones no longer blasts a paused track through the speakers — the system\'s own pause is no longer treated as play/pause',
@@ -1900,15 +1910,16 @@ class YTMApp(App):
     #results-table { width: 1fr; height: 1fr; border: none; }
 
     /* Cover art, right of the results. Hidden by default: _sync_art_panel
-       shows it (and sets its width) only when the terminal is wide enough. */
-    #art-panel {
-        display: none; width: 0; padding: 1 1 0 2;
-        background: $surface; border-left: solid $accent;
-    }
+       shows it (and sets its width) only when the terminal is wide enough.
+       Top two thirds: what's playing. Bottom third: whatever the cursor is on. */
+    #art-panel { display: none; width: 0; padding: 1 1 0 2; background: $surface; }
     #art-panel.visible { display: block; }
-    #art-image { height: auto; }
+    #art-now { height: 2fr; }
+    #art-cursor { height: 1fr; }
+    #art-image, #art-cursor-image { height: auto; text-align: center; }
     #art-title { height: auto; color: $text; text-style: bold; margin-top: 1; }
     #art-artist { height: auto; color: $text-muted; }
+    #art-cursor-title { height: auto; color: $text-muted; margin-top: 1; }
 
     #player-bar {
         height: 5; padding: 0 2; background: $panel; border-top: solid $accent;
@@ -2035,6 +2046,8 @@ class YTMApp(App):
         # (track, cols, rows), and the track ids with a download in flight.
         self._art_sig = None
         self._art_fetching = set()
+        self._cursor_track = None     # row under the table cursor (lower half)
+        self._cursor_since = 0.0      # when it landed there — debounces fetches
         # Color-wave animation state (see _sync_animation / _animate_tick).
         self._anim_frame = 0
         self._anim_timer = None          # active Timer while the wave is running
@@ -2073,9 +2086,13 @@ class YTMApp(App):
             yield DataTable(id='results-table', cursor_type='row',
                             cursor_foreground_priority='renderable')
             with Vertical(id='art-panel'):
-                yield Static('', id='art-image')
-                yield Static('', id='art-title')
-                yield Static('', id='art-artist')
+                with Vertical(id='art-now'):
+                    yield Static('', id='art-image')
+                    yield Static('', id='art-title')
+                    yield Static('', id='art-artist')
+                with Vertical(id='art-cursor'):
+                    yield Static('', id='art-cursor-image')
+                    yield Static('', id='art-cursor-title')
         with Vertical(id='player-bar'):
             yield Static('♪  Nothing playing', id='now-playing')
             yield Static('', id='controls-row')
@@ -2972,20 +2989,48 @@ class YTMApp(App):
     def on_resize(self, event) -> None:
         self._sync_art_panel()
 
+    def on_data_table_row_highlighted(self, event) -> None:
+        """Track what the cursor sits on, for the lower half of the art panel."""
+        if getattr(event.data_table, 'id', '') != 'results-table':
+            return
+        key = getattr(event.row_key, 'value', None)
+        track = self._track_for_row(key)
+        if track is not self._cursor_track:
+            self._cursor_track = track
+            self._cursor_since = time.monotonic()
+            self._sync_art_panel()
+
+    def _track_for_row(self, key):
+        """The track dict behind a results-table row key, or None for the
+        artist/album entity rows (A:/B:) that aren't tracks at all."""
+        if not key or key[:2] in ('A:', 'B:'):
+            return None
+        try:
+            if self.view_mode == 'queue':
+                i = int(key[1:])
+                return self._queue[i] if 0 <= i < len(self._queue) else None
+            i = int(key)
+        except (ValueError, TypeError):
+            return None
+        return self._results[i] if 0 <= i < len(self._results) else None
+
     def _sync_art_panel(self) -> None:
-        """Show the cover of the playing track to the right of the results, but
-        only when the terminal is wide enough that the table keeps its full
-        width. Everything is keyed on a signature, so the 1 Hz poll does no
-        work while the track and the geometry stay the same."""
+        """Fill the column right of the results: the playing track's cover in
+        the top two thirds, whatever the cursor is on in the bottom third. The
+        panel only exists while the terminal is wide enough for the table to
+        keep its full width, and everything is keyed on a signature, so the
+        1 Hz poll does no work while nothing has moved."""
         try:
             panel = self.query_one('#art-panel', Vertical)
         except NoMatches:
             return
-        track = (self._queue[self._queue_idx]
-                 if self.now_playing and 0 <= self._queue_idx < len(self._queue)
-                 else None)
+        playing = (self._queue[self._queue_idx]
+                   if self.now_playing and 0 <= self._queue_idx < len(self._queue)
+                   else None)
+        cursor = self._cursor_track
         room = self.size.width - ART_TABLE_COLS
-        if track is None or room < ART_MIN_COLS or not artwork.available():
+        if (room < ART_MIN_COLS or not artwork.available()
+                or (playing is None and cursor is None)):
             if panel.has_class('visible'):
                 panel.remove_class('visible')
             self._art_sig = None
@@ -2997,34 +3042,61 @@ class YTMApp(App):
             return      # geometry lands on the next layout; fill in on the next tick
         panel.styles.width = cols
         img = self.query_one('#art-image', Static)
-        # Measured, not computed: border + padding come from the CSS above, and a
-        # cover one cell too wide would wrap and shear the whole picture. A fresh
-        # resize lands here with last frame's width; the signature catches that on
-        # the next tick.
+        # Measured, not computed: padding comes from the CSS above, and a cover
+        # one cell too wide would wrap — a wrapped row shears the whole picture.
+        # A fresh resize lands here with last frame's width; the signature
+        # catches that on the next tick.
         art_cols = img.size.width
-        # 1 padding row above, 3 caption rows below (title can wrap to two).
-        rows = max(0, self.query_one('#main-row', Horizontal).size.height - 4)
-        if art_cols < 2 or rows < 2:
+        # Caption rows come off each section: 3 up top (title can wrap), 2 below.
+        now_rows = max(0, self.query_one('#art-now', Vertical).size.height - 3)
+        cur_rows = max(0, self.query_one('#art-cursor', Vertical).size.height - 2)
+        if art_cols < 2:
             return      # layout hasn't settled yet — try again on the next tick
-        sig = (track.get('id') or track.get('url'), art_cols, rows)
+        style = self._config.art_style
+        sig = (_art_key(playing), _art_key(cursor), art_cols,
+               now_rows, cur_rows, style)
         if sig == self._art_sig:
             return
         self._art_sig = sig
-        self.query_one('#art-title', Static).update(
-            _ellipsis(track.get('title') or '', art_cols))
-        self.query_one('#art-artist', Static).update(
-            _ellipsis(track.get('uploader') or '', art_cols))
+        self._draw_cover(playing, '#art-image', '#art-title', '#art-artist',
+                         art_cols, now_rows, style)
+        self._draw_cover(cursor, '#art-cursor-image', '#art-cursor-title', None,
+                         art_cols, cur_rows, style)
+
+    def _draw_cover(self, track, img_id, title_id, artist_id, cols, rows,
+                    style) -> None:
+        img = self.query_one(img_id, Static)
+        title = self.query_one(title_id, Static)
+        artist = self.query_one(artist_id, Static) if artist_id else None
+        if track is None:
+            img.update('')
+            title.update('')
+            if artist is not None:
+                artist.update('')
+            return
+        title.update(_ellipsis(track.get('title') or '', cols))
+        if artist is not None:
+            artist.update(_ellipsis(track.get('uploader') or '', cols))
+        if rows < 2:
+            img.update('')
+            return
         path = artwork.cached(track)
         if not path:
-            self._fetch_art(track)
+            # Scrolling shouldn't fire a download per row: the cursor has to
+            # settle first. The playing track is never debounced.
+            if (track is not self._cursor_track
+                    or time.monotonic() - self._cursor_since > 0.3):
+                self._fetch_art(track)
+            else:
+                self._art_sig = None        # come back for it on the next tick
             return      # keep the previous cover up rather than blinking to empty
-        art = artwork.render(path, art_cols, rows)
+        art = artwork.render(path, cols, rows, ascii_only=(style == 'ascii'))
         img.update(art if art is not None else '')
 
     def _fetch_art(self, track) -> None:
         """Download one cover in the background, then redraw. One flight per
-        track — a failed fetch isn't retried until the track plays again."""
-        key = track.get('id') or track.get('url') or ''
+        track — a failed fetch isn't retried until the track comes up again."""
+        key = _art_key(track)
         if not key or key in self._art_fetching:
             return
         self._art_fetching.add(key)
