@@ -289,6 +289,13 @@ def _bar(pos, dur, width=40):
     return '█' * filled + '─' * (width - filled)
 
 
+def _listened(secs):
+    """8040 -> '2h 14m', 840 -> '14m'."""
+    m = int(secs // 60)
+    h, m = divmod(m, 60)
+    return f'{h}h {m:02d}m' if h else f'{m}m'
+
+
 def _compact(n):
     """4106179 -> '4.1M'."""
     for cut, suffix in ((1_000_000_000, 'B'), (1_000_000, 'M'), (1_000, 'K')):
@@ -538,7 +545,7 @@ CHANGELOG = [
     ('1.10', '2026-10-30 11:35', [
         'Cover art: a wide terminal now shows covers down the right side — the playing track up top, whatever the cursor is on below',
         'Covers are drawn in braille dots (2x4 per character, eight times the detail of a text ramp); art_style in config.json also takes "ascii" or "blocks"',
-        'The playing track now lists its album, release year and play count under the cover',
+        'The playing track now lists its album, release year and play count under the cover, plus your own line: how many times you played it and for how long (across every device), with a heart if you liked it',
         'The panel appears only when the results table can keep its full width, and hides itself again when the window shrinks',
         'The cover also reaches the system now-playing panel (Control Center / MPRIS / Windows), which used to show a generic icon',
         'mpv no longer leaves a daemon running after a crash, a kill or an update restart — each launch clears out whatever earlier runs left behind (66 of them had piled up here)',
@@ -1932,6 +1939,7 @@ class YTMApp(App):
     #art-artist { height: auto; color: $text-muted; }
     #art-album { height: auto; color: $text-muted; text-style: italic; }
     #art-facts { height: auto; color: $accent; }
+    #art-you { height: auto; color: $text-muted; }
     #art-cursor-title { height: auto; color: $text-muted; margin-top: 1; }
 
     #player-bar {
@@ -2107,6 +2115,7 @@ class YTMApp(App):
                     yield Static('', id='art-artist')
                     yield Static('', id='art-album')
                     yield Static('', id='art-facts')
+                    yield Static('', id='art-you')
                 with Vertical(id='art-cursor'):
                     yield Static('', id='art-cursor-image')
                     yield Static('', id='art-cursor-title')
@@ -3064,16 +3073,18 @@ class YTMApp(App):
         # A fresh resize lands here with last frame's width; the signature
         # catches that on the next tick.
         art_cols = img.size.width
-        # Caption rows come off each section: 5 up top (title, artist, album,
-        # facts, and the margin above them), 2 below.
-        now_rows = max(0, self.query_one('#art-now', Vertical).size.height - 5)
+        # Caption rows come off each section: 6 up top (title, artist, album,
+        # facts, your own line, and the margin above them), 2 below.
+        now_rows = max(0, self.query_one('#art-now', Vertical).size.height - 6)
         cur_rows = max(0, self.query_one('#art-cursor', Vertical).size.height - 2)
         if art_cols < 2:
             return      # layout hasn't settled yet — try again on the next tick
         style = self._config.art_style
         details = self._details.get(_art_key(playing)) if playing else None
+        # Liking with `l` mid-track must redraw the heart, so it's in the key.
+        liked = bool(playing) and self._lib.is_liked(playing)
         sig = (_art_key(playing), _art_key(cursor), art_cols,
-               now_rows, cur_rows, style, bool(details))
+               now_rows, cur_rows, style, bool(details), liked)
         if sig == self._art_sig:
             return
         self._art_sig = sig
@@ -3084,15 +3095,20 @@ class YTMApp(App):
         self._draw_details(playing, details, art_cols)
 
     def _draw_details(self, track, details, cols) -> None:
-        """Album line + a 'year · length · plays' line under the playing track.
-        `details` is None until the lookup lands; the two lines simply stay
-        empty until then, and the lookup is fired here."""
+        """Under the playing track: the album, a 'year · length · plays' line,
+        and your own line (your listens across every device, and a heart if
+        you liked it). `details` is None until the network lookup lands — those
+        lines stay empty until then, and the lookup is fired here. Your line is
+        local and shows at once."""
         album = self.query_one('#art-album', Static)
         facts = self.query_one('#art-facts', Static)
+        you = self.query_one('#art-you', Static)
         if track is None:
             album.update('')
             facts.update('')
+            you.update('')
             return
+        you.update(_ellipsis(self._you_line(track, details or {}), cols))
         if details is None:
             self._fetch_details(track)
             details = {}
@@ -3105,6 +3121,36 @@ class YTMApp(App):
         if details.get('views'):
             bits.append(f'{_compact(details["views"])} plays')
         facts.update(_ellipsis('  ·  '.join(bits), cols))
+
+    def _you_line(self, track, details) -> str:
+        """'♥  you · 37 plays · 2h 14m' — summed over every stats key with
+        this video id, because the same track can be filed under slightly
+        different titles by different clients (desktop vs iOS metadata)."""
+        vid = track.get('id') or ''
+        plays = secs = 0
+        if vid:
+            try:
+                recs = self._stats.merged_records(
+                    'tracks', self._config.stats_device_id)
+            except Exception:
+                recs = {}
+            prefix = f'{vid}|'
+            for key, rec in recs.items():
+                if key.startswith(prefix):
+                    plays += int(rec.get('n') or 0)
+                    secs += float(rec.get('s') or 0)
+        # Liked in the app OR on the YouTube account — either is your heart.
+        heart = self._lib.is_liked(track) or details.get('liked')
+        bits = ['you']
+        if plays:
+            bits.append(f'{plays} play' + ('' if plays == 1 else 's'))
+        if secs >= 60:
+            bits.append(_listened(secs))
+        if len(bits) == 1:
+            bits.append('first listen')
+        if details.get('saved'):
+            bits.append('in library')
+        return ('♥  ' if heart else '') + '  ·  '.join(bits)
 
     def _fetch_details(self, track) -> None:
         """Look up album / release year / play count once per track, off the UI

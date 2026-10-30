@@ -286,7 +286,11 @@ Control Center is visible even when the terminal is too narrow for the panel.
 - **The detail lines** (album, release year, play count) come from
   `youtube.ytm_track_details`, which needs TWO ytmusicapi calls because no
   single endpoint carries all of it: `get_watch_playlist` has the album and the
-  year, `get_song` the play count. Cached per track id in `App._details`,
+  year (plus, signed in, the account's like / in-library state), `get_song`
+  the play count. Your own line under it is LOCAL and instant: plays and
+  listened time summed over every stats key that starts with `<video id>|`,
+  because desktop and iOS can file the same track under slightly different
+  titles. Cached per track id in `App._details`,
   including the empty result — a local file or a dead id must not re-query
   every time it comes up. Daemon thread only (it takes `_ytm_lock`).
 - **Measure, don't compute, the panel's inner width** (`#art-image`.size.width).

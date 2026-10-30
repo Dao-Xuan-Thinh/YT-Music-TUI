@@ -704,10 +704,11 @@ def ytm_radio(video_id, limit=25):
 
 
 def ytm_track_details(video_id):
-    """Extra metadata for one track → {'album', 'year', 'views'}; missing keys
-    simply stay out. Two calls, because no single endpoint has all of it:
-    get_watch_playlist carries the album and the release year, get_song the
-    play count. Blocking + network — daemon threads only."""
+    """Extra metadata for one track → {'album', 'year', 'views', 'liked',
+    'saved'}; missing keys simply stay out. Two calls, because no single
+    endpoint has all of it: get_watch_playlist carries the album, the release
+    year and (signed in) the account's like/library state, get_song the play
+    count. Blocking + network — daemon threads only."""
     out = {}
     try:
         with _ytm_lock:
@@ -718,6 +719,11 @@ def ytm_track_details(video_id):
             out['album'] = album
         if t.get('year'):
             out['year'] = str(t['year'])
+        # Only meaningful signed in; an anonymous client says INDIFFERENT/False.
+        if t.get('likeStatus') == 'LIKE':
+            out['liked'] = True
+        if t.get('inLibrary'):
+            out['saved'] = True
     except Exception:
         pass
     try:
