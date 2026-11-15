@@ -313,11 +313,14 @@ def _art_key(track):
 
 
 def _ellipsis(s, width):
-    """Trim to `width` cells, with a trailing … when something was cut."""
+    """Trim to `width` CELLS, with a trailing … when something was cut. Cells,
+    not characters: a CJK glyph is two cells wide, so a Japanese title that
+    passed a len() check still overflowed the panel and wrapped."""
+    from rich.cells import cell_len, set_cell_size
     s = s or ''
-    if width < 2 or len(s) <= width:
+    if width < 2 or cell_len(s) <= width:
         return s
-    return s[:width - 1].rstrip() + '…'
+    return set_cell_size(s, width - 1).rstrip() + '…'
 
 
 def _hex(c):
@@ -542,6 +545,18 @@ class KeybindingsScreen(ModalScreen):
 # runtime `git log`) so it works on non-git installs. The mobile app mirrors
 # this list so the desktop history is viewable there too.
 CHANGELOG = [
+    ('1.10.1', '2026-11-15 12:00', [
+        'A track whose title holds square brackets no longer crashes the app ("[/x]") or loses the bracketed part ("song [lyrics]") — titles are shown as written everywhere',
+        'Volume no longer jumps back to 100% when the audio engine reconnects',
+        'Streaming cookies set in Account (g) now apply from the next track, not from the next launch',
+        'Playing from a big playlist before it finished loading no longer stops after its first 100 tracks — the queue grows to the whole playlist',
+        'A slow search can no longer replace the results of the one you typed after it; the rest of a playlist arriving no longer steals focus or switches the view',
+        'Synced lyrics only follow along when they belong to the track that is playing',
+        'Album tracks show the album cover; album names now reach the listening stats for every YouTube Music track',
+        'Long Japanese / Chinese / Korean titles no longer wrap in the cover panel',
+        'The shuffle marker turns off when a new list replaces the shuffled queue, and shuffling keeps a track that is queued twice',
+        'Library, settings and stats are written through a temp file, so a kill mid-save can no longer leave them empty',
+    ]),
     ('1.10', '2026-10-30 11:35', [
         'Cover art: a wide terminal now shows covers down the right side — the playing track up top, whatever the cursor is on below',
         'Covers are drawn as colored ASCII art; art_style in config.json also takes "braille" (2x4 dots per character, eight times the detail) or "blocks" (half blocks, closer to a photo)',
@@ -717,7 +732,7 @@ class LyricsScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         from textual.containers import VerticalScroll
         with Vertical(id='lyrics-box'):
-            yield Label(f'♪ {self._title}', id='lyrics-title')
+            yield Label(f'♪ {self._title}', id='lyrics-title', markup=False)
             yield Label(' ', id='lyrics-hint')
             with VerticalScroll(id='lyrics-scroll'):
                 yield Static('…', id='lyrics-body')
@@ -743,6 +758,14 @@ class LyricsScreen(ModalScreen):
 
     def _current_index(self) -> int:
         if not self._synced:
+            return -1
+        # The position belongs to whatever is PLAYING. These lyrics may be for
+        # the highlighted row instead, or the queue may have moved on since —
+        # following along with another song's clock lights up the wrong lines.
+        app = self.app
+        q, qi = getattr(app, '_queue', []), getattr(app, '_queue_idx', -1)
+        playing = q[qi].get('id') if 0 <= qi < len(q) and app.now_playing else None
+        if playing != self._vid:
             return -1
         pos_ms = getattr(self.app, 'position', 0.0) * 1000
         cur = -1
@@ -884,7 +907,8 @@ class ArtistScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id='artist-box'):
-            yield Label(self._page.get('name') or 'Artist', id='artist-title')
+            yield Label(self._page.get('name') or 'Artist', id='artist-title',
+                        markup=False)
             subs = self._page.get('subscribers') or ''
             yield Label(f'{subs} subscribers' if subs else ' ', id='artist-sub')
             yield DataTable(id='artist-table', cursor_type='row', zebra_stripes=True)
@@ -896,18 +920,21 @@ class ArtistScreen(ModalScreen):
             items = sec.get('items') or []
             # Section header row (non-selectable).
             self._rows.append(('header', None))
-            tbl.add_row(f'[bold]— {sec["title"]} —[/]', '', '', key=f'h{len(self._rows)}')
+            tbl.add_row(Text(f'— {sec["title"]} —', style='bold'), '', '',
+                        key=f'h{len(self._rows)}')
             songs = [it for it in items if not (isinstance(it, dict) and it.get('kind') == 'album')]
             for it in items:
                 if isinstance(it, dict) and it.get('kind') == 'album':
                     self._rows.append(('album', it))
                     yr = it.get('year') or ''
-                    tbl.add_row('◇', it.get('name') or '', yr, key=f'r{len(self._rows)}')
+                    tbl.add_row('◇', Text(it.get('name') or ''), Text(str(yr)),
+                                key=f'r{len(self._rows)}')
                 else:
                     idx = songs.index(it)
                     self._rows.append(('song', (songs, idx)))
                     dur = _fmt(it.get('duration')) if it.get('duration') else ''
-                    tbl.add_row('♪', it.get('title') or '', dur, key=f'r{len(self._rows)}')
+                    tbl.add_row('♪', Text(it.get('title') or ''), dur,
+                                key=f'r{len(self._rows)}')
         tbl.focus()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -962,7 +989,7 @@ class ConfirmScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id='confirm-box'):
-            yield Static(self._message, id='confirm-msg')
+            yield Static(self._message, id='confirm-msg', markup=False)
             with Horizontal(id='confirm-btns'):
                 yield Button(self._yes_label, id='confirm-yes', variant='error')
                 yield Button(self._no_label, id='confirm-no')
@@ -1003,7 +1030,7 @@ class NameScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id='name-box'):
-            yield Label(self._prompt)
+            yield Label(self._prompt, markup=False)
             yield Input(value=self._default, id='name-input', placeholder='Name…')
             with Horizontal(id='name-btns'):
                 yield Button('Save', id='name-save', variant='primary')
@@ -1157,7 +1184,7 @@ class AccountScreen(ModalScreen):
                         classes='section')
             yield Input(value=self._cookies_file, id='cookies-input',
                         placeholder=_EG_COOKIES)
-            yield Static('', id='cookies-check')
+            yield Static('', id='cookies-check', markup=False)
             yield Static('Export cookies.txt from a logged-in music.youtube.com '
                          '(see YOUTUBE_LOGIN.md).', classes='hint')
             yield Button('Use these cookies', id='acct-cookies')
@@ -1169,13 +1196,13 @@ class AccountScreen(ModalScreen):
                         classes='section')
             yield Input(value=self._stream_cookies, id='stream-cookies-input',
                         placeholder=_EG_COOKIES)
-            yield Static('', id='stream-cookies-check')
+            yield Static('', id='stream-cookies-check', markup=False)
             yield Static('Fed to mpv/yt-dlp for playback only — NOT your sign-in '
                          '(signed-in streaming cookies actually break playback). '
                          'Applies as soon as the path is valid; clear to remove.',
                          classes='hint')
 
-            yield Static('', id='account-status')
+            yield Static('', id='account-status', markup=False)
             with Horizontal(id='account-btns'):
                 yield Button('Use public (no account)', id='acct-none')
                 yield Button('Close', id='acct-close')
@@ -1479,7 +1506,7 @@ class HomeScreen(Screen):
             label += f"  —  {track['uploader']}"
         if dur:
             label += f"   {dur}"
-        item = ListItem(Label(label))
+        item = ListItem(Label(label, markup=False))
         item.payload = payload
         return item
 
@@ -1507,11 +1534,12 @@ class HomeScreen(Screen):
     def _folder_items(self):
         items = []
         for p in self._lib.playlists():
-            it = ListItem(Label(f"♫ {p['name']}  ({len(p['tracks'])})"))
+            it = ListItem(Label(f"♫ {p['name']}  ({len(p['tracks'])})",
+                                markup=False))
             it.payload = {'kind': 'playlist', 'name': p['name']}
             items.append(it)
         for path in self._lib.folders():
-            it = ListItem(Label(f"▪ {path}"))
+            it = ListItem(Label(f"▪ {path}", markup=False))
             it.payload = {'kind': 'folder', 'path': path}
             items.append(it)
         return items or [self._empty_item()]
@@ -1559,7 +1587,7 @@ class HomeScreen(Screen):
                         yield Static('', id='stats-view')
 
             yield Button('Search / Browse', id='home-search', variant='primary')
-            yield Label('', id='home-status')
+            yield Label('', id='home-status', markup=False)
 
     def on_mount(self) -> None:
         try:
@@ -1691,7 +1719,7 @@ class HomeScreen(Screen):
             banner.payload = None
             items.append(banner)
         for sec in sections:
-            header = ListItem(Label(f"[bold]{sec['title']}[/]"))
+            header = ListItem(Label(Text(sec['title'] or '', style='bold')))
             header.payload = None   # non-selectable section heading
             items.append(header)
             songs = [it['track'] for it in sec['items'] if it['kind'] == 'song']
@@ -1703,7 +1731,7 @@ class HomeScreen(Screen):
                         'index': si, 'label': sec['title']})
                     si += 1
                 else:
-                    row = ListItem(Label(f"♫ {it['name']}"))
+                    row = ListItem(Label(f"♫ {it['name']}", markup=False))
                     row.payload = {'kind': 'foryou_playlist',
                                    'playlistId': it['playlistId']}
                 items.append(row)
@@ -2052,6 +2080,10 @@ class YTMApp(App):
         self._search_artists = []   # top artist matches from the last keyword search
         self._search_albums  = []   # top album/playlist matches from the last search
         self._last_query = ''
+        # Bumped by every search / playlist / album / folder load. A worker
+        # only applies its result while its own number is still the current
+        # one, so a slow earlier request can't overwrite what was asked next.
+        self._load_gen = 0
         self._cfg_timer = None
         self._update_available = False   # set by the boot-time update check
         self._restart_requested = False  # set when an update asks for a relaunch
@@ -2110,20 +2142,23 @@ class YTMApp(App):
                             cursor_foreground_priority='renderable')
             with Vertical(id='art-panel'):
                 with Vertical(id='art-now'):
-                    yield Static('', id='art-image')
-                    yield Static('', id='art-title')
-                    yield Static('', id='art-artist')
-                    yield Static('', id='art-album')
-                    yield Static('', id='art-facts')
-                    yield Static('', id='art-you')
+                    yield Static('', id='art-image', markup=False)
+                    yield Static('', id='art-title', markup=False)
+                    yield Static('', id='art-artist', markup=False)
+                    yield Static('', id='art-album', markup=False)
+                    yield Static('', id='art-facts', markup=False)
+                    yield Static('', id='art-you', markup=False)
                 with Vertical(id='art-cursor'):
-                    yield Static('', id='art-cursor-image')
-                    yield Static('', id='art-cursor-title')
+                    yield Static('', id='art-cursor-image', markup=False)
+                    yield Static('', id='art-cursor-title', markup=False)
         with Vertical(id='player-bar'):
-            yield Static('♪  Nothing playing', id='now-playing')
-            yield Static('', id='controls-row')
-            yield Static('', id='progress-row')
-            yield Static(self.status_msg, id='status-row')
+            # markup=False on everything that shows a title: track names are
+            # data. Read as markup, "song [lyrics]" loses its tag and a title
+            # holding "[/x]" raises MarkupError and takes the app down.
+            yield Static('♪  Nothing playing', id='now-playing', markup=False)
+            yield Static('', id='controls-row', markup=False)
+            yield Static('', id='progress-row', markup=False)
+            yield Static(self.status_msg, id='status-row', markup=False)
         with Horizontal(id='footer-bar'):
             yield Static('', id='footer-left')
             yield Static('? Keys', id='footer-right')
@@ -2218,8 +2253,10 @@ class YTMApp(App):
                 self._set_status,
                 'Using ffplay (limited controls: no seek/volume/position). Install mpv for full control.'
             )
+        # Before the spawn: the daemon starts at this level (--volume) rather
+        # than at 100% with a correction racing the first track.
+        self._player.set_volume(self.volume)
         self._player._ensure_mpv_running()
-        self._apply_volume(save=False)
         # OS media keys + now-playing panel (Control Center / MPRIS / SMTC).
         # Optional: returns None when the per-OS dep isn't installed — the app
         # behaves exactly as before. Callbacks arrive on backend threads.
@@ -2319,6 +2356,8 @@ class YTMApp(App):
         if not result:
             return
         kind = result.get('kind')
+        if kind != 'search':
+            self._new_load()    # a search still in flight must not replace this
         if kind == 'search':
             self.query_one('#search-input', Input).focus()
         elif kind == 'resume':
@@ -2335,7 +2374,7 @@ class YTMApp(App):
         elif kind == 'tracklist':
             tracks = result['tracks']
             self._populate_results(tracks)
-            self._queue = list(tracks)
+            self._set_queue(tracks)
             self._play_queue_item(result.get('index', 0))
         elif kind == 'foryou_playlist':
             self._do_load_playlist(result['playlistId'])
@@ -2396,6 +2435,7 @@ class YTMApp(App):
         self._last_query = query
         self._search_artists = []
         self._search_albums = []
+        gen = self._new_load()
 
         def _run():
             try:
@@ -2405,10 +2445,10 @@ class YTMApp(App):
                     cookies_file=self._config.valid_cookies(),
                     max_results=self._config.max_results,
                 )
-                self.call_from_thread(self._populate_results, results,
-                                      False, True)   # keep_entities: async lookup owns them
+                # keep_entities: the async lookup below owns them
+                self._land(gen, self._populate_results, results, False, True)
             except Exception as exc:
-                self.call_from_thread(self._set_status, f'Search error: {exc}')
+                self._land(gen, self._set_status, f'Search error: {exc}')
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -2418,11 +2458,22 @@ class YTMApp(App):
             def _entities():
                 try:
                     ent = youtube.ytm_search_entities(query)
-                    self.call_from_thread(self._set_search_entities,
-                                          ent.get('artists') or [], ent.get('albums') or [])
+                    self._land(gen, self._set_search_entities,
+                               ent.get('artists') or [], ent.get('albums') or [])
                 except Exception:
                     pass
             threading.Thread(target=_entities, daemon=True).start()
+
+    def _new_load(self) -> int:
+        self._load_gen += 1
+        return self._load_gen
+
+    def _land(self, gen, fn, *args) -> None:
+        """Worker thread → UI thread, unless a newer load has started since."""
+        def _apply():
+            if gen == self._load_gen:
+                fn(*args)
+        self.call_from_thread(_apply)
 
     def _set_search_entities(self, artists, albums) -> None:
         self._search_artists = artists
@@ -2443,23 +2494,24 @@ class YTMApp(App):
         Falls back to yt-dlp for playlists ytmusicapi can't serve (non-music)."""
         self._set_status('Loading playlist… first tracks')
         self._results = []
+        gen = self._new_load()
 
         def _run():
+            first = []
             try:
                 first = youtube.ytm_playlist(playlist_id, limit=100)
                 if first:
-                    self.call_from_thread(self._populate_results, first)
-                    self.call_from_thread(
-                        self._set_status,
-                        f'{len(first)} tracks loaded — fetching the rest…'
-                    )
+                    self._land(gen, self._populate_results, first)
+                    self._land(gen, self._set_status,
+                               f'{len(first)} tracks loaded — fetching the rest…')
                 full = youtube.ytm_playlist(playlist_id, limit=None)
                 if full:
-                    # keep_filter so a filter typed during loading survives.
-                    self.call_from_thread(self._populate_results, full, True)
+                    self._land(gen, self._playlist_rest, first, full)
                     return
                 raise RuntimeError('ytmusicapi returned no tracks')
             except Exception:
+                if first:
+                    return      # the first page is up; keep it
                 try:
                     url = f'https://www.youtube.com/playlist?list={playlist_id}'
                     opts = youtube._ydl_opts(
@@ -2473,29 +2525,50 @@ class YTMApp(App):
                         youtube._entry_to_dict(e)
                         for e in (info.get('entries') or []) if e
                     ]
-                    self.call_from_thread(self._populate_results, results)
+                    self._land(gen, self._populate_results, results)
                 except Exception as exc:
-                    self.call_from_thread(self._set_status, f'Playlist error: {exc}')
+                    self._land(gen, self._set_status, f'Playlist error: {exc}')
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _playlist_rest(self, first, full) -> None:
+        """The whole playlist has arrived behind its first page. By now the
+        user may be listening, filtering or looking at the queue, so this
+        swaps the list in underneath them: no focus grab, no view switch.
+
+        If playback was started from the first page, the queue is that page
+        (100 tracks) and would simply end there — so it grows to the whole
+        playlist, provided it's still the untouched first page."""
+        if len(full) <= len(first):
+            return
+        ids = [_track_key(t) for t in first]
+        if ([_track_key(t) for t in self._queue] == ids
+                and [_track_key(t) for t in full[:len(first)]] == ids):
+            self._queue = self._queue + full[len(first):]
+        self._results = full
+        self._render_table()
+        self._update_footer()
+        self._last_bar_sig = None       # the n/total counter changed
+        self._set_status(f'{len(full)} tracks loaded')
 
     def _do_scan_folder(self, path: str) -> None:
         self._set_status(f'Scanning {path}…')
         self._results = []
+        gen = self._new_load()
 
         def _run():
             try:
                 from offline import scan_folder
                 results = scan_folder(path)
-                self.call_from_thread(self._populate_results, results)
+                self._land(gen, self._populate_results, results)
                 if results:
-                    self._lib.pin_folder(path)
+                    # UI thread: Library isn't thread-safe.
+                    self.call_from_thread(self._lib.pin_folder, path)
                 else:
-                    self.call_from_thread(
-                        self._set_status, f'No audio files found in: {path}'
-                    )
+                    self._land(gen, self._set_status,
+                               f'No audio files found in: {path}')
             except Exception as exc:
-                self.call_from_thread(self._set_status, f'Scan error: {exc}')
+                self._land(gen, self._set_status, f'Scan error: {exc}')
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -2563,7 +2636,8 @@ class YTMApp(App):
             style = f'bold {self._accent()}'
             return [Text(str(marker), style=style), Text(title, style=style),
                     Text(artist, style=style), Text(dur, style=style)]
-        return [str(marker), title, artist, dur]
+        # Text, not str: DataTable parses a str cell as markup (see compose).
+        return [Text(str(marker)), Text(title), Text(artist), Text(dur)]
 
     def _render_table(self) -> None:
         """Render the DataTable for the current view_mode (+ filter in library)."""
@@ -2677,10 +2751,19 @@ class YTMApp(App):
                 # the chosen track, so jumping behaves like auto-advance — the
                 # n/total counter stays stable instead of resetting to 1.
                 def _go(i=idx):
-                    self._queue = list(self._results)
+                    self._set_queue(self._results)
                     self._queue_idx = i
                     self._play_queue_item(i)
                 self._debounce_play(_go)
+
+    def _set_queue(self, tracks) -> None:
+        """Replace the queue with a list in its own order. That order is not
+        shuffled, so the flag goes off with it — the footer used to keep
+        saying 'shuffle' over a queue that played straight through."""
+        self._queue = list(tracks)
+        if self.shuffle:
+            self.shuffle = False
+            self._update_footer()
 
     def _debounce_play(self, fn) -> None:
         """Coalesce rapid selections (misclicks) so only the final pick actually loads — a
@@ -2733,6 +2816,8 @@ class YTMApp(App):
         self._update_footer()
         self._sync_animation()
         self._sync_art_panel()      # swap the cover now, not on the next poll tick
+        self._last_bar_sig = None   # and the bar: it lagged the pick by up to 1s
+        self._update_player_bar()
         # The OS now-playing panel wants the cover too, and it's visible even
         # when the side panel isn't (narrow terminal, or no Pillow) — so the
         # download is driven by playback, not by the panel.
@@ -3480,7 +3565,10 @@ class YTMApp(App):
         cur = None
         if 0 <= self._queue_idx < len(self._queue) and self.now_playing:
             cur = self._queue[self._queue_idx]
-        rest = [t for i, t in enumerate(self._queue) if t is not cur]
+        # By position, not identity: the same track can be queued twice, and
+        # an identity test dropped every copy of the one that's playing.
+        rest = [t for i, t in enumerate(self._queue)
+                if cur is None or i != self._queue_idx]
         random.shuffle(rest)
         if cur is not None:
             self._queue = [cur] + rest
@@ -3592,8 +3680,9 @@ class YTMApp(App):
                 # audio going — never restart the song the user is listening to.
                 mix = [t for t in tracks if t.get('id') != track['id']]
                 mix.insert(0, playing)
+                self._new_load()
                 self._populate_results(mix)
-                self._queue = list(mix)
+                self._set_queue(mix)
                 self._queue_idx = 0
                 self._set_status(f'∞ Radio: {track["title"]} — queue updated')
             else:
@@ -3679,8 +3768,9 @@ class YTMApp(App):
 
     def _start_track_list(self, tracks, idx=0, label='') -> None:
         """Load a track list into results+queue and start playing at idx."""
+        self._new_load()        # a search still in flight must not replace this
         self._populate_results(tracks)
-        self._queue = list(tracks)
+        self._set_queue(tracks)
         self._queue_idx = idx
         self._play_queue_item(idx)
         if label:

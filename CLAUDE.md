@@ -222,6 +222,51 @@ correct — mpv is driven only over the IPC socket and must never touch the term
 
 `_ytm_track_to_dict()` builds `https://www.youtube.com/watch?v=<id>` (not `music.youtube.com`). Same videoId/audio, but mpv's ytdl_hook fails to load `music.youtube.com/watch` URLs on Linux; the www form works on every OS.
 
+### Titles are data: never hand one to a markup parser
+
+A `str` given to a `DataTable` cell, a `Static` or a `Label` is parsed as
+markup. Track titles are full of square brackets, and the parser does two
+things to them: `song [lyrics]` silently loses the bracketed part (Textual's
+own parser drops even `[MV]`), and a title holding a closing tag — `[/lofi]`,
+`[/]` — raises `MarkupError` inside the render and **takes the whole app
+down**. One such track in a search result was enough.
+
+So every widget that shows a title, artist, album, playlist name, path or a
+status line built from one is created with `markup=False`, and table cells are
+`Text(...)` objects (`_row_cells`, the artist page). Text that is meant to be
+styled is a `Text` with a style, not an f-string with tags in it.
+
+### One load at a time (`_load_gen`)
+
+Search, playlist, album and folder loads run on daemon threads and land with
+`call_from_thread`, in whatever order the network returns them. `_new_load()`
+bumps `_load_gen` when one starts and `_land(gen, fn, ...)` applies a result
+only while that number is still current — otherwise a slow search replaced the
+results of the one typed after it. Anything else that replaces the list
+(`_start_track_list`, a home-screen pick, radio) bumps it too.
+
+A playlist lands twice: the first 100 tracks, then all of them
+(`_playlist_rest`). The second landing must not take focus or switch the view,
+and if playback already started from the first page it extends the queue —
+which is otherwise those 100 tracks and ends there.
+
+### What a respawned mpv has to be told again
+
+The daemon is rebuilt whenever its socket dies, and a fresh mpv knows nothing:
+`Player` keeps the last `set_volume()` and passes it as `--volume` (it came
+back at 100%), and compares the live cookie file with the one the daemon was
+launched with (`_spawn_cookies`), restarting on the way into the next `play()`
+when they differ — `--ytdl-raw-options` is a launch option, so a cookie file
+set in the Account screen used to wait for the next app launch.
+
+### JSON stores are written through a temp file
+
+`config.json`, `library.json`, `sessions.json` and `stats.json` are written to
+`<name>.<pid>.tmp` and renamed into place. All three loaders treat a file that
+doesn't parse as "no file" and start from defaults, so a write cut short by a
+kill turned into an empty library on the next launch — and the first save
+after that made it permanent.
+
 ### Textual Tab Key
 
 Textual reserves the Tab key for focus cycling. Source-cycle binding uses `t` instead.
@@ -358,8 +403,10 @@ listened) — plus `clock` (`'<weekday 0=Mon>-<hour>' -> seconds`) for the heatm
   by the `seeded` flag), seconds only — counts and dates can't be recovered. It
   seeds from the LOCAL map so each device contributes its own history and the
   cross-device sum stays correct.
-- `albums` only fills for tracks whose yt-dlp metadata carries an album (YouTube
-  Music tracks, not plain videos), and only from v1.7 onward.
+- `albums` only fills for tracks that carry an album: every YouTube Music
+  track (`_ytm_track_to_dict` keeps the name ytmusicapi returns; before 1.10.1
+  it dropped it, so only pasted URLs counted) and yt-dlp results that have
+  one. Plain videos have none.
 
 **The gist API truncates past 1 MB.** `GET /gists/<id>` inlines each file's
 `content` only while the WHOLE response fits in 1 MB; the files past that point

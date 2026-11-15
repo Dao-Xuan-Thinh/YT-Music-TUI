@@ -249,11 +249,18 @@ class StatsStore:
             self._prune_top_locked()
             data = json.loads(json.dumps(self._data))  # snapshot
             self._dirty = False
+        # Temp file + rename: a kill mid-write must not leave a truncated
+        # stats.json, which would load as an empty history.
+        tmp = f'{self._path}.{os.getpid()}.tmp'
         try:
-            with open(self._path, 'w', encoding='utf-8') as f:
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
+            os.replace(tmp, self._path)
         except Exception:
-            pass
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     def _prune_top_locked(self):
         """Trim attribution maps (call with the lock held): newest TOP_MONTHS

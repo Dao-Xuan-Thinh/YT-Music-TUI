@@ -616,6 +616,12 @@ class Player:
         self._paused      = False
         self._current_url = None
         self._on_end_cb   = None
+        # Both are re-applied to every mpv this Player spawns. A daemon rebuilt
+        # after a dead socket used to come back at mpv's default 100% — a jump
+        # in loudness the user never asked for — and a cookie file set while
+        # the daemon was up didn't reach it until the app was restarted.
+        self._volume        = None    # last set_volume(), None = never set
+        self._spawn_cookies = None    # cookie file the live daemon was given
         # An --idle daemon outlives a crashed/killed/re-exec'd parent, so clear
         # out whatever earlier runs left behind. Off the main thread: it shells
         # out to ps, and nothing here blocks startup.
@@ -636,7 +642,11 @@ class Player:
         with self._start_lock:
             proc_alive = bool(self._proc and self._proc.poll() is None)
             ipc_alive  = self._ipc is not None and self._ipc.is_healthy()
-            if proc_alive and ipc_alive:
+            cookies = self._live_cookies()
+            # The cookie file is a launch option of the daemon, so a change
+            # only takes effect in a new one. This runs on the way into a
+            # play(), where the current track is being replaced anyway.
+            if proc_alive and ipc_alive and cookies == self._spawn_cookies:
                 return
             # Proc died OR the socket went stale (send marked the IPC dead):
             # tear the whole backend down and rebuild a fresh _MpvIPC (new loop
@@ -671,9 +681,12 @@ class Player:
             # One --ytdl-raw-options carrying every yt-dlp passthrough (socket-timeout bounds
             # extraction; cookiefile when set). Passing the flag twice would drop the first.
             raw = ['socket-timeout=15']
-            if self.cookies_file and os.path.isfile(self.cookies_file):
-                raw.append(f'cookiefile={self.cookies_file}')
+            if cookies:
+                raw.append(f'cookiefile={cookies}')
             cmd.append('--ytdl-raw-options=' + ','.join(raw))
+            if self._volume is not None:
+                cmd.append(f'--volume={self._volume}')
+            self._spawn_cookies = cookies
             self._proc = subprocess.Popen(
                 cmd, stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -682,6 +695,12 @@ class Player:
             self._ipc.on_end = self._on_end_cb
             if not self._ipc.connect():
                 self._ipc = None
+
+    def _live_cookies(self):
+        """The streaming cookie file to hand mpv right now ('' when unset or
+        the file is gone)."""
+        c = self.cookies_file
+        return c if c and os.path.isfile(c) else ''
 
     def _shutdown_mpv(self):
         if self._ipc:
@@ -734,6 +753,8 @@ class Player:
                 cmd.append('--media-controls=no')   # see the daemon spawn above
             if start and start > 0:
                 cmd.append(f'--start=+{int(start)}')
+            if self._volume is not None:
+                cmd.append(f'--volume={self._volume}')
             ytdlp = _find_ytdlp()
             if ytdlp:
                 cmd.append(f'--script-opts=ytdl_hook-ytdl_path={ytdlp}')
@@ -864,6 +885,7 @@ class Player:
 
     def set_volume(self, pct):
         pct = max(0, min(100, int(pct)))
+        self._volume = pct      # also the level the next spawned mpv starts at
         if self.backend == 'mpv' and self._ipc:
             self._ipc.set_property('volume', pct)
 

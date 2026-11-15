@@ -169,10 +169,27 @@ def merge_sync(exports, now=None):
     }
 
 
+def _write_json(path, data, **kw):
+    """Write JSON through a temp file + rename, so the file on disk is always
+    either the old version or the new one. Writing in place left a truncated
+    file behind if the app was killed mid-write, and a file that fails to parse
+    loads as EMPTY — the next save then made the loss permanent."""
+    tmp = f'{path}.{os.getpid()}.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, **kw)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _save(path, data):
     try:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        _write_json(path, data, indent=2, ensure_ascii=False)
     except Exception:
         pass
 

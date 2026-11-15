@@ -72,10 +72,18 @@ class Config:
                 pass
 
     def save(self):
+        # Temp file + rename: a kill mid-write must not leave half a config
+        # (it would load as defaults and drop the sign-in and the sync token).
+        tmp = f'{_CONFIG_FILE}.{os.getpid()}.tmp'
         try:
-            with open(_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(self._data, f, indent=2)
+            os.replace(tmp, _CONFIG_FILE)
         except Exception as exc:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
             raise RuntimeError(f'Could not save config: {exc}') from exc
 
     def update(self, **kwargs):

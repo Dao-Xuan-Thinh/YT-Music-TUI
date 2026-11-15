@@ -10,6 +10,7 @@ Regular YouTube search/URLs and all audio streaming stay on yt-dlp/mpv.
 
 import os
 import threading
+import time
 import urllib.parse
 import yt_dlp
 
@@ -539,6 +540,7 @@ def _ytm_track_to_dict(t):
         a['name'] for a in (t.get('artists') or []) if a.get('name')
     )
     thumbs = t.get('thumbnails') or []
+    alb = t.get('album')
     return {
         'id': vid,
         'title': t.get('title') or 'Unknown',
@@ -548,6 +550,9 @@ def _ytm_track_to_dict(t):
         # OS, whereas music.youtube.com/watch URLs fail to load via mpv on Linux.
         'url': f'https://www.youtube.com/watch?v={vid}',
         'thumbnail': thumbs[-1]['url'] if thumbs else '',
+        # A dict {name, id} from search/playlists, a plain string inside an
+        # album, absent on videos. Feeds the album listening stats.
+        'album': (alb.get('name') if isinstance(alb, dict) else alb) or '',
     }
 
 
@@ -685,7 +690,19 @@ def ytm_album(browse_id):
     """Album tracks (via get_album) → list of track dicts."""
     with _ytm_lock:
         data = _get_ytm().get_album(browse_id)
-    return [_ytm_track_to_dict(t) for t in (data.get('tracks') or []) if t.get('videoId')]
+    # Tracks inside an album carry no cover of their own (and sometimes no
+    # album name): both live on the album, so hand them down.
+    cover = _thumb(data)
+    name = data.get('title') or ''
+    out = []
+    for t in (data.get('tracks') or []):
+        if not t.get('videoId'):
+            continue
+        d = _ytm_track_to_dict(t)
+        d['thumbnail'] = d['thumbnail'] or cover
+        d['album'] = d['album'] or name
+        out.append(d)
+    return out
 
 
 def ytm_radio(video_id, limit=25):
@@ -984,8 +1001,12 @@ def resolve(inp, source='ytm', cookies_file=None, max_results=15):
         if _is_premium_error(exc):
             res = resolve_premium_stream(inp)
             if res is not None:
+                # One-shot key, never track['url']: a direct stream URL dies
+                # within hours, and 'url' is what gets saved to recent,
+                # playlists and sessions.
                 track, direct = res
-                track['url'] = direct
+                track['_direct_url'] = direct
+                track['_direct_ts'] = time.monotonic()
                 return [track]
         raise RuntimeError(f'Failed to resolve URL: {exc}') from exc
 

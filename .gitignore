@@ -23,3 +23,6 @@ ios/
 
 # downloaded cover art (artwork.py)
 .art-cache/
+
+# half-written JSON stores (temp file + rename)
+*.tmp
