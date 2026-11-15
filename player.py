@@ -543,7 +543,7 @@ class _MpvIPC:
         msg = (json.dumps({'command': cmd, 'request_id': req_id}) + '\n').encode()
         self._cmd_q.put(msg)
 
-    def send(self, cmd, timeout=5.0):
+    def send(self, cmd, timeout=5.0, count=True):
         """Enqueue command and block until response arrives (or timeout).
 
         A real response is always a truthy dict, so `result is None` is an
@@ -562,6 +562,8 @@ class _MpvIPC:
         entry['evt'].wait(timeout)
         self._pending.pop(req_id, None)
         result = entry.get('result')
+        if not count:
+            return result       # a best-effort probe: says nothing about health
         if result is None:
             self._consec_timeouts += 1
             if self._consec_timeouts >= _IPC_DEAD_AFTER_TIMEOUTS:
@@ -584,6 +586,17 @@ class _MpvIPC:
 
     def command(self, *args):
         self.send(list(args))
+
+
+# Audio level meter for the home map's background: ffmpeg's astats, which
+# passes the audio through untouched and publishes the level as filter
+# metadata (read back as `af-metadata/ytmlvl`). The second spec is for an
+# ffmpeg too old to know the measure_* options.
+_LEVEL_FILTERS = (
+    '@ytmlvl:lavfi=[astats=metadata=1:reset=1:measure_perchannel=none'
+    ':measure_overall=RMS_level]',
+    '@ytmlvl:lavfi=[astats=metadata=1:reset=1]',
+)
 
 
 # ── Player ────────────────────────────────────────────────────────────────────
@@ -695,6 +708,36 @@ class Player:
             self._ipc.on_end = self._on_end_cb
             if not self._ipc.connect():
                 self._ipc = None
+            else:
+                self._add_level_filter()
+
+    def _add_level_filter(self):
+        """Hang a pass-through level meter on the audio chain (see
+        get_level). Added over IPC while mpv is still idle, not as a launch
+        option: an mpv or ffmpeg that doesn't know the filter then answers
+        with an error and plays on, instead of refusing to start."""
+        self._has_level = False
+        for spec in _LEVEL_FILTERS:
+            res = self._ipc.send(['af', 'add', spec], timeout=2.0, count=False)
+            if res and res.get('error') == 'success':
+                self._has_level = True
+                return
+
+    def get_level(self):
+        """RMS level of the audio being played, in dB (about -60 quiet .. 0
+        full scale), or None when there is no meter (ffplay, no filter, not
+        playing). One IPC round trip: call it from a worker thread."""
+        ipc = self._ipc
+        if self.backend != 'mpv' or ipc is None or not getattr(self, '_has_level', False):
+            return None
+        res = ipc.send(['get_property', 'af-metadata/ytmlvl'],
+                       timeout=0.3, count=False)
+        if not res or res.get('error') != 'success':
+            return None
+        try:
+            return float((res.get('data') or {})['lavfi.astats.Overall.RMS_level'])
+        except (KeyError, TypeError, ValueError):
+            return None
 
     def _live_cookies(self):
         """The streaming cookie file to hand mpv right now ('' when unset or

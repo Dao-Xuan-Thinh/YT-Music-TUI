@@ -16,6 +16,8 @@ The project is modular with clear separation of concerns:
 
 ```
 main.py         ← Entry point; Textual TUI wiring, home screen, keybindings, playback flow
+homemap.py      ← The home screen's node map: a cell-grid canvas (nodes, trail, open block,
+                  audio-reactive background). Knows nothing about the library or the player
 youtube.py      ← yt-dlp + ytmusicapi wrapper: resolve() (URL or keyword), search(), playlists,
                   auth (cookies/browser) + authenticated client, get_home() feed
 player.py       ← mpv IPC + ffplay fallback; single-thread event loop for non-blocking IPC
@@ -28,14 +30,19 @@ updater.py      ← Self-update via git (check/pull/deps refresh, branch switch)
 
 ### Core Flow
 
-1. **Boot** → a `HomeScreen` shows tabs **Resume / For You / Folders / Liked /
-   Recent** (backed by `library.py`). `←/→` switch tabs (and auto-focus that tab's
-   list so a row is always highlighted). Selecting loads/plays/resumes; on any
-   manageable tab `d` deletes the highlighted entry (unlike / unpin / delete
-   playlist or session) and `r` renames a highlighted playlist — a one-line
-   `#home-status` reports the result (or why nothing happened). Esc or
-   "Search / Browse" enters the main UI.
-2. **Search** (`/` key) → `youtube.resolve()` detects URL or keyword → results populate DataTable
+1. **Boot** → `HomeScreen`, a node map (`homemap.MapCanvas`): the hub in the
+   middle and a node per area — Search, Resume, For You, YT Music, Playlists,
+   Liked, Recent, Stats, and a muted Create (nothing behind it yet). Arrows jump
+   to the nearest node in that direction; Enter opens a node and its rows hang
+   under it as a block (↑/↓ rows, ←/Esc close, `d` delete, `r` rename a
+   playlist — a one-line `#home-status` reports the result). Enter on a row
+   dismisses the screen with a payload for `App._on_home_result`. Esc / `h` /
+   Enter on the hub go back to the listening view; Stats opens `StatsScreen`.
+2. **Search** (`/` key) → `youtube.resolve()` detects URL or keyword → results fill the
+   search pane (`#search-table`), which opens above the loaded list and leaves it alone.
+   Enter there plays the result now (inserted after the playing track); `a` / `p` queue
+   it; Esc or the close button hides the pane. With no list loaded, the results become
+   the list. A pasted playlist URL loads as the list directly.
 3. **Play** (Enter on result) → `player.play(url, start=)` loads URL via mpv IPC `loadfile replace`
 4. **Queue**: selecting a result makes the whole loaded list the queue and positions the
    index at the chosen track (so jumping matches auto-advance — the `n/total` counter stays
@@ -267,6 +274,73 @@ doesn't parse as "no file" and start from defaults, so a write cut short by a
 kill turned into an empty library on the next launch — and the first save
 after that made it permanent.
 
+### The trail: lists opened this session
+
+`App._trail` is the list of lists opened this session (`{'label', 'tracks'}`),
+`_trail_root` the home node the first one was picked from and `_trail_pos` the
+one that is loaded now. `_place()` is the only writer: a pick from a home node
+starts a new trail at that node; an album, artist, radio or search opened from
+the listening view extends it (and drops whatever lay ahead of the position it
+branched from, like browser history). The map draws it as a chain off the root
+node; Enter on an entry calls `_goto_trail`, which swaps the LIST only — the
+queue, and whatever is playing from it, is untouched.
+
+Every path that replaces the list must go through `_open_list` (or call
+`_place`), or the top bar, the list label and the map show the old name over
+new tracks. A playlist lands twice, so `_playlist_rest` also swaps the full
+track list into the trail entry that holds the first page.
+
+### The search pane has its own generation counter
+
+A search no longer replaces the list, so it must not cancel a playlist that is
+still arriving, and a playlist landing must not drop search results:
+`_search_gen` guards the pane, `_load_gen` the list. Closing the pane bumps
+`_search_gen`, so a search still in flight lands nowhere.
+
+`_highlighted_track()` answers for whichever table has the focus — `a`, `p`,
+`l`, `L`, `R` act on the search pane's row while the cursor is in it.
+
+### Columns are fitted to the pane (and why ← → depend on it)
+
+`DataTable.action_cursor_left/right` scroll the table sideways when it can
+scroll, and only raise `SkipAction` (letting the key reach the app's seek
+binding) when it can't. With fixed 45 + 25 column widths a narrow terminal
+made the table wider than its pane, and ← / → stopped seeking. `_fit_columns`
+sizes Title and Artist from the table's real width whenever a pane changes
+size (resize, cover panel, search pane), and the tables are `overflow-x:
+hidden` as a second lock. Don't add a fixed-width column without taking it
+out of the `room` sum there.
+
+### Home map: names that collide with Textual, and the level meter
+
+- `MapCanvas` is a `Widget`, and `Widget` already owns `_nodes`, `_styles`
+  and friends. A canvas attribute called `_nodes` broke mounting with
+  `'str' object has no attribute '_closing'` — same family as the `_render`
+  gotcha. Its state is prefixed on purpose (`_map_nodes`, `_pal`, `_frame`).
+- The background reads the audio level from mpv: `Player._add_level_filter`
+  hangs ffmpeg's `astats` on the audio chain (`af add @ytmlvl:…`) and
+  `get_level()` reads `af-metadata/ytmlvl`. It is added over IPC while mpv is
+  idle, not as a launch option, so an mpv/ffmpeg without the filter answers
+  with an error instead of refusing to start. A respawned daemon gets it again
+  in `_ensure_mpv_running`. Level probes pass `count=False` to `send()` so a
+  slow one never counts toward marking the IPC dead.
+- `HomeScreen._level_loop` samples it on a daemon thread (an IPC round trip is
+  not for the UI thread); `_tick` (10 Hz) feeds the canvas while playing and
+  every third tick while idle. With no meter (ffplay) a steady pulse stands in.
+  The tick skips drawing while a dialog covers the map.
+- App-level keys still fire while the map is up. The ones that act on the
+  listening view's tables or inputs are refused there by `App.check_action`
+  (`_LIST_ACTIONS`), which is also what hides them from the command palette.
+
+### Look: borderless blocks
+
+Every part is a block (`.blk`) under a one-line label bar (`.blk-label`); the
+pane holding the focus gets `.active` (set by `_mark_active_pane`, a watcher
+on `Screen.focused` — `:focus-within` did not restyle the label). The App gets
+`-tall` at 34+ rows, which adds a blank row between blocks. Dialogs share
+`ModalScreen` / `.dialog` rules in the App CSS; Input and Button are restyled
+globally to one row with no border.
+
 ### Textual Tab Key
 
 Textual reserves the Tab key for focus cycling. Source-cycle binding uses `t` instead.
@@ -453,6 +527,7 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 | File | Purpose |
 |------|---------|
 | `main.py` | Textual App: home screen, modals, bindings, search/play flow |
+| `homemap.py` | Home map canvas: nodes, trail, open block, audio-reactive background |
 | `youtube.py` | yt-dlp + ytmusicapi wrapper: search, URL/playlist resolution, metadata; account auth (`configure_auth`/`is_authenticated`/`verify_auth_live`) + `ytm_home()` feed |
 | `YOUTUBE_LOGIN.md` | User guide: sign in via Browser or Cookies (the `g` flow) |
 | `player.py` | mpv IPC + ffplay fallback; per-OS transport (named pipe / AF_UNIX) |
@@ -487,7 +562,7 @@ over the bare `python3`, and rebuilds an existing venv that's on an old Python.
 **Switch search source:** `t` (cycles YT Music → YouTube → Both)
 
 **Sign in to YouTube:** `g` opens the Account screen (config `auth_method`:
-`none`/`browser`/`cookies`). Once authenticated, the home screen's **For You** tab
+`none`/`browser`/`cookies`). Once authenticated, the home map's **For You** node
 and search personalize. Setup: `YOUTUBE_LOGIN.md`.
 - **Browser (recommended — durable):** pick a browser *profile* in the Account screen; at
   every launch `youtube._browser_headers_live(browser, profile)` reads the **live**
@@ -557,9 +632,9 @@ guard (≥3 sub-2s ends in a row → stop with an error instead of skipping the 
 
 **Shuffle / repeat:** `z` shuffles the queue; `r` cycles repeat off → one → all
 
-**Resume a session:** pick one from the home screen's **Resume** tab (sessions are saved on quit)
+**Resume a session:** open the home map's **Resume** node and pick one (sessions are saved on quit)
 
-**Manage the library:** on the home screen's Resume / Folders / Liked / Recent tabs,
+**Manage the library:** in the home map's open Resume / Playlists / Liked / Recent node,
 `d` deletes the highlighted entry (delete playlist / unpin folder / delete session /
 unlike / remove-from-recent — playlists, folders and sessions confirm first) and `r`
 renames a highlighted saved playlist. Backed by `library.py`

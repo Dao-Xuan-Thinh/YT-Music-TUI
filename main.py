@@ -7,6 +7,7 @@ Press ? at any time for the full key list.
 
 import os
 import sys
+import math
 import time
 import random
 import threading
@@ -20,17 +21,19 @@ bootstrap.ensure()
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.command import DiscoveryHit, Hit, Provider
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import (
-    Button, DataTable, Header, Input, Label, ListItem, ListView,
-    OptionList, Select, Static, TabbedContent, TabPane,
+    Button, DataTable, Input, Label, OptionList, Select, Static,
 )
 from textual.widgets.option_list import Option
 from textual.screen import ModalScreen, Screen
 from textual.theme import Theme
+
+from homemap import MapCanvas, HUB
 
 import youtube
 import player as player_module
@@ -219,10 +222,10 @@ KEYS_HELP = [
         ('R',        'Radio — endless mix from the current track'),
     ]),
     ('Queue', [
-        ('Enter',    'Play the highlighted track (loads the whole list as the queue)'),
+        ('Enter',    'Play the highlighted track (the whole list becomes the queue)'),
         ('p',        'Play the highlighted track next'),
         ('a',        'Add the highlighted track to the queue'),
-        ('Q',        'Switch between the Library and Queue views'),
+        ('Q',        'Switch between the list and the queue'),
         ('K / J',    'Move the highlighted queue track up / down'),
         ('Shift+↑/↓', 'Same as K / J'),
     ]),
@@ -234,13 +237,17 @@ KEYS_HELP = [
     ]),
     ('Search & browse', [
         ('/',        'Search, or paste a URL / playlist link'),
+        ('Enter',    'In the search pane: play that result now, your list stays'),
+        ('a / p',    'In the search pane: add to the queue / play next'),
+        ('Tab',      'Jump between the search pane and the list'),
+        ('Esc',      'Close the search pane (or clear the filter)'),
         ('f',        'Filter the loaded list'),
-        ('Esc',      'Clear the filter'),
         ('t',        'Cycle the search source (YT Music / YouTube / both)'),
         ('o',        'Toggle online / offline mode'),
     ]),
     ('Screens', [
-        ('h',        'Home screen'),
+        ('h',        'Home map (and back)'),
+        ('Ctrl+p',   'Command palette: every action by name'),
         ('s',        'Listen-stats sync settings (GitHub token + device name)'),
         ('g',        'YouTube account / sign in (unlocks the For You feed)'),
         ('c / C',    'Theme picker / cycle to the next theme'),
@@ -249,12 +256,15 @@ KEYS_HELP = [
         ('?',        'This help'),
         ('q',        'Quit (when playing: save the session, or just quit; Esc stays)'),
     ]),
-    ('On the home screen', [
-        ('← / →',    'Previous / next tab'),
-        ('Enter',    'Open, play or resume the highlighted entry'),
-        ('d',        'Delete it — unlike, unpin, or drop a playlist or session'),
+    ('On the home map', [
+        ('← ↑ ↓ →',  'Move between nodes (and along the history chain)'),
+        ('Enter',    'Open a node; on a row: play, load or resume it'),
+        ('Enter',    'On a history entry: go back to that list'),
+        ('← / Esc',  'Close the open node'),
+        ('d',        'Delete the row — unlike, unpin, or drop a playlist or session'),
         ('r',        'Rename the highlighted playlist'),
-        ('Esc  /',   'Leave home for search & browse'),
+        ('Esc  h',   'Back to the list'),
+        ('/',        'Search'),
     ]),
     ('In the lyrics view (L)', [
         ('t',        'Toggle the translation'),
@@ -385,7 +395,7 @@ class SettingsScreen(ModalScreen):
     SettingsScreen { align: center middle; }
     #settings-box {
         width: 76; height: auto;
-        border: round $accent; padding: 1 2; background: $surface;
+        padding: 1 2; background: $panel;
     }
     #settings-title { text-style: bold; color: $accent; margin-bottom: 1; }
     #sync-stats { margin-bottom: 1; }
@@ -450,7 +460,7 @@ class ThemePickerScreen(ModalScreen):
     ThemePickerScreen { align: center middle; }
     #theme-box {
         width: 50; height: 24;
-        border: round $accent; padding: 1 2; background: $surface;
+        padding: 1 2; background: $panel;
     }
     #theme-box Label { margin-bottom: 1; text-style: bold; }
     #theme-list { height: 1fr; }
@@ -513,7 +523,7 @@ class KeybindingsScreen(ModalScreen):
     KeybindingsScreen { align: center middle; }
     #keys-box {
         width: 78; height: 88%;
-        border: round $accent; padding: 1 2; background: $surface;
+        padding: 1 2; background: $panel;
     }
     #keys-title { text-style: bold; }
     #keys-scroll { height: 1fr; scrollbar-size-vertical: 1; }
@@ -545,6 +555,16 @@ class KeybindingsScreen(ModalScreen):
 # runtime `git log`) so it works on non-git installs. The mobile app mirrors
 # this list so the desktop history is viewable there too.
 CHANGELOG = [
+    ('1.11', '2026-11-15 15:00', [
+        'New look: every part of the app is its own block with a label, no borders; the part that has the focus shows its label in the accent color, and tall terminals get a blank row between blocks',
+        'New home: a map. YTTUI in the middle, a node per area (Search, Resume, For You, YT Music, Playlists, Liked, Recent, Stats) — arrows move between nodes, Enter opens a node and lists what is in it underneath',
+        'History on the map: every list you open (a playlist, then an album, then a radio) is chained off the node it came from, so h then Enter takes you back to the playlist you left for a radio. Whatever is playing keeps playing',
+        'The map background moves with the music (rings of the audio level), and drifts slowly when nothing plays',
+        'Search no longer replaces your list: results open in an upper pane with the list kept below. Enter plays a result right away, a / p queue it, Esc or the close button puts the pane away',
+        'Columns now fit the window, so a narrow terminal no longer turns the list into a sideways scroller that swallowed the ← → seek keys',
+        'The command palette (ctrl+p) lists the app\'s own actions with their keys, instead of Textual\'s defaults',
+        'The progress bar spans the whole player block; a top bar shows where you are and the time',
+    ]),
     ('1.10.1', '2026-11-15 12:00', [
         'A track whose title holds square brackets no longer crashes the app ("[/x]") or loses the bracketed part ("song [lyrics]") — titles are shown as written everywhere',
         'Volume no longer jumps back to 100% when the audio engine reconnects',
@@ -664,7 +684,7 @@ class ChangelogScreen(ModalScreen):
     ChangelogScreen { align: center middle; }
     #changelog-box {
         width: 76; height: 30;
-        border: round $accent; padding: 1 2; background: $surface;
+        padding: 1 2; background: $panel;
     }
     #changelog-title { text-style: bold; color: $accent; margin-bottom: 1; }
     #changelog-scroll { height: 1fr; }
@@ -707,7 +727,7 @@ class LyricsScreen(ModalScreen):
     LyricsScreen { align: center middle; }
     #lyrics-box {
         width: 76; height: 32;
-        border: round $accent; padding: 1 2; background: $surface;
+        padding: 1 2; background: $panel;
     }
     #lyrics-title { text-style: bold; }
     #lyrics-hint { color: $text-muted; margin-bottom: 1; }
@@ -888,7 +908,7 @@ class ArtistScreen(ModalScreen):
     ArtistScreen { align: center middle; }
     #artist-box {
         width: 84; height: 34;
-        border: round $accent; padding: 1 2; background: $surface;
+        padding: 1 2; background: $panel;
     }
     #artist-title { text-style: bold; }
     #artist-sub { color: $text-muted; margin-bottom: 1; }
@@ -948,7 +968,8 @@ class ArtistScreen(ModalScreen):
         kind, payload = self._rows[i]
         if kind == 'song':
             tracks, idx = payload
-            self.dismiss(('play', tracks, idx))
+            self.dismiss(('play', tracks, idx,
+                          self._page.get('name') or 'Artist'))
         elif kind == 'album':
             self.dismiss(('album', payload.get('browseId'), payload.get('name') or 'Album'))
 
@@ -973,7 +994,7 @@ class ConfirmScreen(ModalScreen):
     ConfirmScreen { align: center middle; }
     #confirm-box {
         width: 56; height: auto;      /* grows with the message (3-line quit) */
-        border: round $accent; padding: 1 2; background: $surface;
+        padding: 1 2; background: $panel;
     }
     #confirm-msg { height: auto; margin-bottom: 1; }
     #confirm-btns { height: 3; }
@@ -1017,7 +1038,7 @@ class NameScreen(ModalScreen):
     NameScreen { align: center middle; }
     #name-box {
         width: 60; height: 9;
-        border: round $accent; padding: 1 2; background: $surface;
+        padding: 1 2; background: $panel;
     }
     #name-box Label { margin-bottom: 1; }
     #name-btns { height: 3; margin-top: 1; }
@@ -1069,7 +1090,7 @@ class UpdateScreen(ModalScreen):
     UpdateScreen { align: center middle; }
     #update-box {
         width: 60; height: auto;
-        border: round $accent; padding: 1 2; background: $surface;
+        padding: 1 2; background: $panel;
     }
     #update-title { text-style: bold; color: $accent; margin-bottom: 1; }
     #update-info { margin-bottom: 1; }
@@ -1125,7 +1146,7 @@ class AccountScreen(ModalScreen):
     AccountScreen { align: center middle; }
     #account-box {
         width: 80; height: auto;
-        border: round $accent; padding: 1 2; background: $surface;
+        padding: 1 2; background: $panel;
     }
     #account-title { text-style: bold; color: $accent; }
     #account-box Label { margin-bottom: 0; }
@@ -1455,205 +1476,38 @@ def _stats_records_report(stats, dev_id, width=34, n=8):
     return lines
 
 
-class HomeScreen(Screen):
-    """Boot landing screen: resume sessions + Folders / Liked / Recent."""
+class StatsScreen(ModalScreen):
+    """The listen-time report (opened from the map's Stats node)."""
     BINDINGS = [
-        Binding('escape', 'go_search', 'Search'),
-        Binding('slash', 'go_search', 'Search'),
-        Binding('left', 'prev_tab', 'Prev tab'),
-        Binding('right', 'next_tab', 'Next tab'),
-        Binding('d', 'delete_item', 'Delete'),
-        Binding('r,R', 'rename_item', 'Rename'),
-        Binding('q', 'quit_app', 'Quit'),
+        Binding('escape', 'dismiss_modal', 'Close'),
+        Binding('q', 'dismiss_modal', 'Close'),
     ]
 
-    # Active TabPane id → its ListView selector. Only these tabs are manageable
-    # (the For-You feed isn't part of the saved library).
-    _PANE_LIST = {
-        'tab-resume':  '#list-resume',
-        'tab-folders': '#list-folders',
-        'tab-liked':   '#list-liked',
-        'tab-recent':  '#list-recent',
-    }
-    # Left/right tab cycle order (matches the TabPane order in compose()).
-    _TAB_ORDER = ['tab-resume', 'tab-foryou', 'tab-ytmusic', 'tab-folders',
-                  'tab-liked', 'tab-recent', 'tab-stats']
-
     CSS = """
-    HomeScreen { align: center middle; }
-    #home-box {
-        width: 84; height: 32;
-        border: round $accent; padding: 1 2; background: $surface;
-    }
-    #home-title { text-style: bold; color: $accent; margin-bottom: 1; }
-    #home-sub { color: $text-muted; margin-bottom: 1; }
-    #home-tabs { height: 1fr; }
-    #home-search { margin-top: 1; width: 100%; }
-    #home-status { height: 1; color: $accent; margin-top: 1; }
-    ListView { height: 1fr; }
+    #stats-box { width: 84; height: 88%; }
+    #stats-scroll { height: 1fr; scrollbar-size-vertical: 1; }
     """
 
-    def __init__(self, library, stats=None, cfg=None):
+    def __init__(self, stats, cfg):
         super().__init__()
-        self._lib = library
         self._stats = stats
         self._cfg = cfg
 
-    def _track_item(self, track, payload):
-        dur = _fmt(track['duration']) if track['duration'] else ''
-        label = f"♪ {track['title']}"
-        if track.get('uploader'):
-            label += f"  —  {track['uploader']}"
-        if dur:
-            label += f"   {dur}"
-        item = ListItem(Label(label, markup=False))
-        item.payload = payload
-        return item
-
-    def _empty_item(self):
-        item = ListItem(Label('  — empty —'))
-        item.payload = None
-        return item
-
-    # ── Per-tab item builders (shared by compose() and _reload_tab()) ──────────
-
-    def _resume_items(self):
-        items = []
-        for s in self._lib.sessions():
-            title = s.get('title') or 'session'
-            n = len(s.get('queue', []))
-            # Sessions synced in from another device carry its name.
-            dev = f"  ·  {s['device']}" if s.get('device') else ''
-            it = ListItem(Label(
-                f"▸ {title}  ·  {n} tracks  ·  {_ago(s.get('ts'))}{dev}",
-                markup=False))
-            it.payload = {'kind': 'session', 'id': s.get('id')}
-            items.append(it)
-        return items or [self._empty_item()]
-
-    def _folder_items(self):
-        items = []
-        for p in self._lib.playlists():
-            it = ListItem(Label(f"♫ {p['name']}  ({len(p['tracks'])})",
-                                markup=False))
-            it.payload = {'kind': 'playlist', 'name': p['name']}
-            items.append(it)
-        for path in self._lib.folders():
-            it = ListItem(Label(f"▪ {path}", markup=False))
-            it.payload = {'kind': 'folder', 'path': path}
-            items.append(it)
-        return items or [self._empty_item()]
-
-    def _liked_items(self):
-        liked = self._lib.liked()
-        items = [self._track_item(t, {'kind': 'tracklist', 'tracks': liked,
-                 'index': i, 'label': 'Liked'}) for i, t in enumerate(liked)]
-        return items or [self._empty_item()]
-
-    def _recent_items(self):
-        recent = self._lib.recent()
-        items = [self._track_item(t, {'kind': 'tracklist', 'tracks': recent,
-                 'index': i, 'label': 'Recent'}) for i, t in enumerate(recent)]
-        return items or [self._empty_item()]
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
 
     def compose(self) -> ComposeResult:
-        with Vertical(id='home-box'):
-            yield Label('♫  YouTube Music TUI', id='home-title')
-            yield Label('Pick up where you left off, or browse your library.   '
-                        '·  ←/→ switch tab · enter open · d delete · r rename',
-                        id='home-sub')
-
-            with TabbedContent(id='home-tabs'):
-                with TabPane('Resume', id='tab-resume'):
-                    yield ListView(*self._resume_items(), id='list-resume')
-                with TabPane('For You', id='tab-foryou'):
-                    # Populated in the background by on_mount → _populate_foryou.
-                    placeholder = ListItem(Label('Loading your feed…'))
-                    placeholder.payload = None
-                    yield ListView(placeholder, id='list-foryou')
-                with TabPane('YT Music', id='tab-ytmusic'):
-                    # The signed-in account's real YTM library (on_mount loader).
-                    ph = ListItem(Label('Loading your YouTube Music library…'))
-                    ph.payload = None
-                    yield ListView(ph, id='list-ytmusic')
-                with TabPane('Folders', id='tab-folders'):
-                    yield ListView(*self._folder_items(), id='list-folders')
-                with TabPane('Liked', id='tab-liked'):
-                    yield ListView(*self._liked_items(), id='list-liked')
-                with TabPane('Recent', id='tab-recent'):
-                    yield ListView(*self._recent_items(), id='list-recent')
-                with TabPane('Stats', id='tab-stats'):
-                    with VerticalScroll():
-                        yield Static('', id='stats-view')
-
-            yield Button('Search / Browse', id='home-search', variant='primary')
-            yield Label('', id='home-status', markup=False)
+        with Vertical(id='stats-box', classes='dialog'):
+            yield Label('STATS', classes='dialog-title')
+            with VerticalScroll(id='stats-scroll'):
+                yield Static('', id='stats-view', markup=False)
+            yield Label('↑ ↓ PgUp PgDn scroll   ·   Esc / q close',
+                        classes='dialog-hint')
 
     def on_mount(self) -> None:
-        try:
-            self.query_one('#list-resume', ListView).focus()
-        except NoMatches:
-            pass
-        # Fetch the (personalized when signed in) home feed off the UI thread.
-        threading.Thread(target=self._load_foryou, daemon=True).start()
-        threading.Thread(target=self._load_ytlib, daemon=True).start()
-
-    def _status(self, msg: str) -> None:
-        """Show a one-line feedback message in the home box (best-effort)."""
-        try:
-            self.query_one('#home-status', Label).update(msg)
-        except NoMatches:
-            pass
-
-    # ── Tab navigation ─────────────────────────────────────────────────────────
-
-    def _focus_active_list(self) -> None:
-        """Move focus into the active tab's ListView so the highlight + arrow
-        navigation are well-defined (and so r/d act on a real row)."""
-        _pane, lv = self._focused_list()
-        if lv is not None:
-            try:
-                if lv.index is None and len(lv):
-                    lv.index = 0
-                lv.focus()
-            except Exception:
-                pass
-
-    def _cycle_tab(self, step: int) -> None:
-        try:
-            tabs = self.query_one('#home-tabs', TabbedContent)
-        except NoMatches:
-            return
-        order = self._TAB_ORDER
-        try:
-            i = order.index(tabs.active)
-        except ValueError:
-            i = 0
-        tabs.active = order[(i + step) % len(order)]
-
-    def action_prev_tab(self) -> None:
-        self._cycle_tab(-1)
-
-    def action_next_tab(self) -> None:
-        self._cycle_tab(1)
-
-    def on_tabbed_content_tab_activated(self, event) -> None:
-        # Pull focus into the newly-shown list so a highlighted row always exists.
-        # (Stats has no list — _focused_list() finds nothing and this no-ops.)
-        self._focus_active_list()
         self.refresh_stats()
 
-    # ── Stats tab ──────────────────────────────────────────────────────────
-
     def refresh_stats(self) -> None:
-        """Re-render the Stats tab if it's the active pane (cheap, local data)."""
-        try:
-            if self.query_one('#home-tabs', TabbedContent).active == 'tab-stats':
-                self._render_stats()
-        except NoMatches:
-            pass
-
-    def _render_stats(self) -> None:
         try:
             view = self.query_one('#stats-view', Static)
         except NoMatches:
@@ -1664,6 +1518,184 @@ class HomeScreen(Screen):
         # Plain Text (not markup) — device/host names may contain brackets.
         view.update(Text(_stats_report(self._stats, self._cfg)))
 
+
+class HomeScreen(Screen):
+    """The node map: the hub, one node per library area, and the trail of
+    lists opened this session. Enter on a node opens its contents as a block
+    under it; Enter on a row hands it to the app (`_on_home_result`)."""
+    BINDINGS = [
+        Binding('escape', 'back', 'Back'),
+        Binding('h', 'leave', 'Back'),
+        Binding('slash', 'go_search', 'Search'),
+        Binding('up', 'move(0,-1)', 'Up'),
+        Binding('down', 'move(0,1)', 'Down'),
+        Binding('left', 'move(-1,0)', 'Left'),
+        Binding('right', 'move(1,0)', 'Right'),
+        Binding('pageup', 'page(-8)', 'Page up'),
+        Binding('pagedown', 'page(8)', 'Page down'),
+        Binding('enter', 'activate', 'Open'),
+        Binding('d', 'delete_item', 'Delete'),
+        Binding('r,R', 'rename_item', 'Rename'),
+        Binding('q', 'quit_app', 'Quit'),
+    ]
+
+    CSS = """
+    #home-bar { height: 5; padding: 1 2; background: $surface; }
+    #home-now { height: 1; color: $text; text-style: bold; }
+    #home-status { height: 1; color: $accent; }
+    #home-hint { height: 1; color: $text-muted; }
+    """
+
+    # Nodes whose rows come straight from the local library.
+    _LOCAL = ('resume', 'playlists', 'liked', 'recent')
+
+    def __init__(self, library, stats=None, cfg=None, trail=None):
+        super().__init__()
+        self._lib = library
+        self._stats = stats
+        self._cfg = cfg
+        self._trail = trail or ([], None, -1)   # (labels, root node, position)
+        self._alive = True
+        self._db = None         # last audio level from mpv (dB), None = unknown
+        self._frames = 0
+
+    def compose(self) -> ComposeResult:
+        yield MapCanvas(id='home-map')
+        with Vertical(id='home-bar'):
+            yield Static('', id='home-now', markup=False)
+            yield Static('', id='home-status', markup=False)
+            yield Static('', id='home-hint', markup=False)
+
+    def on_mount(self) -> None:
+        m = self._map = self.query_one('#home-map', MapCanvas)
+        for node in self._LOCAL:
+            m.set_rows(node, self._rows_for(node))
+        m.set_rows('foryou', [self._note('Loading your feed…')])
+        m.set_rows('ytmusic', [self._note('Loading your YouTube Music library…')])
+        labels, root, pos = self._trail
+        m.set_trail(labels, root, pos)
+        if labels and 0 <= pos < len(labels):
+            m.select(('trail', pos))    # land on the list you came from
+        m.focus()
+        self._hint()
+        self._draw_now()
+        # Fetch the (personalized when signed in) home feed off the UI thread.
+        threading.Thread(target=self._load_foryou, daemon=True).start()
+        threading.Thread(target=self._load_ytlib, daemon=True).start()
+        threading.Thread(target=self._level_loop, daemon=True).start()
+        self.set_interval(0.1, self._tick)
+
+    def on_unmount(self) -> None:
+        self._alive = False
+
+    # ── Background animation ───────────────────────────────────────────────
+
+    def _playing(self) -> bool:
+        app = self.app
+        return bool(getattr(app, 'now_playing', '')) and not getattr(app, 'is_paused', False)
+
+    def _level_loop(self) -> None:
+        """Daemon thread: sample mpv's audio level ~11x a second while a track
+        plays. Off the UI thread because each sample is an IPC round trip."""
+        get = getattr(getattr(self.app, '_player', None), 'get_level', None)
+        while self._alive:
+            db = None
+            if get is not None and self._playing():
+                try:
+                    db = get()
+                except Exception:
+                    db = None
+            self._db = db
+            time.sleep(0.09)
+
+    def _tick(self) -> None:
+        self._frames += 1
+        if self.app.screen is not self:
+            return                      # a dialog is on top — draw nothing
+        if self._playing():
+            db = self._db
+            if db is None:
+                # No level from the backend (ffplay, or an mpv without the
+                # filter): a steady pulse, so it still moves with playback.
+                energy = 0.4 + 0.3 * math.sin(self._frames * 0.8)
+            else:
+                energy = max(0.0, min(1.0, (db + 42.0) / 34.0))
+            self._map.tick(energy)
+        elif self._frames % 3 == 0:
+            self._map.tick(None)        # idle: a slow drift at a third the rate
+        if self._frames % 5 == 0:
+            self._draw_now()
+
+    def _draw_now(self) -> None:
+        app = self.app
+        now = getattr(app, 'now_playing', '')
+        if now:
+            icon = '‖' if getattr(app, 'is_paused', False) else '▸'
+            text = (f'{icon}  {now}    {_fmt(getattr(app, "position", 0))}'
+                    f' / {_fmt(getattr(app, "duration", 0))}')
+        else:
+            text = '♪  Nothing playing'
+        if text != getattr(self, '_now_text', None):
+            self._now_text = text
+            try:
+                self.query_one('#home-now', Static).update(text)
+            except NoMatches:
+                pass
+
+    # ── Rows ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _note(text):
+        return {'label': text, 'payload': None}
+
+    @staticmethod
+    def _track_row(track, payload):
+        label = f"♪ {track['title']}"
+        if track.get('uploader'):
+            label += f"  —  {track['uploader']}"
+        if track.get('duration'):
+            label += f"   {_fmt(track['duration'])}"
+        return {'label': label, 'payload': payload}
+
+    def _rows_for(self, node):
+        rows = []
+        if node == 'resume':
+            for s in self._lib.sessions():
+                title = s.get('title') or 'session'
+                n = len(s.get('queue', []))
+                # Sessions synced in from another device carry its name.
+                dev = f"  ·  {s['device']}" if s.get('device') else ''
+                rows.append({
+                    'label': f"▸ {title}  ·  {n} tracks  ·  {_ago(s.get('ts'))}{dev}",
+                    'payload': {'kind': 'session', 'id': s.get('id')}})
+        elif node == 'playlists':
+            for p in self._lib.playlists():
+                rows.append({
+                    'label': f"♫ {p['name']}  ({len(p['tracks'])})",
+                    'payload': {'kind': 'playlist', 'name': p['name']}})
+            for path in self._lib.folders():
+                rows.append({'label': f'▪ {path}',
+                             'payload': {'kind': 'folder', 'path': path}})
+        elif node in ('liked', 'recent'):
+            tracks = self._lib.liked() if node == 'liked' else self._lib.recent()
+            label = 'Liked songs' if node == 'liked' else 'Recent plays'
+            rows = [self._track_row(t, {'kind': 'tracklist', 'tracks': tracks,
+                                        'index': i, 'label': label})
+                    for i, t in enumerate(tracks)]
+        return rows or [self._note('— empty —')]
+
+    def _reload(self, node) -> None:
+        self._map.set_rows(node, self._rows_for(node))
+
+    def refresh_library(self) -> None:
+        """Re-read the library-backed nodes after a cross-device sync applied
+        remote changes (new likes/playlists/sessions from other devices)."""
+        for node in ('resume', 'playlists', 'liked'):
+            self._reload(node)
+
+    def refresh_stats(self) -> None:
+        pass        # the report lives in StatsScreen now; kept for the caller
+
     def _load_foryou(self) -> None:
         err = None
         fallback = False
@@ -1673,8 +1705,8 @@ class HomeScreen(Screen):
             err = f'{type(exc).__name__}: {exc}'
             self._log_feed_error()      # full traceback → err.txt for diagnosis
             sections = []
-            # Personalized feed failed — fall back to the generic feed so the tab
-            # still shows something instead of going blank.
+            # Personalized feed failed — fall back to the generic feed so the
+            # node still shows something instead of going blank.
             if youtube.is_authenticated():
                 try:
                     sections = youtube.ytm_home_public(limit=4)
@@ -1699,43 +1731,33 @@ class HomeScreen(Screen):
             pass
 
     def _populate_foryou(self, sections, err=None, fallback=False) -> None:
-        try:
-            lv = self.query_one('#list-foryou', ListView)
-        except NoMatches:
+        if not self._alive:
             return
-        lv.clear()   # removes only the existing placeholder (captured at call time)
         if not sections:
             msg = (f'Feed error: {err}  —  press g to check sign-in' if err else
                    'No feed yet — press g to sign in for your For You feed.')
-            empty = ListItem(Label(msg, markup=False))
-            empty.payload = None
-            lv.append(empty)
+            self._map.set_rows('foryou', [self._note(msg)])
             return
-        items = []
+        rows = []
         if fallback:
-            banner = ListItem(Label(
-                f'(personalized feed unavailable: {err}) — showing popular instead',
-                markup=False))
-            banner.payload = None
-            items.append(banner)
+            rows.append(self._note(
+                f'(personalized feed unavailable: {err}) — showing popular instead'))
         for sec in sections:
-            header = ListItem(Label(Text(sec['title'] or '', style='bold')))
-            header.payload = None   # non-selectable section heading
-            items.append(header)
+            rows.append({'label': sec['title'] or '', 'payload': None,
+                         'header': True})
             songs = [it['track'] for it in sec['items'] if it['kind'] == 'song']
             si = 0
             for it in sec['items']:
                 if it['kind'] == 'song':
-                    row = self._track_item(it['track'], {
+                    rows.append(self._track_row(it['track'], {
                         'kind': 'tracklist', 'tracks': songs,
-                        'index': si, 'label': sec['title']})
+                        'index': si, 'label': sec['title'] or 'For You'}))
                     si += 1
                 else:
-                    row = ListItem(Label(f"♫ {it['name']}", markup=False))
-                    row.payload = {'kind': 'foryou_playlist',
-                                   'playlistId': it['playlistId']}
-                items.append(row)
-        lv.extend(items)
+                    rows.append({'label': f"♫ {it['name']}", 'payload': {
+                        'kind': 'foryou_playlist', 'name': it['name'],
+                        'playlistId': it['playlistId']}})
+        self._map.set_rows('foryou', rows)
 
     def _load_ytlib(self) -> None:
         """Fetch the signed-in account's YTM library playlists (daemon thread)."""
@@ -1754,66 +1776,99 @@ class HomeScreen(Screen):
             pass   # screen dismissed before the library arrived
 
     def _populate_ytlib(self, playlists, signed_in, err=None) -> None:
-        try:
-            lv = self.query_one('#list-ytmusic', ListView)
-        except NoMatches:
+        if not self._alive:
             return
-        lv.clear()
         if not signed_in:
-            row = ListItem(Label('Sign in (press g) to see your YouTube Music '
-                                 'library — playlists and likes.'))
-            row.payload = None
-            lv.append(row)
-            return
-        if err:
-            row = ListItem(Label(f'Library error: {err}  —  press g to check '
-                                 'sign-in', markup=False))
-            row.payload = None
-            lv.append(row)
-            return
-        items = []
-        likes = ListItem(Label('♥ Your Likes'))
-        likes.payload = {'kind': 'foryou_playlist', 'playlistId': 'LM'}
-        items.append(likes)
-        for p in playlists:
-            count = f"  ({p['count']})" if p.get('count') else ''
-            row = ListItem(Label(f"♫ {p['name']}{count}", markup=False))
-            row.payload = {'kind': 'foryou_playlist',
-                           'playlistId': p['playlistId']}
-            items.append(row)
-        lv.extend(items)
+            rows = [self._note('Sign in (press g) to see your YouTube Music '
+                               'library — playlists and likes.')]
+        elif err:
+            rows = [self._note(f'Library error: {err}  —  press g to check sign-in')]
+        else:
+            rows = [{'label': '♥ Your Likes', 'payload': {
+                'kind': 'foryou_playlist', 'name': 'Your Likes',
+                'playlistId': 'LM'}}]
+            for p in playlists:
+                count = f"  ({p['count']})" if p.get('count') else ''
+                rows.append({'label': f"♫ {p['name']}{count}", 'payload': {
+                    'kind': 'foryou_playlist', 'name': p['name'],
+                    'playlistId': p['playlistId']}})
+        self._map.set_rows('ytmusic', rows)
 
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        payload = getattr(event.item, 'payload', None)
-        if not payload:
-            return
-        if payload.get('kind') == 'session':
-            session = self._lib.get_session(payload.get('id'))
-            if session:
-                self.dismiss({'kind': 'resume', 'session': session})
-            return
-        self.dismiss(payload)
+    # ── Navigation ─────────────────────────────────────────────────────────
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == 'home-search':
+    def _status(self, msg: str) -> None:
+        """Show a one-line feedback message under the map (best-effort)."""
+        try:
+            self.query_one('#home-status', Static).update(msg)
+        except NoMatches:
+            pass
+
+    def _hint(self) -> None:
+        if self._map.open_id is not None:
+            keys = '↑↓ move · enter open'
+            if self._map.open_id in self._LOCAL:
+                keys += ' · d delete'
+            if self._map.open_id == 'playlists':
+                keys += ' · r rename'
+            keys += ' · ← / esc close'
+        else:
+            keys = ('←↑↓→ move · enter open · / search · esc back to the list'
+                    ' · ? keys · q quit')
+        try:
+            self.query_one('#home-hint', Static).update(keys)
+        except NoMatches:
+            pass
+
+    def action_move(self, dx: int, dy: int) -> None:
+        self._map.move(dx, dy)
+        self._hint()
+
+    def action_page(self, step: int) -> None:
+        self._map.page(step)
+
+    def action_back(self) -> None:
+        if self._map.close():
+            self._hint()
+            return
+        self.dismiss({'kind': 'back'})
+
+    def action_leave(self) -> None:
+        self.dismiss({'kind': 'back'})
+
+    def action_go_search(self) -> None:
+        self.dismiss({'kind': 'search'})
+
+    def action_activate(self) -> None:
+        m = self._map
+        if m.open_id is not None:
+            row = m.current_row()
+            payload = row.get('payload') if row else None
+            if not payload:
+                return
+            if payload.get('kind') == 'session':
+                session = self._lib.get_session(payload.get('id'))
+                if session:
+                    self.dismiss({'kind': 'resume', 'session': session,
+                                  'root': m.open_id})
+                return
+            self.dismiss(dict(payload, root=m.open_id))
+            return
+        sel = m.sel
+        if isinstance(sel, tuple):
+            self.dismiss({'kind': 'trail', 'index': sel[1]})
+        elif sel == HUB:
+            self.dismiss({'kind': 'back'})
+        elif sel == 'search':
             self.dismiss({'kind': 'search'})
+        elif sel == 'stats':
+            self.app.push_screen(StatsScreen(self._stats, self._cfg))
+        elif sel == 'create':
+            self._status('Create a mix: not built yet.')
+        else:
+            m.open_node(sel)
+            self._hint()
 
     # ── Library management (delete / rename) ───────────────────────────────────
-
-    def _focused_list(self):
-        """(pane_id, ListView) for the active tab, or (pane_id, None) if the
-        active tab isn't manageable / not found."""
-        try:
-            pane = self.query_one('#home-tabs', TabbedContent).active
-        except NoMatches:
-            return None, None
-        sel = self._PANE_LIST.get(pane)
-        if not sel:
-            return pane, None
-        try:
-            return pane, self.query_one(sel, ListView)
-        except NoMatches:
-            return pane, None
 
     def _confirm(self, message, on_yes) -> None:
         def _cb(ok):
@@ -1821,44 +1876,20 @@ class HomeScreen(Screen):
                 on_yes()
         self.app.push_screen(ConfirmScreen(message), _cb)
 
-    def refresh_library(self) -> None:
-        """Re-render the library-backed tabs after a cross-device sync applied
-        remote changes (new likes/playlists/sessions from other devices)."""
-        for pane in ('tab-resume', 'tab-folders', 'tab-liked'):
-            self._reload_tab(pane)
-
-    def _reload_tab(self, pane_id) -> None:
-        """Rebuild a single tab's ListView from the current library state."""
-        builders = {
-            'tab-resume':  self._resume_items,
-            'tab-folders': self._folder_items,
-            'tab-liked':   self._liked_items,
-            'tab-recent':  self._recent_items,
-        }
-        build = builders.get(pane_id)
-        sel = self._PANE_LIST.get(pane_id)
-        if not build or not sel:
-            return
-        try:
-            lv = self.query_one(sel, ListView)
-        except NoMatches:
-            return
-        old = lv.index
-        lv.clear()
-        items = build()
-        lv.extend(items)
-        # clear() drops the highlight (index→None); restore one near the old spot
-        # so a following r/d still has a row to act on (and the cursor is visible).
-        if items:
-            lv.index = max(0, min(old if old is not None else 0, len(items) - 1))
+    def _managed_row(self):
+        """(node, payload) for the highlighted row of an open, manageable
+        node; (node, None) otherwise."""
+        node = self._map.open_id
+        if node not in self._LOCAL:
+            return node, None
+        row = self._map.current_row()
+        return node, (row.get('payload') if row else None)
 
     def action_delete_item(self) -> None:
-        _pane, lv = self._focused_list()
-        if lv is None:
-            self._status('Nothing to manage on this tab.')
+        node, payload = self._managed_row()
+        if node not in self._LOCAL:
+            self._status('Open Resume, Playlists, Liked or Recent to delete an entry.')
             return
-        item = lv.highlighted_child
-        payload = getattr(item, 'payload', None) if item else None
         if not payload:
             self._status('Highlight an item first (↑/↓), then d to delete.')
             return
@@ -1868,21 +1899,21 @@ class HomeScreen(Screen):
             self._confirm(
                 f'Delete playlist "{name}"?',
                 lambda: (self._lib.delete_playlist(name),
-                         self._reload_tab('tab-folders'),
+                         self._reload('playlists'),
                          self._status(f'Deleted playlist "{name}".')))
         elif kind == 'folder':
             path = payload['path']
             self._confirm(
                 f'Unpin folder?\n{path}',
                 lambda: (self._lib.unpin_folder(path),
-                         self._reload_tab('tab-folders'),
+                         self._reload('playlists'),
                          self._status('Unpinned folder.')))
         elif kind == 'session':
             sid = payload['id']
             self._confirm(
                 'Delete this saved session?',
                 lambda: (self._lib.delete_session(sid),
-                         self._reload_tab('tab-resume'),
+                         self._reload('resume'),
                          self._status('Deleted session.')))
         elif kind == 'tracklist':
             # Liked vs Recent — instant (trivially redone), no confirm.
@@ -1891,24 +1922,18 @@ class HomeScreen(Screen):
             if not (0 <= idx < len(tracks)):
                 return
             track = tracks[idx]
-            if payload.get('label') == 'Liked':
+            if node == 'liked':
                 self._lib.toggle_like(track)        # unlike
-                self._reload_tab('tab-liked')
                 self._status('Removed from Liked.')
             else:
                 self._lib.remove_recent(track)
-                self._reload_tab('tab-recent')
                 self._status('Removed from Recent.')
+            self._reload(node)
 
     def action_rename_item(self) -> None:
-        _pane, lv = self._focused_list()
-        if lv is None:
-            self._status('Switch to Folders (←/→) to rename a saved playlist.')
-            return
-        item = lv.highlighted_child
-        payload = getattr(item, 'payload', None) if item else None
+        _node, payload = self._managed_row()
         if not payload or payload.get('kind') != 'playlist':
-            self._status('Highlight a saved playlist (Folders tab) to rename.')
+            self._status('Open Playlists and highlight a saved playlist to rename.')
             return
         old = payload['name']
 
@@ -1916,7 +1941,7 @@ class HomeScreen(Screen):
             if not new or new == old:
                 return
             if self._lib.rename_playlist(old, new):
-                self._reload_tab('tab-folders')
+                self._reload('playlists')
                 self._status(f'Renamed to "{new}".')
             else:
                 self._status('Rename failed — that name already exists.')
@@ -1924,14 +1949,70 @@ class HomeScreen(Screen):
         self.app.push_screen(
             NameScreen(f'Rename playlist "{old}" to:', default=old), _cb)
 
-    def action_go_search(self) -> None:
-        self.dismiss({'kind': 'search'})
-
     def action_quit_app(self) -> None:
         # Route through the app's own quit: a bare app.exit() here skipped the
         # session save, the stats flush AND player.quit(), so quitting from the
         # home screen left the mpv daemon running and still playing.
         self.app.action_quit()
+
+
+# Everything the command palette (ctrl+p) offers: (name, key, action).
+PALETTE = [
+    ('Search or paste a URL',            '/',     'focus_search'),
+    ('Filter the loaded list',           'f',     'filter'),
+    ('Home map',                         'h',     'home'),
+    ('Pause / resume',                   'space', 'toggle_pause'),
+    ('Next track',                       'n',     'next_track'),
+    ('Previous track',                   'b',     'prev_track'),
+    ('Stop playback',                    'x',     'stop'),
+    ('Seek back 10s',                    '←',     'seek_back'),
+    ('Seek forward 10s',                 '→',     'seek_fwd'),
+    ('Volume up',                        '+',     'vol_up'),
+    ('Volume down',                      '-',     'vol_down'),
+    ('Shuffle the queue',                'z',     'shuffle'),
+    ('Repeat: off / one / all',          'r',     'cycle_repeat'),
+    ('Radio from this track',            'R',     'radio'),
+    ('Play highlighted track next',      'p',     'play_next'),
+    ('Add highlighted track to queue',   'a',     'add_queue'),
+    ('Queue / list view',                'Q',     'toggle_view'),
+    ('Like / unlike',                    'l',     'like'),
+    ('Lyrics',                           'L',     'lyrics'),
+    ('Artist page',                      'A',     'artist'),
+    ('Save list as a playlist',          'w',     'save_playlist'),
+    ('Search source: YT Music / YouTube / both', 't', 'cycle_source'),
+    ('Online / offline mode',            'o',     'toggle_mode'),
+    ('Theme picker',                     'c',     'theme_picker'),
+    ('Next theme',                       'C',     'cycle_theme'),
+    ('Account / sign in',                'g',     'account'),
+    ('Stats sync settings',              's',     'settings'),
+    ('Check for updates',                'u',     'update'),
+    ('Changelog',                        'V',     'changelog'),
+    ('Keyboard shortcuts',               '?',     'show_keys'),
+    ('Quit',                             'q',     'quit'),
+]
+
+
+class AppCommands(Provider):
+    """Command palette source: the app's own actions, nothing else."""
+
+    def _hits(self):
+        app = self.app
+        for name, key, action in PALETTE:
+            if app.check_action(action, ()) is False:
+                continue        # doesn't apply on this screen
+            yield name, key, (lambda a=action: app.run_action(a))
+
+    async def discover(self):
+        for name, key, run in self._hits():
+            yield DiscoveryHit(name, run, help=f'key: {key}')
+
+    async def search(self, query: str):
+        matcher = self.matcher(query)
+        for name, key, run in self._hits():
+            score = matcher.match(name)
+            if score > 0:
+                yield Hit(score, matcher.highlight(name), run,
+                          help=f'key: {key}')
 
 
 # ── Main App ──────────────────────────────────────────────────────────────────
@@ -1941,27 +2022,74 @@ class YTMApp(App):
 
     TITLE = 'YouTube Music TUI'
 
+    # Borderless blocks: every part is its own shade under a one-line label
+    # bar, and the label of the part that has focus turns accent. On a tall
+    # terminal (`-tall`, see on_resize) a blank row separates the parts too.
     CSS = """
-    Screen { layout: vertical; }
+    Screen { layout: vertical; background: $background; }
+    ModalScreen { align: center middle; background: $background 70%; }
 
-    #search-row { height: 3; padding: 0 1; background: $panel; }
+    .dialog { padding: 1 2; background: $panel; }
+    .dialog-title { text-style: bold; color: $accent; margin-bottom: 1; }
+    .dialog-hint { color: $text-muted; }
+
+    Input { border: none; height: 1; padding: 0 1; background: $boost; }
+    Input:focus { border: none; background: $accent 18%; }
+    ModalScreen Input { margin-bottom: 1; }
+    Button { border: none; height: 1; min-width: 8; padding: 0 2;
+             background: $boost; color: $text; }
+    Button:hover { border: none; background: $accent 30%; }
+    Button:focus { border: none; background: $accent 45%; text-style: bold; }
+    Button.-primary { background: $accent; color: $background; text-style: bold; }
+    Button.-primary:focus { background: $accent; text-style: bold underline; }
+    ModalScreen Button { margin-right: 2; }
+    OptionList { border: none; background: $surface; }
+    OptionList:focus { border: none; }
+
+    DataTable { background: $surface; overflow-x: hidden;
+                scrollbar-size-vertical: 1; }
+    DataTable > .datatable--header { background: $surface; color: $text-muted;
+                                     text-style: none; }
+    DataTable > .datatable--cursor { background: $accent 16%; }
+    DataTable:focus > .datatable--cursor { background: $accent 34%; }
+    DataTable > .datatable--hover { background: $boost; }
+
+    .blk { background: $surface; }
+    .blk-label { height: 1; padding: 0 1; background: $boost;
+                 color: $text-muted; text-style: bold; }
+    .blk.active .blk-label { color: $accent; }
+
+    #topbar { height: 1; padding: 0 1; background: $panel; }
+    #topbar-left { width: 1fr; }
+    #topbar-right { width: auto; color: $text-muted; }
+
+    #search-row { height: 1; background: $surface; }
+    #search-tag { width: 10; }
     #search-input { width: 1fr; }
-    #source-btn { width: 12; margin-left: 1; }
+    #source-btn { width: auto; min-width: 12; }
 
-    #filter-row { height: 3; padding: 0 1; background: $boost; display: none; }
+    #filter-row { height: 1; background: $surface; display: none; }
     #filter-row.visible { display: block; }
+    #filter-tag { width: 10; }
     #filter-input { width: 1fr; }
 
     #main-row { height: 1fr; }
-    #results-table { width: 1fr; height: 1fr; border: none; }
+    #lists { width: 1fr; height: 1fr; }
+    #search-pane { height: 1fr; display: none; }
+    #search-pane.visible { display: block; }
+    #search-head { height: 1; background: $boost; }
+    #search-label { width: 1fr; }
+    #search-close { width: auto; min-width: 14; background: $boost; }
+    #list-pane { height: 1fr; }
+    #results-table, #search-table { width: 1fr; height: 1fr; border: none; }
 
-    /* Cover art, right of the results. Hidden by default: _sync_art_panel
+    /* Cover art, right of the lists. Hidden by default: _sync_art_panel
        shows it (and sets its width) only when the terminal is wide enough.
        Top two thirds: what's playing. Bottom third: whatever the cursor is on. */
-    #art-panel { display: none; width: 0; padding: 1 1 0 2; background: $surface; }
+    #art-panel { display: none; width: 0; margin-left: 1; }
     #art-panel.visible { display: block; }
-    #art-now { height: 2fr; }
-    #art-cursor { height: 1fr; }
+    #art-now { height: 2fr; padding: 1 2 0 2; }
+    #art-cursor { height: 1fr; padding: 1 2 0 2; }
     #art-image, #art-cursor-image { height: auto; text-align: center; }
     #art-title { height: auto; color: $text; text-style: bold; margin-top: 1; }
     #art-artist { height: auto; color: $text-muted; }
@@ -1970,18 +2098,26 @@ class YTMApp(App):
     #art-you { height: auto; color: $text-muted; }
     #art-cursor-title { height: auto; color: $text-muted; margin-top: 1; }
 
-    #player-bar {
-        height: 5; padding: 0 2; background: $panel; border-top: solid $accent;
-    }
+    #player-bar { height: auto; background: $panel; }
+    #player-label { display: none; }
+    #player-rows { height: 4; padding: 0 2; }
     #now-playing { height: 1; color: $text; text-style: bold; }
     #controls-row { height: 1; color: $text-muted; }
     #progress-row { height: 1; color: $accent; }
     #status-row { height: 1; color: $text-muted; }
 
-    #footer-bar { height: 1; background: $boost; padding: 0 1; }
+    #footer-bar { height: 1; padding: 0 1; background: $background; }
     #footer-left { width: 1fr; color: $text-muted; }
     #footer-right { width: auto; color: $accent; text-style: bold; }
+
+    .-tall #search-row, .-tall #main-row, .-tall #player-bar { margin-top: 1; }
+    .-tall #list-pane.split { margin-top: 1; }
+    .-tall #player-label { display: block; }
     """
+
+    # ctrl+p: every action by name, with its key. The stock palette listed
+    # Textual's own commands, including a Quit that skipped ours.
+    COMMANDS = {AppCommands}
 
     BINDINGS = [
         Binding('slash', 'focus_search', 'Search', show=False),
@@ -2080,6 +2216,20 @@ class YTMApp(App):
         self._search_artists = []   # top artist matches from the last keyword search
         self._search_albums  = []   # top album/playlist matches from the last search
         self._last_query = ''
+        # The search pane (upper half while open) has its own results and its
+        # own generation counter: a search no longer replaces the loaded list,
+        # so it must not cancel a playlist that is still arriving either.
+        self._search_results = []
+        self._search_open = False
+        self._search_gen = 0
+        # Lists opened this session, oldest first: [{'label', 'tracks'}]. The
+        # home map draws it as a chain off `_trail_root` (the node the first
+        # one was picked from) and can jump back to any of them.
+        self._trail = []
+        self._trail_root = None
+        self._trail_pos = -1
+        self._col_sig = {}        # table id -> (title, artist) widths in use
+        self._clock = ''
         # Bumped by every search / playlist / album / folder load. A worker
         # only applies its result while its own number is still the current
         # one, so a slow earlier request can't overwrite what was asked next.
@@ -2126,21 +2276,40 @@ class YTMApp(App):
     # ── Layout ────────────────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        # markup=False on everything that shows a title: track names are
+        # data. Read as markup, "song [lyrics]" loses its tag and a title
+        # holding "[/x]" raises MarkupError and takes the app down.
+        with Horizontal(id='topbar'):
+            yield Static('', id='topbar-left', markup=False)
+            yield Static('', id='topbar-right', markup=False)
         with Horizontal(id='search-row'):
+            yield Static('SEARCH', id='search-tag', classes='blk-label')
             yield Input(placeholder='Search or paste URL…', id='search-input')
             yield Button(SOURCE_LABEL[self.search_source], id='source-btn',
                          variant='default')
         with Horizontal(id='filter-row'):
+            yield Static('FILTER', id='filter-tag', classes='blk-label')
             yield Input(placeholder='Filter loaded list… (Esc to clear)',
                         id='filter-input')
         # cursor_foreground_priority='renderable' so the playing row's accent
         # color (set in _row_cells) survives even when it's also the cursor row;
         # the default 'css' lets the cursor style override it (Bug: no highlight).
         with Horizontal(id='main-row'):
-            yield DataTable(id='results-table', cursor_type='row',
-                            cursor_foreground_priority='renderable')
-            with Vertical(id='art-panel'):
+            with Vertical(id='lists'):
+                with Vertical(id='search-pane', classes='blk'):
+                    with Horizontal(id='search-head'):
+                        yield Static('SEARCH', id='search-label',
+                                     classes='blk-label', markup=False)
+                        yield Button('✕ close (esc)', id='search-close')
+                    yield DataTable(id='search-table', cursor_type='row',
+                                    cursor_foreground_priority='renderable')
+                with Vertical(id='list-pane', classes='blk'):
+                    yield Static('LIST', id='list-label', classes='blk-label',
+                                 markup=False)
+                    yield DataTable(id='results-table', cursor_type='row',
+                                    cursor_foreground_priority='renderable')
+            with Vertical(id='art-panel', classes='blk'):
+                yield Static('NOW PLAYING', classes='blk-label')
                 with Vertical(id='art-now'):
                     yield Static('', id='art-image', markup=False)
                     yield Static('', id='art-title', markup=False)
@@ -2148,20 +2317,20 @@ class YTMApp(App):
                     yield Static('', id='art-album', markup=False)
                     yield Static('', id='art-facts', markup=False)
                     yield Static('', id='art-you', markup=False)
+                yield Static('UNDER CURSOR', classes='blk-label')
                 with Vertical(id='art-cursor'):
                     yield Static('', id='art-cursor-image', markup=False)
                     yield Static('', id='art-cursor-title', markup=False)
         with Vertical(id='player-bar'):
-            # markup=False on everything that shows a title: track names are
-            # data. Read as markup, "song [lyrics]" loses its tag and a title
-            # holding "[/x]" raises MarkupError and takes the app down.
-            yield Static('♪  Nothing playing', id='now-playing', markup=False)
-            yield Static('', id='controls-row', markup=False)
-            yield Static('', id='progress-row', markup=False)
-            yield Static(self.status_msg, id='status-row', markup=False)
+            yield Static('PLAYER', id='player-label', classes='blk-label')
+            with Vertical(id='player-rows'):
+                yield Static('♪  Nothing playing', id='now-playing', markup=False)
+                yield Static('', id='controls-row', markup=False)
+                yield Static('', id='progress-row', markup=False)
+                yield Static(self.status_msg, id='status-row', markup=False)
         with Horizontal(id='footer-bar'):
             yield Static('', id='footer-left')
-            yield Static('? Keys', id='footer-right')
+            yield Static('? keys · ^p commands', id='footer-right')
 
     def on_mount(self) -> None:
         for t in CUSTOM_THEMES:
@@ -2173,11 +2342,12 @@ class YTMApp(App):
             self.theme = self._config.theme
         except Exception:
             pass
-        tbl = self.query_one('#results-table', DataTable)
-        tbl.add_column('#',        width=4)
-        tbl.add_column('Title',    width=45)
-        tbl.add_column('Artist',   width=25)
-        tbl.add_column('Duration', width=8)
+        for tid in ('#results-table', '#search-table'):
+            self._add_columns(self.query_one(tid, DataTable), 45, 25)
+        self._update_topbar()
+        self._update_list_label()
+        # The pane that has the focus shows its label in the accent color.
+        self.watch(self.screen, 'focused', self._mark_active_pane)
         self.set_interval(1.0, self._poll_player)
         self.set_interval(60.0, self._stats_flush)
         self.set_interval(600.0, self._stats_sync_maybe)
@@ -2195,7 +2365,7 @@ class YTMApp(App):
                 and time.time() - self._config.auth_verified_ts > 12 * 3600):
             threading.Thread(target=self._verify_account, daemon=True).start()
         # Boot straight into the home screen.
-        self.push_screen(HomeScreen(self._lib, self._stats, self._config), self._on_home_result)
+        self.action_home()
 
     def _verify_account(self, signing_in: bool = False) -> None:
         """Confirm the live session in the background. `signing_in` marks the run
@@ -2356,30 +2526,97 @@ class YTMApp(App):
         if not result:
             return
         kind = result.get('kind')
-        if kind != 'search':
-            self._new_load()    # a search still in flight must not replace this
+        root = result.get('root')
         if kind == 'search':
             self.query_one('#search-input', Input).focus()
-        elif kind == 'resume':
-            self._resume_session(result['session'])
+            return
+        if kind == 'back':
+            self._focus_list()
+            return
+        if kind == 'trail':
+            self._goto_trail(result.get('index', -1))
+            return
+        self._new_load()    # a playlist still in flight must not replace this
+        if kind == 'resume':
+            self._resume_session(result['session'], root)
         elif kind == 'playlist':
             pl = self._lib.get_playlist(result['name'])
             if pl:
-                self._populate_results(pl['tracks'])
+                self._open_list(result['name'], pl['tracks'], root)
         elif kind == 'folder':
             self.app_mode = 'offline'
             self._config.app_mode = 'offline'
             self._update_mode_ui()
-            self._do_scan_folder(result['path'])
+            self._do_scan_folder(result['path'], root)
         elif kind == 'tracklist':
             tracks = result['tracks']
-            self._populate_results(tracks)
+            self._open_list(result.get('label') or 'List', tracks, root)
             self._set_queue(tracks)
             self._play_queue_item(result.get('index', 0))
         elif kind == 'foryou_playlist':
-            self._do_load_playlist(result['playlistId'])
+            self._do_load_playlist(result['playlistId'],
+                                   result.get('name') or 'Playlist', root)
 
-    def _resume_session(self, session) -> None:
+    # ── Trail: the lists opened this session ───────────────────────────────
+
+    def _place(self, label, tracks, root=None) -> None:
+        """Record that `tracks` is now the loaded list. Picked from a home
+        node (`root`), it starts a new trail there; opened from inside the
+        listening view (album, radio, artist, search) it extends the current
+        one, dropping whatever lay ahead of the position we branched from."""
+        entry = {'label': label or 'List', 'tracks': tracks}
+        if root or not self._trail:
+            self._trail = [entry]
+            self._trail_root = root or 'search'
+        else:
+            del self._trail[self._trail_pos + 1:]
+            if self._trail and self._trail[-1]['label'] == entry['label']:
+                self._trail[-1] = entry
+            else:
+                self._trail.append(entry)
+            del self._trail[:-8]
+        self._trail_pos = len(self._trail) - 1
+        self._update_list_label()
+        self._update_topbar()
+
+    def _open_list(self, label, tracks, root=None) -> None:
+        self._populate_results(tracks)
+        self._place(label, tracks, root)
+
+    def _goto_trail(self, index) -> None:
+        """Back (or forward) to a list on the trail. Only the list changes:
+        whatever is playing keeps playing from its own queue."""
+        if not 0 <= index < len(self._trail):
+            return
+        self._new_load()
+        self._trail_pos = index
+        entry = self._trail[index]
+        self._populate_results(entry['tracks'])
+        self._update_list_label()
+        self._update_topbar()
+        self._set_status(f'Back to {entry["label"]} — Enter on a song to play')
+
+    def _place_label(self) -> str:
+        if 0 <= self._trail_pos < len(self._trail):
+            return self._trail[self._trail_pos]['label']
+        return ''
+
+    def _mark_active_pane(self, focused=None) -> None:
+        fid = getattr(focused, 'id', '') or ''
+        for pane, ids in (('#search-pane', ('search-table', 'search-close')),
+                          ('#list-pane', ('results-table',))):
+            try:
+                self.query_one(pane).set_class(fid in ids, 'active')
+            except NoMatches:
+                pass
+
+    def _focus_list(self) -> None:
+        try:
+            self.query_one('#results-table', DataTable).focus()
+        except NoMatches:
+            pass
+
+    def _resume_session(self, session, root=None) -> None:
         queue = session.get('queue') or []
         if not queue:
             self._set_status('Session had no tracks.')
@@ -2389,7 +2626,7 @@ class YTMApp(App):
         self.shuffle = bool(session.get('shuffle', False))
         self.repeat = session.get('repeat', 'off')
         self._update_mode_ui()
-        self._populate_results(queue)
+        self._open_list(session.get('title') or 'Session', queue, root)
         self._queue = list(queue)
         idx = session.get('queue_idx', 0)
         idx = idx if 0 <= idx < len(queue) else 0
@@ -2430,12 +2667,23 @@ class YTMApp(App):
             self._do_load_playlist(playlist_id)
             return
 
+        # Results go to the search pane (upper half); the loaded list stays
+        # where it is underneath.
         self._set_status(f'Searching "{query}"…')
-        self._results = []
         self._last_query = query
+        self._search_results = []
         self._search_artists = []
         self._search_albums = []
-        gen = self._new_load()
+        self._search_gen += 1
+        gen = self._search_gen
+        self._open_search()
+        self._render_search()
+
+        def _land(fn, *args):
+            def _apply():
+                if gen == self._search_gen and self._search_open:
+                    fn(*args)
+            self.call_from_thread(_apply)
 
         def _run():
             try:
@@ -2445,10 +2693,9 @@ class YTMApp(App):
                     cookies_file=self._config.valid_cookies(),
                     max_results=self._config.max_results,
                 )
-                # keep_entities: the async lookup below owns them
-                self._land(gen, self._populate_results, results, False, True)
+                _land(self._set_search_results, results)
             except Exception as exc:
-                self._land(gen, self._set_status, f'Search error: {exc}')
+                _land(self._set_status, f'Search error: {exc}')
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -2458,11 +2705,113 @@ class YTMApp(App):
             def _entities():
                 try:
                     ent = youtube.ytm_search_entities(query)
-                    self._land(gen, self._set_search_entities,
-                               ent.get('artists') or [], ent.get('albums') or [])
+                    _land(self._set_search_entities,
+                          ent.get('artists') or [], ent.get('albums') or [])
                 except Exception:
                     pass
             threading.Thread(target=_entities, daemon=True).start()
+
+    def _open_search(self) -> None:
+        self._search_open = True
+        try:
+            self.query_one('#search-pane').add_class('visible')
+            self.query_one('#list-pane').add_class('split')
+        except NoMatches:
+            return
+        self._update_search_label()
+        self.call_after_refresh(self._fit_columns)
+
+    def _close_search(self) -> None:
+        """Hide the search pane and give the list its full height back."""
+        if not self._search_open:
+            return
+        self._search_open = False
+        self._search_gen += 1           # a search still in flight lands nowhere
+        self._search_results = []
+        self._search_artists = []
+        self._search_albums = []
+        try:
+            self.query_one('#search-pane').remove_class('visible')
+            self.query_one('#list-pane').remove_class('split')
+        except NoMatches:
+            return
+        self._focus_list()
+        self.call_after_refresh(self._fit_columns)
+
+    def _update_search_label(self) -> None:
+        n = len(self._search_results)
+        text = f'SEARCH · {self._last_query}'
+        if n:
+            text += f' · {n} result{"s" if n != 1 else ""}'
+        try:
+            self.query_one('#search-label', Static).update(text)
+        except NoMatches:
+            pass
+
+    def _set_search_results(self, results) -> None:
+        self._search_results = results
+        self._update_search_label()
+        self._render_search()
+        if not results:
+            self._set_status('No results found.')
+            return
+        self._set_status(
+            f'{len(results)} result(s) — Enter play · a queue · p next · Esc close')
+        self.query_one('#search-table', DataTable).focus()
+
+    def _set_search_entities(self, artists, albums) -> None:
+        self._search_artists = artists
+        self._search_albums = albums
+        if artists or albums:
+            self._render_search()
+
+    def _render_search(self) -> None:
+        try:
+            tbl = self.query_one('#search-table', DataTable)
+        except NoMatches:
+            return
+        try:
+            saved = tbl.cursor_row
+        except Exception:
+            saved = 0
+        tbl.clear()
+        count = self._render_entity_rows(tbl)   # artist/album rows on top
+        entities = count
+        playing_key = self._playing_key()
+        for i, r in enumerate(self._search_results):
+            playing = playing_key is not None and _track_key(r) == playing_key
+            dur = _fmt(r['duration']) if r['duration'] else '?'
+            tbl.add_row(*self._row_cells('▸' if playing else str(i + 1),
+                                         r['title'], r['uploader'], dur, playing),
+                        key=f's{i}')
+            count += 1
+        if count:
+            # First landing: start on the first song, not on an artist row.
+            row = saved if saved else (entities if entities < count else 0)
+            tbl.move_cursor(row=min(row, count - 1))
+
+    def _play_search_hit(self, i: int) -> None:
+        """Enter on a search result. With a list loaded, the song plays now
+        and the list (and the rest of the queue) is left alone. With nothing
+        loaded, the results themselves become the list."""
+        if not 0 <= i < len(self._search_results):
+            return
+        track = self._search_results[i]
+        if not self._results:
+            tracks = list(self._search_results)
+            label = f'Search: {self._last_query}'
+            self._close_search()
+            self._new_load()
+            self._open_list(label, tracks)
+            self._set_queue(tracks)
+            self._play_queue_item(i)
+            return
+        at = (self._queue_idx + 1
+              if self.now_playing and 0 <= self._queue_idx < len(self._queue)
+              else len(self._queue))
+        self._queue.insert(at, track)
+        self._play_queue_item(at)
+        self._render_search()
 
     def _new_load(self) -> int:
         self._load_gen += 1
@@ -2475,21 +2824,7 @@ class YTMApp(App):
                 fn(*args)
         self.call_from_thread(_apply)
 
-    def _set_search_entities(self, artists, albums) -> None:
-        self._search_artists = artists
-        self._search_albums = albums
-        # Show the artist/album rows atop the current search results.
-        if (artists or albums) and self.view_mode == 'library' and not self._filter_text:
-            try:
-                self._render_table()
-            except NoMatches:
-                pass
-        if artists:
-            self._set_status(
-                f'{len(self._results)} result(s) — ◆ artist / ◇ album at top · '
-                f'Enter to open')
-
-    def _do_load_playlist(self, playlist_id: str) -> None:
+    def _do_load_playlist(self, playlist_id: str, label='Playlist', root=None) -> None:
         """Load a large playlist: show first page fast (ytmusicapi), then all.
         Falls back to yt-dlp for playlists ytmusicapi can't serve (non-music)."""
         self._set_status('Loading playlist… first tracks')
@@ -2501,7 +2836,7 @@ class YTMApp(App):
             try:
                 first = youtube.ytm_playlist(playlist_id, limit=100)
                 if first:
-                    self._land(gen, self._populate_results, first)
+                    self._land(gen, self._open_list, label, first, root)
                     self._land(gen, self._set_status,
                                f'{len(first)} tracks loaded — fetching the rest…')
                 full = youtube.ytm_playlist(playlist_id, limit=None)
@@ -2525,7 +2860,7 @@ class YTMApp(App):
                         youtube._entry_to_dict(e)
                         for e in (info.get('entries') or []) if e
                     ]
-                    self._land(gen, self._populate_results, results)
+                    self._land(gen, self._open_list, label, results, root)
                 except Exception as exc:
                     self._land(gen, self._set_status, f'Playlist error: {exc}')
 
@@ -2545,13 +2880,16 @@ class YTMApp(App):
         if ([_track_key(t) for t in self._queue] == ids
                 and [_track_key(t) for t in full[:len(first)]] == ids):
             self._queue = self._queue + full[len(first):]
+        for entry in self._trail:       # the trail holds the first page too
+            if entry['tracks'] is first:
+                entry['tracks'] = full
         self._results = full
         self._render_table()
         self._update_footer()
         self._last_bar_sig = None       # the n/total counter changed
         self._set_status(f'{len(full)} tracks loaded')
 
-    def _do_scan_folder(self, path: str) -> None:
+    def _do_scan_folder(self, path: str, root=None) -> None:
         self._set_status(f'Scanning {path}…')
         self._results = []
         gen = self._new_load()
@@ -2560,7 +2898,8 @@ class YTMApp(App):
             try:
                 from offline import scan_folder
                 results = scan_folder(path)
-                self._land(gen, self._populate_results, results)
+                label = os.path.basename(path.rstrip('/\\')) or path
+                self._land(gen, self._open_list, label, results, root)
                 if results:
                     # UI thread: Library isn't thread-safe.
                     self.call_from_thread(self._lib.pin_folder, path)
@@ -2572,7 +2911,7 @@ class YTMApp(App):
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _populate_results(self, results, keep_filter=False, keep_entities=False) -> None:
+    def _populate_results(self, results, keep_filter=False) -> None:
         self._results = results
         if not keep_filter:
             self._filter_text = ''
@@ -2580,22 +2919,16 @@ class YTMApp(App):
                 self.query_one('#filter-input', Input).value = ''
             except NoMatches:
                 pass
-        # Drop the ◆ artist / ◇ album rows from the last keyword search unless this
-        # IS a search landing (they'd otherwise linger atop an opened album/playlist).
-        # The search path passes keep_entities=True because its entity lookup lands
-        # asynchronously and must not be wiped by the song results arriving.
-        if not keep_entities:
-            self._search_artists = []
-            self._search_albums = []
         self.view_mode = 'library'
         self._render_table()
         self._update_footer()
         if not results:
             self._set_status('No results found.')
             return
-        mode_label = 'file(s)' if self.app_mode == 'offline' else 'result(s)'
+        mode_label = 'file(s)' if self.app_mode == 'offline' else 'track(s)'
         self._set_status(f'{len(results)} {mode_label} — Enter to play')
-        self.query_one('#results-table', DataTable).focus()
+        if not self._search_open:
+            self.query_one('#results-table', DataTable).focus()
 
     # ── Table rendering ───────────────────────────────────────────────────
 
@@ -2661,7 +2994,6 @@ class YTMApp(App):
                     self._playing_row = count
                 count += 1
         else:
-            count += self._render_entity_rows(tbl)   # artist/album rows atop search results
             for master_idx, r in self._visible_results():
                 playing = playing_key is not None and _track_key(r) == playing_key
                 marker = '▸' if playing else str(master_idx + 1)
@@ -2673,12 +3005,74 @@ class YTMApp(App):
                 count += 1
         if count:
             tbl.move_cursor(row=min(saved, count - 1))
+        self._update_list_label()
+
+    def _update_list_label(self) -> None:
+        if self.view_mode == 'queue':
+            text = f'QUEUE · {len(self._queue)} tracks · Q back to the list'
+        else:
+            name = self._place_label()
+            text = 'LIST' + (f' · {name}' if name else '')
+            if self._results:
+                shown = len(self._visible_results())
+                total = len(self._results)
+                text += (f' · {shown} of {total}' if shown != total
+                         else f' · {total} tracks')
+        try:
+            self.query_one('#list-label', Static).update(text)
+        except NoMatches:
+            pass
+
+    def _update_topbar(self) -> None:
+        left = Text('♫ YTTUI', style=f'bold {self._accent()}', no_wrap=True)
+        crumbs = [e['label'] for e in self._trail[:self._trail_pos + 1]]
+        if crumbs:
+            left.append('   ' + '  ›  '.join(crumbs[-3:]), style='dim')
+        self._clock = time.strftime('%H:%M')
+        try:
+            self.query_one('#topbar-left', Static).update(left)
+            self.query_one('#topbar-right', Static).update(self._clock)
+        except NoMatches:
+            pass
+
+    # ── Column fitting ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _add_columns(tbl, title_w, artist_w) -> None:
+        tbl.add_column('#',        width=4)
+        tbl.add_column('Title',    width=title_w)
+        tbl.add_column('Artist',   width=artist_w)
+        tbl.add_column('Time',     width=6)
+
+    def _fit_columns(self) -> None:
+        """Size Title and Artist to the table, so the columns never add up to
+        more than the pane. A table wider than its pane scrolls sideways, and
+        a table that can scroll sideways swallows ← and → — which are seek."""
+        for tid, render in (('results-table', self._render_table),
+                            ('search-table', self._render_search)):
+            try:
+                tbl = self.query_one('#' + tid, DataTable)
+            except NoMatches:
+                continue
+            width = tbl.size.width
+            if width <= 0:
+                continue
+            # 4 + 6 fixed, 2 cells of padding per column, 1 for the scrollbar.
+            room = max(12, width - 10 - 8 - 1)
+            title_w = max(8, int(room * 0.62))
+            artist_w = max(4, room - title_w)
+            if self._col_sig.get(tid) == (title_w, artist_w):
+                continue
+            self._col_sig[tid] = (title_w, artist_w)
+            tbl.clear(columns=True)
+            self._add_columns(tbl, title_w, artist_w)
+            render()
 
     def _render_entity_rows(self, tbl) -> int:
-        """Prepend the top artist(s) + a few albums to the search results so an artist is
-        reachable straight from search. Only in the library view with no active filter
-        (online). Rows are keyed 'A:<channelId>' / 'B:<browseId>'; returns rows added."""
-        if self.view_mode != 'library' or self._filter_text or self.app_mode == 'offline':
+        """Put the top artist(s) + a few albums above the search results so an artist is
+        reachable straight from search (online only). Rows are keyed 'A:<channelId>' /
+        'B:<browseId>'; returns rows added."""
+        if self.app_mode == 'offline':
             return 0
         accent = self._accent()
         added = 0
@@ -2702,7 +3096,19 @@ class YTMApp(App):
         return added
 
     def _highlighted_track(self):
-        """Return (kind, index, track) for the row under the cursor, or None."""
+        """Return (kind, index, track) for the row under the cursor of the
+        table that has focus (the list, unless the search pane does), or None."""
+        if self._search_open and getattr(self.focused, 'id', '') == 'search-table':
+            tbl = self.focused
+            try:
+                key = tbl.coordinate_to_cell_key((tbl.cursor_row, 0)).row_key.value
+            except Exception:
+                return None
+            if key and key[0] == 's':
+                i = int(key[1:])
+                if 0 <= i < len(self._search_results):
+                    return ('search', i, self._search_results[i])
+            return None     # an artist / album row, not a track
         tbl = self.query_one('#results-table', DataTable)
         try:
             row = tbl.cursor_row
@@ -2716,8 +3122,6 @@ class YTMApp(App):
             if 0 <= qi < len(self._queue):
                 return ('queue', qi, self._queue[qi])
         else:
-            if key[:2] in ('A:', 'B:'):
-                return None   # artist / album entity row, not a track
             mi = int(key)
             if 0 <= mi < len(self._results):
                 return ('library', mi, self._results[mi])
@@ -2729,6 +3133,18 @@ class YTMApp(App):
         # Only handle the main results table. A modal's DataTable (e.g. the artist page's
         # 'artist-table', keyed 'r8') bubbles its RowSelected up to the app too; handling it
         # here would int() a non-numeric key and crash.
+        if event.data_table.id == 'search-table':
+            key = event.row_key.value
+            if not key:
+                return
+            if key.startswith('A:'):        # artist row → open the artist page
+                self._open_artist_channel(key[2:])
+            elif key.startswith('B:'):      # album row → load the album
+                self._open_album(key[2:])
+            else:
+                i = int(key[1:])
+                self._debounce_play(lambda: self._play_search_hit(i))
+            return
         if event.data_table.id != 'results-table':
             return
         key = event.row_key.value
@@ -2739,12 +3155,6 @@ class YTMApp(App):
             if 0 <= qi < len(self._queue):
                 self._debounce_play(lambda: self._play_queue_item(qi))
         else:
-            if key.startswith('A:'):        # artist entity row → open the artist page
-                self._open_artist_channel(key[2:])
-                return
-            if key.startswith('B:'):        # album entity row → load the album
-                self._open_album(key[2:])
-                return
             idx = int(key)
             if idx < len(self._results):
                 # Keep the whole loaded list as the queue and point the index at
@@ -2813,6 +3223,8 @@ class YTMApp(App):
         self.is_paused = False        # play un-pauses; lets the wave start at once
         self._set_status('Loading…')
         self._render_table()
+        if self._search_open:
+            self._render_search()
         self._update_footer()
         self._sync_animation()
         self._sync_art_panel()      # swap the cover now, not on the next poll tick
@@ -3053,6 +3465,9 @@ class YTMApp(App):
         self._sync_animation()
         # Keep the cover panel on the current track (no-op unless something moved).
         self._sync_art_panel()
+        self._fit_columns()         # no-op unless a pane changed width
+        if time.strftime('%H:%M') != self._clock:
+            self._update_topbar()
         # Only redraw the player bar when something visible actually changed.
         # While paused or idle the position is frozen, so this skips the redraw
         # (and the repaint) entirely — no work happens on most ticks.
@@ -3083,7 +3498,12 @@ class YTMApp(App):
         pause_icon = '‖' if self.is_paused else '▸'
         controls = (f'◂◂  {pause_icon}  ▸▸   Vol: {self.volume}%   '
                     f'Queue {qpos}   {_fmt(pos)} / {_fmt(dur)}')
-        bar = _bar(pos, dur, width=50)
+        try:
+            # As wide as the row it sits in (50 until the layout has a size).
+            bar = _bar(pos, dur, width=max(
+                20, self.query_one('#progress-row', Static).size.width or 50))
+        except NoMatches:
+            bar = _bar(pos, dur, width=50)
         try:
             # While the wave is running it owns #now-playing — don't clobber it with
             # plain text each poll tick (that would flicker once a second).
@@ -3098,25 +3518,33 @@ class YTMApp(App):
 
     # ── Cover art panel ─────────────────────────────────────────────────────
     def on_resize(self, event) -> None:
+        # A blank row between the blocks, once there are rows to spare.
+        self.set_class(self.size.height >= 34, '-tall')
         self._sync_art_panel()
+        self.call_after_refresh(self._fit_columns)
 
     def on_data_table_row_highlighted(self, event) -> None:
         """Track what the cursor sits on, for the lower half of the art panel."""
-        if getattr(event.data_table, 'id', '') != 'results-table':
+        tid = getattr(event.data_table, 'id', '')
+        if tid not in ('results-table', 'search-table'):
             return
         key = getattr(event.row_key, 'value', None)
-        track = self._track_for_row(key)
+        track = self._track_for_row(key, search=(tid == 'search-table'))
         if track is not self._cursor_track:
             self._cursor_track = track
             self._cursor_since = time.monotonic()
             self._sync_art_panel()
 
-    def _track_for_row(self, key):
-        """The track dict behind a results-table row key, or None for the
+    def _track_for_row(self, key, search=False):
+        """The track dict behind a table row key, or None for the
         artist/album entity rows (A:/B:) that aren't tracks at all."""
         if not key or key[:2] in ('A:', 'B:'):
             return None
         try:
+            if search:
+                i = int(key[1:])
+                return (self._search_results[i]
+                        if 0 <= i < len(self._search_results) else None)
             if self.view_mode == 'queue':
                 i = int(key[1:])
                 return self._queue[i] if 0 <= i < len(self._queue) else None
@@ -3144,12 +3572,14 @@ class YTMApp(App):
                 or (playing is None and cursor is None)):
             if panel.has_class('visible'):
                 panel.remove_class('visible')
+                self.call_after_refresh(self._fit_columns)
             self._art_sig = None
             return
         cols = min(room, ART_MAX_COLS)
         if not panel.has_class('visible'):
             panel.styles.width = cols
             panel.add_class('visible')
+            self.call_after_refresh(self._fit_columns)   # the lists just narrowed
             return      # geometry lands on the next layout; fill in on the next tick
         panel.styles.width = cols
         img = self.query_one('#art-image', Static)
@@ -3681,7 +4111,7 @@ class YTMApp(App):
                 mix = [t for t in tracks if t.get('id') != track['id']]
                 mix.insert(0, playing)
                 self._new_load()
-                self._populate_results(mix)
+                self._open_list(f'∞ Radio: {track["title"]}', mix)
                 self._set_queue(mix)
                 self._queue_idx = 0
                 self._set_status(f'∞ Radio: {track["title"]} — queue updated')
@@ -3748,7 +4178,7 @@ class YTMApp(App):
         kind = result[0]
         if kind == 'play':
             _, tracks, idx = result
-            self._start_track_list(tracks, idx, 'Artist')
+            self._start_track_list(tracks, idx, result[3] if len(result) > 3 else 'Artist')
         elif kind == 'album':
             _, browse_id, name = result
             self._set_status(f'Loading album "{name}"…')
@@ -3768,8 +4198,9 @@ class YTMApp(App):
 
     def _start_track_list(self, tracks, idx=0, label='') -> None:
         """Load a track list into results+queue and start playing at idx."""
-        self._new_load()        # a search still in flight must not replace this
-        self._populate_results(tracks)
+        self._new_load()        # a playlist still in flight must not replace this
+        self._close_search()    # an album or artist picked there replaces the list
+        self._open_list(label or 'List', tracks)
         self._set_queue(tracks)
         self._queue_idx = idx
         self._play_queue_item(idx)
@@ -3793,7 +4224,25 @@ class YTMApp(App):
         self.push_screen(NameScreen('Save current list as playlist:'), _after)
 
     def action_home(self) -> None:
-        self.push_screen(HomeScreen(self._lib, self._stats, self._config), self._on_home_result)
+        trail = ([e['label'] for e in self._trail], self._trail_root,
+                 self._trail_pos)
+        self.push_screen(
+            HomeScreen(self._lib, self._stats, self._config, trail=trail),
+            self._on_home_result)
+
+    # Keys that act on the listening view's tables or inputs. The home map
+    # is a screen on top of them, so there they would act on rows nobody can
+    # see (or put the focus on a hidden input).
+    _LIST_ACTIONS = frozenset((
+        'focus_search', 'filter', 'add_queue', 'play_next', 'toggle_view',
+        'move_track_up', 'move_track_down', 'like', 'lyrics', 'artist',
+        'radio', 'save_playlist', 'home', 'clear_filter',
+    ))
+
+    def check_action(self, action, parameters):
+        if action in self._LIST_ACTIONS and isinstance(self.screen, HomeScreen):
+            return False
+        return True
 
     # ── Themes / mode / source ─────────────────────────────────────────────
 
@@ -4157,8 +4606,14 @@ class YTMApp(App):
         self._set_status('Type to filter the loaded list — Esc to clear')
 
     def action_clear_filter(self) -> None:
+        """Esc: close the filter if it's open, else the search pane, else
+        just hand the focus back to the list."""
         row = self.query_one('#filter-row', Horizontal)
         if not row.has_class('visible'):
+            if self._search_open:
+                self._close_search()
+            else:
+                self._focus_list()
             return
         row.remove_class('visible')
         self.query_one('#filter-input', Input).value = ''
@@ -4234,7 +4689,9 @@ class YTMApp(App):
             self._finalize_quit()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == 'source-btn':
+        if event.button.id == 'search-close':
+            self._close_search()
+        elif event.button.id == 'source-btn':
             if self.app_mode == 'offline':
                 self.action_toggle_mode()
             else:
