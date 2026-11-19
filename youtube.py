@@ -9,6 +9,7 @@ Regular YouTube search/URLs and all audio streaming stay on yt-dlp/mpv.
 """
 
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -862,14 +863,23 @@ def _account_cookie_opts():
     return None
 
 
-def resolve_stream(url_or_id, use_account=False):
+def resolve_stream(url_or_id, use_account=False, cookies_file=None):
     """Single-video extraction → (track_dict, direct_url) or None.
 
     The direct googlevideo URL is playable by mpv/ffplay without re-extraction
     (it expires after a few hours — fine for a listening session, not for saved
-    sessions). Anonymous by default (used by the gapless next-track prefetch);
-    `use_account=True` adds the signed-in cookies for Premium-gated tracks and
-    returns None when signed out.
+    sessions). Anonymous by default; `cookies_file` is the STREAMING cookie
+    file (age-restricted videos), never the account one. `use_account=True`
+    adds the signed-in cookies for Premium-gated tracks and returns None when
+    signed out.
+
+    Blocks until the URL actually serves. Since late 2026 YouTube stamps each
+    format with `available_at` — about 5 s after extraction, the length of the
+    ad it expects the client to show — and googlevideo answers 403 until then.
+    yt-dlp's own downloader sleeps through it ("Sleeping 5.00 seconds as
+    required by the site"); mpv's ytdl_hook doesn't, which made every track
+    fail to load and the queue skip. So this waits, and callers must be on a
+    worker thread.
     """
     extra = {'format': 'bestaudio[ext=m4a]/bestaudio/best'}
     if use_account:
@@ -880,14 +890,20 @@ def resolve_stream(url_or_id, use_account=False):
     url = (url_or_id if _is_url(url_or_id)
            else f'https://www.youtube.com/watch?v={url_or_id}')
     try:
-        with yt_dlp.YoutubeDL(_ydl_opts(None, extra)) as ydl:
+        with yt_dlp.YoutubeDL(_ydl_opts(cookies_file, extra)) as ydl:
             info = ydl.extract_info(url, download=False)
-        direct = info.get('url')
-        if not direct:
+        fmt = info
+        if not info.get('url'):
             fmts = info.get('requested_formats') or []
-            direct = fmts[0].get('url') if fmts else None
+            fmt = fmts[0] if fmts else {}
+        direct = fmt.get('url')
         if not direct:
             return None
+        ready_at = fmt.get('available_at') or info.get('available_at')
+        if ready_at:
+            delay = float(ready_at) - time.time()
+            if 0 < delay <= 60:
+                time.sleep(delay + 0.3)
         return _entry_to_dict(info), direct
     except Exception:
         return None
@@ -1032,6 +1048,81 @@ def get_info(url, cookies_file=None):
         return _entry_to_dict(info)
     except Exception as exc:
         raise RuntimeError(f'Failed to get info: {exc}') from exc
+
+
+def playable(video_id):
+    """Whether YouTube will serve this video to an anonymous player: True,
+    False, or None when it couldn't be asked (network). Region-locked YouTube
+    Music audio tracks answer UNPLAYABLE here — the same refusal yt-dlp gets."""
+    try:
+        with _ytm_lock:
+            song = _new_ytm().get_song(video_id)
+    except Exception:
+        return None
+    return (song.get('playabilityStatus') or {}).get('status') == 'OK'
+
+
+# Uploads that carry the title but aren't the song as released. Skipped
+# unless the original title has the word too ("City Blue (Piano ver.)").
+_ALT_JUNK = ('cover', 'covers', 'reaction', 'react', 'reacts', 'loop', 'hour',
+             'hours', 'piano', 'karaoke', 'nightcore', 'sped', 'slowed', '8d',
+             'instrumental', 'tutorial', 'remix', 'mashup', 'amv', 'concert',
+             'live', 'fanmade', 'edit', 'bass', 'boosted', 'acoustic', 'demo',
+             'cassette', 'ver', 'version', 'orchestral', 'unplugged', 'mix')
+
+
+def _norm(s):
+    return ' '.join(re.sub(r'[^\w]+', ' ', (s or '').lower()).split())
+
+
+def find_alternative(track, max_checks=3):
+    """Another upload of the same song that YouTube will actually serve, for a
+    track it refuses (typically a YouTube Music audio track that is licensed
+    region by region, while the artist's own video upload plays everywhere).
+
+    A candidate must carry the whole title, name the artist (in the channel or
+    the title), sit within 20 s / 15 % of the original length and not be a
+    cover, loop, reaction, remix or other version. The best few are checked with playable()
+    and the first that passes is returned as a track dict; None if none does."""
+    title = _norm(track.get('title'))
+    if not title:
+        return None
+    artists = [_norm(a) for a in re.split(r',|&| x | feat\.? | ft\.? ',
+                                         track.get('uploader') or '', flags=re.I)]
+    artists = [a for a in artists if a]
+    if not artists:
+        return None
+    dur = track.get('duration') or 0
+    words = set(title.split())
+    found = search(f"{track.get('uploader') or ''} {track.get('title') or ''}",
+                   source='yt', max_results=8)
+    scored = []
+    for c in found:
+        if not c.get('id') or c.get('id') == track.get('id'):
+            continue
+        ct, cu = _norm(c.get('title')), _norm(c.get('uploader'))
+        if f' {title} ' not in f' {ct} ':
+            continue
+        cwords = set(ct.split())
+        if any(j in cwords and j not in words for j in _ALT_JUNK):
+            continue
+        by = any(a in cu for a in artists)
+        named = any(f' {a} ' in f' {ct} ' for a in artists)
+        if not (by or named):
+            continue
+        score = 3 * by + named
+        cd = c.get('duration') or 0
+        if dur and cd:
+            diff = abs(cd - dur)
+            if diff > max(20, dur * 0.15):
+                continue
+            score -= diff / 15
+        scored.append((score, c))
+    scored.sort(key=lambda sc: -sc[0])
+    for _score, c in scored[:max_checks]:
+        if playable(c['id']) is not False:      # None: couldn't ask — let mpv try
+            return c
+    return None
 
 
 def format_duration(seconds):

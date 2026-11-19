@@ -555,6 +555,10 @@ class KeybindingsScreen(ModalScreen):
 # runtime `git log`) so it works on non-git installs. The mobile app mirrors
 # this list so the desktop history is viewable there too.
 CHANGELOG = [
+    ('1.11.1', '2026-11-19 19:00', [
+        'Tracks play again: YouTube now refuses a fresh audio link for its first few seconds, so the player got turned away and every pick skipped. The app now fetches the link itself and waits until it works — picking a song takes a few seconds longer, auto-advance stays gapless',
+        'A track YouTube won\'t serve in your region (some YouTube Music audio tracks are licensed country by country) now plays another upload of the same song — the artist\'s own video, never a cover, loop or remix — and says so, instead of skipping',
+    ]),
     ('1.11', '2026-11-15 15:00', [
         'New look: every part of the app is its own block with a label, no borders; the part that has the focus shows its label in the accent color, and tall terminals get a blank row between blocks',
         'New home: a map. YTTUI in the middle, a node per area (Search, Resume, For You, YT Music, Playlists, Liked, Recent, Stats) — arrows move between nodes, Enter opens a node and lists what is in it underneath',
@@ -2245,6 +2249,12 @@ class YTMApp(App):
         self._loading_since = None       # monotonic ts while awaiting playback (load watchdog)
         self._play_timer = None          # debounce timer for rapid selections (misclicks)
         self._premium_retry_id = None    # track id already retried with account cookies
+        # Tracks YouTube refuses to serve here (region-licensed audio) mapped
+        # to another upload of the same song that does play. Session only, and
+        # only the URL is swapped: id, title, cover, likes and stats stay the
+        # original track's. _alt_tried keeps the lookup to one per track.
+        self._alt_for = {}
+        self._alt_tried = set()
         # Cover-art panel state (see _sync_art_panel): last drawn
         # (track, cols, rows), and the track ids with a download in flight.
         self._art_sig = None
@@ -3235,12 +3245,30 @@ class YTMApp(App):
         # download is driven by playback, not by the panel.
         if self._mediakeys is not None and not artwork.cached(track):
             self._fetch_art(track)
-        url = direct_url or track['url']
+        alt = self._alt_for.get(track.get('id'))
+        url = direct_url or (alt['url'] if alt else track['url'])
+        gen = self._prefetch_gen
+        cookies = self._config.valid_cookies()
 
         def _run():
+            play_url = url
+            if not direct_url and url.startswith('http'):
+                # Resolve here instead of letting mpv's ytdl_hook do it: the
+                # hook hands over a URL YouTube refuses for its first ~5 s
+                # (see youtube.resolve_stream). If our own extraction fails,
+                # mpv still gets the page URL, fails the same way, and the
+                # retry chain in _on_track_end takes over.
+                res = youtube.resolve_stream(url, cookies_file=cookies)
+                if res is not None:
+                    play_url = res[1]
+                if gen != self._prefetch_gen:
+                    return      # another track was picked while we resolved
             try:
-                self._player.play(url, start=start)
-                self.call_from_thread(self._set_status, 'Playing')
+                self._player.play(play_url, start=start)
+                self.call_from_thread(self._set_status, (
+                    f'Playing — "{track.get("title")}" isn\'t available in your '
+                    f'region, so this is {alt.get("uploader") or "another"}\'s upload'
+                    if alt and not direct_url else 'Playing'))
             except Exception as exc:
                 self.call_from_thread(self._set_status, f'Playback error: {exc}')
 
@@ -3267,13 +3295,16 @@ class YTMApp(App):
         url = track.get('url') or ''
         if not url.startswith('http'):
             return          # offline/local file — nothing to pre-resolve
+        alt = self._alt_for.get(track.get('id'))
         if track.get('_direct_url') and \
                 time.monotonic() - track.get('_direct_ts', 0) < 1500:
             return          # already prefetched and still fresh
+        cookies = self._config.valid_cookies()
         gen = self._prefetch_gen
 
         def _run():
-            res = youtube.resolve_stream(track.get('id') or url)
+            res = youtube.resolve_stream((alt or track).get('url') or url,
+                                         cookies_file=cookies)
             # Drop the result if the queue was replaced while we resolved (the
             # dict we'd write to is orphaned anyway — this just avoids noise).
             if res is None or gen != self._prefetch_gen:
@@ -3297,6 +3328,10 @@ class YTMApp(App):
             # A track that never starts may be Music-Premium-gated (anonymous
             # extraction rejected). If signed in, retry it once with account cookies.
             if self._maybe_premium_retry():
+                return
+            # Still nothing: YouTube may refuse this upload outright here
+            # (region-licensed audio track) — look for another one that plays.
+            if self._maybe_alt_retry():
                 return
             self._consec_fail = getattr(self, '_consec_fail', 0) + 1
         else:
@@ -3352,8 +3387,52 @@ class YTMApp(App):
             else:
                 self.call_from_thread(
                     self._set_status,
-                    f'Couldn\'t play "{track["title"]}" even signed in — skipping.')
-                self._on_track_end()   # retry id is set → falls through to advance
+                    f'Couldn\'t play "{track["title"]}" even signed in.')
+                self._on_track_end()   # retry id is set → falls through
+
+        threading.Thread(target=_run, daemon=True).start()
+        return True
+
+    def _maybe_alt_retry(self) -> bool:
+        """A track that never started: if YouTube refuses it outright (status
+        not OK — e.g. a YouTube Music audio track not licensed in this
+        country), find another upload of the same song and play that in its
+        place. One lookup per track; returns True when one was started, so the
+        caller must not advance. Network work runs on a daemon thread."""
+        if not (0 <= self._queue_idx < len(self._queue)):
+            return False
+        track = self._queue[self._queue_idx]
+        vid = track.get('id')
+        url = track.get('url') or ''
+        if not vid or vid in self._alt_tried or not url.startswith('http'):
+            return False
+        self._alt_tried.add(vid)
+        idx = self._queue_idx
+        title = track.get('title') or 'track'
+        self.call_from_thread(self._set_status,
+                              f'"{title}" won\'t load — looking for another upload…')
+
+        def _run():
+            if youtube.playable(vid) is not False:
+                # YouTube serves it (or couldn't be asked): the failure was
+                # something else, so carry on as before.
+                self._on_track_end()
+                return
+            alt = youtube.find_alternative(track)
+            if alt is None:
+                self.call_from_thread(
+                    self._set_status,
+                    f'"{title}" isn\'t available in your region, and no other '
+                    'upload of it was found — skipping.')
+                self._on_track_end()
+                return
+            self._alt_for[vid] = alt
+
+            def _go():
+                if (0 <= idx < len(self._queue)
+                        and self._queue[idx].get('id') == vid):
+                    self._play_queue_item(idx)
+            self.call_from_thread(_go)
 
         threading.Thread(target=_run, daemon=True).start()
         return True

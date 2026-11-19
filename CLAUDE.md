@@ -257,6 +257,38 @@ A playlist lands twice: the first 100 tracks, then all of them
 and if playback already started from the first page it extends the queue —
 which is otherwise those 100 tracks and ends there.
 
+### YouTube's audio links don't work for their first ~5 seconds
+
+Since November 2026 every format yt-dlp extracts carries `available_at`, about
+4-5 s after extraction (the length of the ad YouTube expects the client to
+show), and googlevideo answers **403** until then. yt-dlp's own downloader
+sleeps through it ("Sleeping 5.00 seconds as required by the site"); mpv's
+ytdl_hook hands the URL to ffmpeg at once, so every track failed to load and
+the queue skipped. Symptom: plain `mpv <watch url>` exits with `HTTP error 403
+Forbidden` while `yt-dlp <same url>` downloads fine.
+
+So the app no longer gives mpv a watch URL: `_play_queue_item` resolves it with
+`youtube.resolve_stream`, which waits until `available_at` before returning
+the direct URL (worker threads only). The gapless prefetch resolves the next
+track during the current one, so auto-advance doesn't wait; an explicit pick
+takes ~7 s. Ruled out as shortcuts: the `web_embedded` client has no gate but
+fails on many videos, and the default client's only ungated format is 139
+(48 kbps AAC). If our own extraction fails, mpv still gets the watch URL, fails
+the same way, and `_on_track_end`'s retry chain takes over.
+
+### Region-blocked tracks play another upload
+
+Some YouTube Music audio tracks (`MUSIC_VIDEO_TYPE_ATV`) are licensed per
+country and answer `UNPLAYABLE` / "Video unavailable" — signed in or not. When
+a track never starts, `_on_track_end` tries the premium retry first, then
+`_maybe_alt_retry`: `youtube.playable()` asks the player endpoint, and only on
+a definite `False` does `youtube.find_alternative()` search YouTube for another
+upload (whole title + artist named + length within 20 s / 15 % + none of
+`_ALT_JUNK` — cover, loop, reaction, remix, live, other versions), checking the
+best three with `playable()`. The pick goes in `App._alt_for[id]`
+(session-only) and only its URL is used: the queue entry, likes, recent,
+stats, lyrics and cover stay the original track's.
+
 ### What a respawned mpv has to be told again
 
 The daemon is rebuilt whenever its socket dies, and a fresh mpv knows nothing:
