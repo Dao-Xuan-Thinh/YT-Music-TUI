@@ -599,6 +599,22 @@ _LEVEL_FILTERS = (
 )
 
 
+# mpv still reads the user's own mpv.conf, which is set up for watching
+# video, and a few common settings there break a player driven over IPC. Each
+# is forced back to the default here (a command-line option beats mpv.conf):
+# - keep-open: at the end of a track mpv pauses on the last frame instead of
+#   ending it, so no end-file arrives and the queue never advances. A real
+#   case: `keep-open=yes` came along with a uosc setup and autoplay stopped.
+# - loop-file / loop-playlist: the track (or mpv's one-item playlist) repeats
+#   forever, behind the app's own repeat setting.
+# - resume-playback / save-position-on-quit: tracks start wherever mpv's
+#   watch-later file says, instead of where the app asks.
+_CONF_OVERRIDES = (
+    '--keep-open=no', '--loop-file=no', '--loop-playlist=no',
+    '--resume-playback=no', '--save-position-on-quit=no',
+)
+
+
 # ── Player ────────────────────────────────────────────────────────────────────
 
 class Player:
@@ -681,6 +697,7 @@ class Player:
                 # We drive mpv only over the IPC socket, so it must never touch the
                 # terminal. stdin=DEVNULL below is the belt-and-suspenders half.
                 '--no-terminal',
+                *_CONF_OVERRIDES,
             ]
             # mpv publishes its OWN entry to the system now-playing list, named
             # after the IPC socket ("mpv-55554944..."). We already publish a
@@ -791,7 +808,7 @@ class Player:
             # by watching the process exit and firing on_end (like ffplay does).
             self._shutdown_mpv()
             cmd = [self.backend_exe, '--no-video', '--ytdl=yes', '--really-quiet',
-                   '--network-timeout=15', '--no-terminal', url]
+                   '--network-timeout=15', '--no-terminal', *_CONF_OVERRIDES, url]
             if _supports_media_controls(self.backend_exe):
                 cmd.append('--media-controls=no')   # see the daemon spawn above
             if start and start > 0:

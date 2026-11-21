@@ -289,6 +289,17 @@ best three with `playable()`. The pick goes in `App._alt_for[id]`
 (session-only) and only its URL is used: the queue entry, likes, recent,
 stats, lyrics and cover stay the original track's.
 
+### The user's mpv.conf applies to our daemon too
+
+mpv loads `~/.config/mpv/mpv.conf` even when we spawn it, and configs made for
+watching video break an IPC-driven player. `keep-open=yes` (it comes with
+uosc setups) pauses on the last frame instead of ending the file: no
+`end-file`, so `_on_track_end` never runs and autoplay stops, with mpv sitting
+paused at `time-pos == duration`. `player._CONF_OVERRIDES` forces keep-open,
+loop-file/loop-playlist and resume-playback/save-position-on-quit back to
+their defaults on every spawn. Add an option there rather than `--no-config`,
+which would also drop the user's audio device and output settings.
+
 ### What a respawned mpv has to be told again
 
 The daemon is rebuilt whenever its socket dies, and a fresh mpv knows nothing:

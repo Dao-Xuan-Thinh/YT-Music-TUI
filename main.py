@@ -556,6 +556,7 @@ class KeybindingsScreen(ModalScreen):
 # this list so the desktop history is viewable there too.
 CHANGELOG = [
     ('1.11.1', '2026-11-19 19:00', [
+        'Autoplay works again with a personal mpv.conf that sets keep-open (common with uosc): the player now overrides keep-open, looping and resume-from-last-position, which made it stop at the end of every track',
         'Tracks play again: YouTube now refuses a fresh audio link for its first few seconds, so the player got turned away and every pick skipped. The app now fetches the link itself and waits until it works — picking a song takes a few seconds longer, auto-advance stays gapless',
         'A track YouTube won\'t serve in your region (some YouTube Music audio tracks are licensed country by country) now plays another upload of the same song — the artist\'s own video, never a cover, loop or remix — and says so, instead of skipping',
     ]),
